@@ -18,6 +18,7 @@ int main()
 		}
 	});
 
+	// register for help command
 	bot.on_ready([&bot](const dpp::ready_t& event) 
 	{
 		if (dpp::run_once<struct register_bot_commands>()) 
