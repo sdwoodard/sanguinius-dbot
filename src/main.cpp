@@ -2,12 +2,13 @@
 #include <ctime>
 #include <string>
 #include <sstream>
+#include <vector>
 
 const std::string read_string_from_file(const std::string &file_path)
 {
     const std::ifstream input_stream(file_path, std::ios_base::binary);
 
-    if (input_stream.fail()) 
+    if (input_stream.fail())
     {
         throw std::runtime_error("Failed to open token file");
     }
@@ -36,18 +37,26 @@ int main()
 
 	bot.on_log(dpp::utility::cout_logger());
 
-	bot.on_slashcommand([](const dpp::slashcommand_t& event) 
+	bot.on_slashcommand([](const dpp::slashcommand_t& event)
 	{
 		if (event.command.get_command_name() == "help")
 		{
-			event.reply("Right now you can only '/date' me :guraW:");
-		} 
+			dpp::message m;
+			m.content="Right now you can only '/date' me";
+			dpp::reaction re;
+			re.emoji_name="guraW";
+			re.emoji_id=838766295616061440;
+			std::vector<dpp::reaction> res;
+			res.push_back(re);
+			m.reactions=res;
+			event.reply(m);
+		}
 
-        else if (event.command.get_command_name() == "date") 
+        else if (event.command.get_command_name() == "date")
         {
             time_t now = time(0);
             char* dt = ctime(&now);
-            std::ostringstream oss; 
+            std::ostringstream oss;
             oss << "It is now " << dt << " :xqcL";
             std::string response = oss.str();
             event.reply(response);
@@ -55,9 +64,9 @@ int main()
 	});
 
 	// register for help command
-	bot.on_ready([&bot](const dpp::ready_t& event) 
+	bot.on_ready([&bot](const dpp::ready_t& event)
 	{
-		if (dpp::run_once<struct register_bot_commands>()) 
+		if (dpp::run_once<struct register_bot_commands>())
 		{
 			bot.global_command_create(dpp::slashcommand("help", "Provide usage", bot.me.id));
             bot.global_command_create(dpp::slashcommand("date", "Go on a date", bot.me.id));
@@ -66,4 +75,3 @@ int main()
 
 	bot.start(false);
 }
-
