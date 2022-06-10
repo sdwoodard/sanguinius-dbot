@@ -29,7 +29,7 @@ const std::string read_string_from_file(const std::string &file_path)
 int main()
 {
     // get bot token
-    std::string botToken=read_string_from_file("/home/sigmar/git/sanguinius-dbot/secrets/bot.token");
+    std::string botToken=read_string_from_file("/home/sigmar/.secrets/bot.token");
 
     // instantiate bot
 	dpp::cluster bot(botToken);
