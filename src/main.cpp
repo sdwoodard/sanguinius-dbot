@@ -3,12 +3,36 @@
 #include <string>
 #include <sstream>
 
-const std::string BOT_TOKEN="OTgwMDc2ODg4MTI5MTU5MTk4.GrNDbL.9L3xBQ9wIUP5v9Hw5ctD6FAN4MV87sp6cXSeoo";
+const std::string read_string_from_file(const std::string &file_path)
+{
+    const std::ifstream input_stream(file_path, std::ios_base::binary);
+
+    if (input_stream.fail()) 
+    {
+        throw std::runtime_error("Failed to open token file");
+    }
+
+    std::stringstream buffer;
+    buffer << input_stream.rdbuf();
+    std::string ret_string=buffer.str();
+    ret_string.erase(std::remove_if(ret_string.begin(),
+                                    ret_string.end(),
+                                    [](auto ch)
+                                    {
+                                        return (ch == '\n' ||
+                                                ch == '\r');
+                                    }),
+                     ret_string.end());
+    return ret_string;
+}
 
 int main()
 {
-	// instantiate bot
-	dpp::cluster bot(BOT_TOKEN);
+    // get bot token
+    std::string botToken=read_string_from_file("/home/sigmar/git/sanguinius-dbot/secrets/bot.token");
+
+    // instantiate bot
+	dpp::cluster bot(botToken);
 
 	bot.on_log(dpp::utility::cout_logger());
 
