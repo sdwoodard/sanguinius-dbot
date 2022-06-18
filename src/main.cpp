@@ -57,15 +57,16 @@ int main()
         else if (event.command.get_command_name() == "vote")
         {
         	std::string vote_response = std::get<std::string>(event.get_parameter("user_vote"));
-        	if (vote_response == "Lucas")
+            std::cout << "Response was: " << vote_response << ".\n";
+        	if (vote_response == "user_Lucas")
         	{
         		response_message.content = "Registered vote for Mr. New Car.";
         	}
-        	else if (vote_response == "Nicholas")
+        	else if (vote_response == "user_Nicholas")
         	{
         		response_message.content = "Posting " + vote_response + "'s private information now.";
         	}
-        	else if (vote_response == "Stephen")
+        	else if (vote_response == "user_Stephen")
         	{
         		response_message.content = vote_response + " is immune from this dark vote.";
         	}
@@ -100,7 +101,7 @@ int main()
 		{
 			dpp::slashcommand votecommand("vote", "Vote for your desired user", bot.me.id);
 			votecommand.add_option(
-				dpp::command_option(dpp::co_string, "vote_response", "The user's real name", true).
+				dpp::command_option(dpp::co_string, "user_vote", "The user's real name", true).
 					add_choice(dpp::command_option_choice("Lucas", std::string("user_Lucas"))).
 					add_choice(dpp::command_option_choice("Nicholas", std::string("user Nicholas"))).
 					add_choice(dpp::command_option_choice("Stephen", std::string("user Stephen")
