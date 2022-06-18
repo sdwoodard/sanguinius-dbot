@@ -1,120 +1,61 @@
 #include <dpp/dpp.h>
+#include <fileUtilities.hpp>
+#include <ICommand.hpp>
+#include <helpCommand.hpp>
+#include <dateCommand.hpp>
+#include <repoCommand.hpp>
+#include <voteCommand.hpp>
+
 #include <ctime>
 #include <string>
 #include <sstream>
 #include <vector>
 
-const std::string read_string_from_file(const std::string &file_path)
-{
-    const std::ifstream input_stream(file_path, std::ios_base::binary);
-
-    if (input_stream.fail())
-    {
-        throw std::runtime_error("Failed to open token file");
-    }
-
-    std::stringstream buffer;
-    buffer << input_stream.rdbuf();
-    std::string ret_string=buffer.str();
-    ret_string.erase(std::remove_if(ret_string.begin(),
-                                    ret_string.end(),
-                                    [](auto ch)
-                                    {
-                                        return (ch == '\n' ||
-                                                ch == '\r');
-                                    }),
-                     ret_string.end());
-    return ret_string;
-}
+// path to file containing token on dedicated host
+static std::string TOKEN_ID_FILE = "/home/sigmar/.secrets/bot.token";
 
 int main()
 {
-    // get bot token
-    std::string botToken=read_string_from_file("/home/sigmar/.secrets/bot.token");
+  // get bot token
+  std::string botToken=fileUtilities::readStringFromFile(TOKEN_ID_FILE);
 
-    // instantiate bot
-	dpp::cluster bot(botToken);
+  // instantiate bot
+  std::shared_ptr<dpp::cluster> bot = std::make_shared<dpp::cluster>(botToken);
 
-	bot.on_log(dpp::utility::cout_logger());
+  // log activities to console
+  bot->on_log(dpp::utility::cout_logger());
 
-	bot.on_slashcommand([](const dpp::slashcommand_t& event)
-	{
-		dpp::message response_message;
-		if (event.command.get_command_name() == "help")
-		{
-			response_message.content="Help yourself, human.";
-		}
+  // create objects that will handle commands
+  std::shared_ptr<helpCommand> helpCommander = std::make_shared<helpCommand>();
+  std::shared_ptr<dateCommand> dateCommander = std::make_shared<dateCommand>();
+  std::shared_ptr<repoCommand> repoCommander = std::make_shared<repoCommand>();
+  std::shared_ptr<voteCommand> voteCommander = std::make_shared<voteCommand>();
 
-        else if (event.command.get_command_name() == "date")
-        {
-            time_t now = time(0);
-            char* dt = ctime(&now);
-            std::ostringstream oss;
-            oss << "It is now " << dt;
-            response_message.content = oss.str();
+  // register for help command
+  bot->on_ready([&](const dpp::ready_t& event)
+  {
+    // register all call backs for command handlers
+    if (dpp::run_once<struct register_bot_commands>())
+    {
 
-        }
-        else if (event.command.get_command_name() == "vote")
-        {
-        	std::string vote_response = std::get<std::string>(event.get_parameter("user_vote"));
-            std::cout << "Response was: " << vote_response << ".\n";
-        	if (vote_response == "user_Lucas")
-        	{
-        		response_message.content = "Registered vote for Mr. New Car.";
-        	}
-        	else if (vote_response == "user_Nicholas")
-        	{
-        		response_message.content = "Posting " + vote_response + "'s private information now.";
-        	}
-        	else if (vote_response == "user_Stephen")
-        	{
-        		response_message.content = vote_response + " is immune from this dark vote.";
-        	}
-        	else
-        	{
-        		response_message.content = "ERROR: Please only vote for Lucas or Nicholas.";
-        	}
+      helpCommander->registerCommand(bot);
+      dateCommander->registerCommand(bot);
+      repoCommander->registerCommand(bot);
+      voteCommander->registerCommand(bot);
 
-        }
-        else if (event.command.get_command_name() == "repo")
-        {
-        	dpp::embed response_embed = dpp::embed().
-        		set_color(dpp::colors::sti_blue).
-				set_title("Source code for Sanguinius!").
-				set_url("https://github.com/sdwoodard/sanguinius-dbot").
-				set_author("Github", "https://github.com/", "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png").
-				set_description("Code repository for all things required to build the sanguinius discord bot.").
-				set_thumbnail("https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png").
-				add_field("Current regular supports:", "Stephen Woodard").
-				set_image("https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png").
-				set_footer(dpp::embed_footer().set_text("Come by sometime and coding yourself!")).
-				set_timestamp(time(0));
-        	response_message.add_embed(response_embed);
-        }
-		event.reply(response_message);
-	});
+    }
+  });
 
-	// register for help command
-	bot.on_ready([&bot](const dpp::ready_t& event)
-	{
-		if (dpp::run_once<struct register_bot_commands>())
-		{
-			dpp::slashcommand votecommand("vote", "Vote for your desired user", bot.me.id);
-			votecommand.add_option(
-				dpp::command_option(dpp::co_string, "user_vote", "The user's real name", true).
-					add_choice(dpp::command_option_choice("Lucas", std::string("user_Lucas"))).
-					add_choice(dpp::command_option_choice("Nicholas", std::string("user Nicholas"))).
-					add_choice(dpp::command_option_choice("Stephen", std::string("user Stephen")
-					)
-				)
-			);
+  // command has been executed, send it to each handler
+  bot->on_slashcommand([&](const dpp::slashcommand_t& event)
+  {
 
-			bot.global_command_create(dpp::slashcommand("help", "Provide usage", bot.me.id));
-            bot.global_command_create(dpp::slashcommand("date", "Go on a date", bot.me.id));
-            bot.global_command_create(votecommand);
-            bot.global_command_create(dpp::slashcommand("repo", "Start programming!", bot.me.id));
-        }
-	});
+    helpCommander->commandCallBack(event.command.get_command_name(), event);
+    dateCommander->commandCallBack(event.command.get_command_name(), event);
+    repoCommander->commandCallBack(event.command.get_command_name(), event);
+    voteCommander->commandCallBack(event.command.get_command_name(), event);
 
-	bot.start(false);
+  });
+
+  bot->start(false);
 }
