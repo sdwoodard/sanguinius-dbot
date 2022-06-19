@@ -24,54 +24,10 @@ void joinCommand::executeCommand(const dpp::slashcommand_t& event)
 {
   // get the voice channel information from user who sent the command
   dpp::guild* g = dpp::find_guild(event.command.msg.guild_id);
-  auto currentVC = event.from->get_voice(event.command.msg.guild_id);
-  bool joinVC = true;
-
-  // check if the bot is already on a voice channel
-  if (currentVC)
+  if (!g->connect_member_voice(event.command.msg.author.id))
   {
-    // gets channel id of user
-    auto usersVC = g->voice_members.find(event.command.msg.author.id);
-
-    // see if we are already on that channel
-    if (usersVC != g->voice_members.end() && currentVC->channel_id == usersVC->second.channel_id)
-    {
-      // we are already there
-      bot->message_create(dpp::message(event.command.msg.channel_id, "I am already with you"));
-      joinVC = false;
-    }
-
-    // we are on another channel.
-    // disconnect from current channel so we can join requested channel soon
-    else
-    {
-      event.from->disconnect_voice(event.command.msg.guild_id);
-      joinVC = true;
-    }
-
-    // connect to voice channel
-    if (joinVC)
-    {
-      // attempt to connect to voice (will fall through if user is not in a channel)
-      if (!g->connect_member_voice(event.command.msg.author.id))
-      {
-	bot->message_create(dpp::message(event.command.msg.channel_id, "You are not in a channel"));
-      }
-
-      // now connect to the voice channel
-      else
-      {
-	  bot->message_create(dpp::message(event.command.msg.channel_id, "I have arrived!"));
-	// we are in the channel
-	// wait for bot->on_voice_ready event to begin playing audio
-
-	// example:
-	// event.voice_client->send_audio_raw(...);
-	// for now just sleep and then disconnect
-	std::this_thread::sleep_for(std::chrono::seconds(10));
-	event.from->disconnect_voice(event.command.msg.guild_id);
-
-      }
-    }
+    bot->message_create(dpp::message(event.command.msg.channel_id, "You need to be in a voice channel"));
   }
+
+
 }
