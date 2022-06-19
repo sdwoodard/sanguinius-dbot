@@ -44,7 +44,6 @@ int main()
       dateCommander->registerCommand(bot);
       repoCommander->registerCommand(bot);
       voteCommander->registerCommand(bot);
-      joinCommander->registerCommand(bot);
 
     }
   });
@@ -57,7 +56,15 @@ int main()
     dateCommander->commandCallBack(event.command.get_command_name(), event);
     repoCommander->commandCallBack(event.command.get_command_name(), event);
     voteCommander->commandCallBack(event.command.get_command_name(), event);
-    joinCommander->commandCallBack(event.command.get_command_name(), event);
+
+  });
+
+  bot->on_message_create([&](const dpp::message_create_t& event)
+  {
+    std::stringstream ss(event.msg.content);
+    std::string command;
+    ss >> command;
+    joinCommander->commandCallBack(event.msg.content, event);
 
   });
 
