@@ -22,11 +22,16 @@ void joinCommand::commandCallBack(std::string command, const dpp::message_create
 
 void joinCommand::executeCommand(const dpp::message_create_t& event)
 {
-
+  dpp::message response_message;
   dpp::guild* g = dpp::find_guild(event.msg.guild_id);
   if (!g->connect_member_voice(event.msg.author.id))
   {
-    bot->message_create(dpp::message(event.msg.channel_id, "You need to be in a voice channel"));
+    response_message.content="You need to be in a voice channel";
   }
-
+  else
+  {
+    std::this_thread::sleep_for(std::chrono::seconds(10));
+    response_message.content="I have joined (and left) the voice channel";
+  }
+  event.reply(response_message);
 }
