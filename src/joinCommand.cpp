@@ -24,6 +24,7 @@ void joinCommand::executeCommand(const dpp::slashcommand_t& event)
 {
   // get the voice channel information from user who sent the command
   dpp::message response_message;
+  response_message.content="";
   dpp::guild* g = dpp::find_guild(event.command.msg.guild_id);
   auto currentVC = event.from->get_voice(event.command.msg.guild_id);
   bool joinVC = true;
@@ -38,6 +39,7 @@ void joinCommand::executeCommand(const dpp::slashcommand_t& event)
     if (usersVC != g->voice_members.end() && currentVC->channel_id == usersVC->second.channel_id)
     {
       // we are already there
+      response_message.content="I am already with you.";
       joinVC = false;
     }
 
