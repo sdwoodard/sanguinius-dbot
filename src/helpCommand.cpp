@@ -21,11 +21,6 @@ void helpCommand::executeCommand(const dpp::slashcommand_t& event)
 {
 
   dpp::message response_message;
-
-  if (event.command.get_command_name() == "help")
-  {
-    response_message.content="Help yourself, human.";
-  }
-
+  response_message.content="Help yourself, human.";
   event.reply(response_message);
 }

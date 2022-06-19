@@ -11,8 +11,10 @@ public:
 
   ~fileUtilities() = default;
 
+  // used to read file contents and load it into memory as a string
   static std::string readStringFromFile(const std::string &filePath);
 
+  // some lines contain a line/carriage return - this will remove it from string
   static bool trimLineReturn(std::string &inputString);
 
 };

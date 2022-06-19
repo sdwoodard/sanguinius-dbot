@@ -26,10 +26,9 @@ void voteCommand::commandCallBack(std::string command, const dpp::slashcommand_t
 
 void voteCommand::executeCommand(const dpp::slashcommand_t& event)
 {
-  std::string vote_response = std::get<std::string>(event.get_parameter("user_vote"));
 
   dpp::message response_message;
-
+  std::string vote_response = std::get<std::string>(event.get_parameter("user_vote"));
   if (vote_response == "user_Lucas")
   {
     response_message.content = "Registered vote for Mr. New Car.";

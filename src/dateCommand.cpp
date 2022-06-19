@@ -21,12 +21,10 @@ void dateCommand::executeCommand(const dpp::slashcommand_t& event)
 {
 
   dpp::message response_message;
-
   time_t now = time(0);
   char* dt = ctime(&now);
   std::ostringstream oss;
   oss << "It is now " << dt;
   response_message.content = oss.str();
-
   event.reply(response_message);
 }

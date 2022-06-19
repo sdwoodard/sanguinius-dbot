@@ -7,4 +7,3 @@ export PROJ_ROOT="$( cd -- "$(dirname "${0}")" > /dev/null 2>&1; pwd -P | xargs 
 
 g++ -I${PROJ_ROOT}/inc -O3 ${PROJ_ROOT}/src/*.cpp -o ${PROJ_ROOT}/bin/sanguinius -ldpp
 echo "Build complete."
-

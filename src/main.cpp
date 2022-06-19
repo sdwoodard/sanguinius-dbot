@@ -5,6 +5,7 @@
 #include <dateCommand.hpp>
 #include <repoCommand.hpp>
 #include <voteCommand.hpp>
+#include <joinCommand.hpp>
 
 #include <ctime>
 #include <string>
@@ -30,6 +31,7 @@ int main()
   std::shared_ptr<dateCommand> dateCommander = std::make_shared<dateCommand>();
   std::shared_ptr<repoCommand> repoCommander = std::make_shared<repoCommand>();
   std::shared_ptr<voteCommand> voteCommander = std::make_shared<voteCommand>();
+  std::shared_ptr<joinCommand> joinCommander = std::make_shared<joinCommand>();
 
   // register for help command
   bot->on_ready([&](const dpp::ready_t& event)
@@ -42,6 +44,7 @@ int main()
       dateCommander->registerCommand(bot);
       repoCommander->registerCommand(bot);
       voteCommander->registerCommand(bot);
+      joinCommander->registerCommand(bot);
 
     }
   });
@@ -54,6 +57,7 @@ int main()
     dateCommander->commandCallBack(event.command.get_command_name(), event);
     repoCommander->commandCallBack(event.command.get_command_name(), event);
     voteCommander->commandCallBack(event.command.get_command_name(), event);
+    joinCommander->commandCallBack(event.command.get_command_name(), event);
 
   });
 
