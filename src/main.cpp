@@ -21,7 +21,7 @@ int main()
   std::string botToken=fileUtilities::readStringFromFile(TOKEN_ID_FILE);
 
   // instantiate bot
-  std::shared_ptr<dpp::cluster> bot = std::make_shared<dpp::cluster>(botToken);
+  std::shared_ptr<dpp::cluster> bot = std::make_shared<dpp::cluster>(botToken, dpp::i_default_intents | dpp::i_message_content);
 
   // log activities to console
   bot->on_log(dpp::utility::cout_logger());
