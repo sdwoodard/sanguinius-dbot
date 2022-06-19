@@ -30,7 +30,7 @@ void joinCommand::executeCommand(const dpp::message_create_t& event)
   }
   else
   {
-    std::this_thread::sleep_for(std::chrono::seconds(10));
+    std::this_thread::sleep_for(std::chrono::seconds(30));
     response_message.content="I have joined (and left) the voice channel";
   }
   event.reply(response_message);
