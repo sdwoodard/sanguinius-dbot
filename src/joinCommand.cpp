@@ -23,8 +23,6 @@ void joinCommand::commandCallBack(std::string command, const dpp::slashcommand_t
 void joinCommand::executeCommand(const dpp::slashcommand_t& event)
 {
   // get the voice channel information from user who sent the command
-  dpp::message response_message;
-  response_message.content="";
   dpp::guild* g = dpp::find_guild(event.command.msg.guild_id);
   auto currentVC = event.from->get_voice(event.command.msg.guild_id);
   bool joinVC = true;
@@ -39,7 +37,7 @@ void joinCommand::executeCommand(const dpp::slashcommand_t& event)
     if (usersVC != g->voice_members.end() && currentVC->channel_id == usersVC->second.channel_id)
     {
       // we are already there
-      response_message.content="I am already with you.";
+      bot->message_create(dpp::message(event.command.msg.channel_id, "I am already with you"));
       joinVC = false;
     }
 
@@ -57,27 +55,23 @@ void joinCommand::executeCommand(const dpp::slashcommand_t& event)
       // attempt to connect to voice (will fall through if user is not in a channel)
       if (!g->connect_member_voice(event.command.msg.author.id))
       {
-        response_message.content="You aren't in a voice channel.";
+	bot->message_create(dpp::message(event.command.msg.channel_id, "You are not in a channel"));
       }
 
       // now connect to the voice channel
       else
       {
+	  bot->message_create(dpp::message(event.command.msg.channel_id, "I have arrived!"));
 	// we are in the channel
-	// wait for on_voice_ready event to begin playing audio
+	// wait for bot->on_voice_ready event to begin playing audio
 
 	// example:
 	// event.voice_client->send_audio_raw(...);
-
 	// for now just sleep and then disconnect
 	std::this_thread::sleep_for(std::chrono::seconds(10));
 	event.from->disconnect_voice(event.command.msg.guild_id);
 
-	response_message.content="I have joined (and left) your voice channel";
-
       }
     }
   }
-
-  event.reply(response_message);
 }
