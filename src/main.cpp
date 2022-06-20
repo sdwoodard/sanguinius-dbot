@@ -6,6 +6,7 @@
 #include <repoCommand.hpp>
 #include <voteCommand.hpp>
 #include <joinCommand.hpp>
+#include <diceCommand.hpp>
 
 #include <ctime>
 #include <string>
@@ -32,6 +33,7 @@ int main()
   std::shared_ptr<repoCommand> repoCommander = std::make_shared<repoCommand>();
   std::shared_ptr<voteCommand> voteCommander = std::make_shared<voteCommand>();
   std::shared_ptr<joinCommand> joinCommander = std::make_shared<joinCommand>();
+  std::shared_ptr<diceCommand> diceCommander = std::make_shared<diceCommand>();
 
   // register for help command
   bot->on_ready([&](const dpp::ready_t& event)
@@ -44,6 +46,7 @@ int main()
       dateCommander->registerCommand(bot);
       repoCommander->registerCommand(bot);
       voteCommander->registerCommand(bot);
+
 
     }
   });
@@ -65,6 +68,7 @@ int main()
     std::string command;
     ss >> command;
     joinCommander->commandCallBack(event.msg.content, event);
+    diceCommander->commandCallBack(event.msg.content, event);
 
   });
 
