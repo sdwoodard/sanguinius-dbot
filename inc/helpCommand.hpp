@@ -4,7 +4,7 @@
 #include <dpp/dpp.h>
 #include <ICommand.hpp>
 
-class helpCommand : public ICommand
+class helpCommand
 {
 public:
 
@@ -12,9 +12,9 @@ public:
 
   ~helpCommand() = default;
 
-  void registerCommand(std::shared_ptr<dpp::cluster> bot) override;
+  void registerCommand(std::shared_ptr<dpp::cluster> bot);
 
-  void commandCallBack(std::string command, const dpp::slashcommand_t& event) override;
+  void commandCallBack(std::string command, const dpp::slashcommand_t& event);
 
 private:
 

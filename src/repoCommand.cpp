@@ -7,7 +7,7 @@ void repoCommand::registerCommand(std::shared_ptr<dpp::cluster> bot)
   bot->global_command_create(repocommand);
 }
 
-void repoCommand::commandCallBack(std::string command, const dpp::slashcommand_t& event)
+void repoCommand::commandCallBack(std::string command, const dpp::message_create_t& event)
 {
 
   if (command == "repo")
@@ -17,7 +17,7 @@ void repoCommand::commandCallBack(std::string command, const dpp::slashcommand_t
 
 }
 
-void repoCommand::executeCommand(const dpp::slashcommand_t& event)
+void repoCommand::executeCommand(const dpp::message_create_t& event)
 {
 
   dpp::message response_message;
@@ -34,4 +34,5 @@ void repoCommand::executeCommand(const dpp::slashcommand_t& event)
     set_timestamp(time(0));
   response_message.add_embed(response_embed);
   event.reply(response_message);
+
 }

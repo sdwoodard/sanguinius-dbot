@@ -41,12 +41,10 @@ int main()
     // register all call backs for command handlers
     if (dpp::run_once<struct register_bot_commands>())
     {
-
       helpCommander->registerCommand(bot);
       dateCommander->registerCommand(bot);
       repoCommander->registerCommand(bot);
       voteCommander->registerCommand(bot);
-
 
     }
   });
@@ -54,12 +52,7 @@ int main()
   // command has been executed, send it to each handler
   bot->on_slashcommand([&](const dpp::slashcommand_t& event)
   {
-
     helpCommander->commandCallBack(event.command.get_command_name(), event);
-    dateCommander->commandCallBack(event.command.get_command_name(), event);
-    repoCommander->commandCallBack(event.command.get_command_name(), event);
-    voteCommander->commandCallBack(event.command.get_command_name(), event);
-
   });
 
   bot->on_message_create([&](const dpp::message_create_t& event)
@@ -67,6 +60,9 @@ int main()
     std::stringstream ss(event.msg.content);
     std::string command;
     ss >> command;
+    repoCommander->commandCallBack(event.msg.content, event);
+    voteCommander->commandCallBack(event.msg.content, event);
+    dateCommander->commandCallBack(event.msg.content, event);
     joinCommander->commandCallBack(event.msg.content, event);
     diceCommander->commandCallBack(event.msg.content, event);
 

@@ -14,11 +14,11 @@ public:
 
   void registerCommand(std::shared_ptr<dpp::cluster> bot) override;
 
-  void commandCallBack(std::string command, const dpp::slashcommand_t& event) override;
+  void commandCallBack(std::string command, const dpp::message_create_t& event) override;
 
 private:
 
-  void executeCommand(const dpp::slashcommand_t& event);
+  void executeCommand(const dpp::message_create_t& event);
 
   std::shared_ptr<dpp::cluster> bot;
 

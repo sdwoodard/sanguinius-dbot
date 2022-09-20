@@ -14,7 +14,7 @@ void voteCommand::registerCommand(std::shared_ptr<dpp::cluster> bot)
   bot->global_command_create(votecommand);
 }
 
-void voteCommand::commandCallBack(std::string command, const dpp::slashcommand_t& event)
+void voteCommand::commandCallBack(std::string command, const dpp::message_create_t& event)
 {
 
   if (command == "vote")
@@ -24,27 +24,11 @@ void voteCommand::commandCallBack(std::string command, const dpp::slashcommand_t
 
 }
 
-void voteCommand::executeCommand(const dpp::slashcommand_t& event)
+void voteCommand::executeCommand(const dpp::message_create_t& event)
 {
 
   dpp::message response_message;
-  std::string vote_response = std::get<std::string>(event.get_parameter("user_vote"));
-  if (vote_response == "user_Lucas")
-  {
-    response_message.content = "Registered vote for Mr. New Car.";
-  }
-  else if (vote_response == "user_Nicholas")
-  {
-    response_message.content = "Posting " + vote_response + "'s private information now.";
-  }
-  else if (vote_response == "user_Stephen")
-  {
-    response_message.content = vote_response + " is immune from this dark vote.";
-  }
-  else
-  {
-    response_message.content = "ERROR: Please only vote for Lucas or Nicholas.";
-  }
-
+  response_message.content = "This command is undergoing maintenance.";
   event.reply(response_message);
+
 }

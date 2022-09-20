@@ -7,7 +7,7 @@ void dateCommand::registerCommand(std::shared_ptr<dpp::cluster> bot)
   bot->global_command_create(datecommand);
 }
 
-void dateCommand::commandCallBack(std::string command, const dpp::slashcommand_t& event)
+void dateCommand::commandCallBack(std::string command, const dpp::message_create_t& event)
 {
 
   if (command == "date")
@@ -17,7 +17,7 @@ void dateCommand::commandCallBack(std::string command, const dpp::slashcommand_t
 
 }
 
-void dateCommand::executeCommand(const dpp::slashcommand_t& event)
+void dateCommand::executeCommand(const dpp::message_create_t& event)
 {
 
   dpp::message response_message;
