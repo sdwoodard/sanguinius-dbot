@@ -1,16 +1,10 @@
 #include <dpp/dpp.h>
 #include <repoCommand.hpp>
 
-void repoCommand::registerCommand(std::shared_ptr<dpp::cluster> bot)
-{
-  dpp::slashcommand repocommand("repo", "Start programming!", bot->me.id);
-  bot->global_command_create(repocommand);
-}
-
 void repoCommand::commandCallBack(std::string command, const dpp::message_create_t& event)
 {
 
-  if (command == "repo")
+  if (command == "!repo")
   {
     this->executeCommand(event);
   }

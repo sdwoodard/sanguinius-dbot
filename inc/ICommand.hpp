@@ -12,9 +12,6 @@ public:
 
   virtual ~ICommand() = default;
 
-  // must have common registerCommand
-  virtual void registerCommand(std::shared_ptr<dpp::cluster>) = 0;
-
   // must have common commandCallBack
   virtual void commandCallBack(std::string, const dpp::message_create_t&) = 0;
 };

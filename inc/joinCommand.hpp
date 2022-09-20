@@ -12,8 +12,6 @@ public:
 
   ~joinCommand() = default;
 
-  void registerCommand(std::shared_ptr<dpp::cluster> bot) override;
-
   void commandCallBack(std::string command, const dpp::message_create_t& event) override;
 
 private:

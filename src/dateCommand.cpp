@@ -1,16 +1,10 @@
 #include <dpp/dpp.h>
 #include <dateCommand.hpp>
 
-void dateCommand::registerCommand(std::shared_ptr<dpp::cluster> bot)
-{
-  dpp::slashcommand datecommand("date", "Return the current date", bot->me.id);
-  bot->global_command_create(datecommand);
-}
-
 void dateCommand::commandCallBack(std::string command, const dpp::message_create_t& event)
 {
 
-  if (command == "date")
+  if (command == "!date")
   {
     this->executeCommand(event);
   }

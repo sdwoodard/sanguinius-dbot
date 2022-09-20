@@ -42,9 +42,6 @@ int main()
     if (dpp::run_once<struct register_bot_commands>())
     {
       helpCommander->registerCommand(bot);
-      dateCommander->registerCommand(bot);
-      repoCommander->registerCommand(bot);
-      voteCommander->registerCommand(bot);
 
     }
   });

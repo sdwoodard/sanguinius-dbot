@@ -4,12 +4,6 @@
 #include <chrono>
 #include <thread>
 
-void joinCommand::registerCommand(std::shared_ptr<dpp::cluster> bot)
-{
-  dpp::slashcommand joincommand("join", "I will join your current voice channel", bot->me.id);
-  bot->global_command_create(joincommand);
-}
-
 void joinCommand::commandCallBack(std::string command, const dpp::message_create_t& event)
 {
 

@@ -22,7 +22,6 @@ void helpCommand::executeCommand(const dpp::slashcommand_t& event)
 
   dpp::message response_message;
   std::string response_content;
-  response_content =  "I support the following commands:\n";
   response_content += "    !date - Print the current date\n";
   response_content += "    !dice - A dice roll made by Nicholas\n";
   response_content += "    !join - Command me to join the voice channel you're currently in\n";

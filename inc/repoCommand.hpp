@@ -12,8 +12,6 @@ public:
 
   ~repoCommand() = default;
 
-  void registerCommand(std::shared_ptr<dpp::cluster> bot);
-
   void commandCallBack(std::string command, const dpp::message_create_t& event);
 
 private:
