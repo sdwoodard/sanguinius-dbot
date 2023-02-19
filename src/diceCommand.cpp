@@ -38,7 +38,7 @@ void diceCommand::executeCommand(const dpp::message_create_t& event)
   iss >> ceilingString >> ceilingString;
   long ceilingLong = std::stol(ceilingString);
 
-  std::cout << "Ceiling is: " << ceilingLng << std::endl;
+  std::cout << "Ceiling is: " << ceilingLong << std::endl;
 
   // Random number
   std::srand(time(0));
