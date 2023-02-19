@@ -1,7 +1,7 @@
 #include <dpp/dpp.h>
 #include <helpCommand.hpp>
 
-void helpCommand::registerCommand(std::shared_ptr<dpp::cluster> bot)
+void helpCommand::registerCommand(dpp::cluster* bot)
 {
   dpp::slashcommand helpcommand("help", "Provide usage", bot->me.id);
   bot->global_command_create(helpcommand);

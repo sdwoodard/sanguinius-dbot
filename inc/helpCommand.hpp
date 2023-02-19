@@ -12,7 +12,7 @@ public:
 
   ~helpCommand() = default;
 
-  void registerCommand(std::shared_ptr<dpp::cluster> bot);
+  void registerCommand(dpp::cluster* bot);
 
   void commandCallBack(std::string command, const dpp::slashcommand_t& event);
 
@@ -20,7 +20,7 @@ private:
 
   void executeCommand(const dpp::slashcommand_t& event);
 
-  std::shared_ptr<dpp::cluster> bot;
+  dpp::cluster* bot;
 
 };
 

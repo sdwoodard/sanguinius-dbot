@@ -16,24 +16,34 @@
 // path to file containing token on dedicated host
 static std::string TOKEN_ID_FILE = "/home/sigmar/.secrets/bot.token";
 
+void handleMessage(const dpp::message_create_t& event)
+{
+    std::stringstream ss(event.msg.content);
+    repoHandler->commandCallBack(event.msg.content, event);
+    voteHandler->commandCallBack(event.msg.content, event);
+    dateHandler->commandCallBack(event.msg.content, event);
+    joinHandler->commandCallBack(event.msg.content, event);
+    diceHandler->commandCallBack(event.msg.content, event);
+}
+
 int main()
 {
   // get bot token
   std::string botToken=fileUtilities::readStringFromFile(TOKEN_ID_FILE);
 
   // instantiate bot
-  std::shared_ptr<dpp::cluster> bot = std::make_shared<dpp::cluster>(botToken, dpp::i_default_intents | dpp::i_message_content);
+  std::unique_ptr<dpp::cluster> bot = std::make_unique<dpp::cluster>(botToken, dpp::i_default_intents | dpp::i_message_content);
 
   // log activities to console
   bot->on_log(dpp::utility::cout_logger());
 
   // create objects that will handle commands
-  std::shared_ptr<helpCommand> helpCommander = std::make_shared<helpCommand>();
-  std::shared_ptr<dateCommand> dateCommander = std::make_shared<dateCommand>();
-  std::shared_ptr<repoCommand> repoCommander = std::make_shared<repoCommand>();
-  std::shared_ptr<voteCommand> voteCommander = std::make_shared<voteCommand>();
-  std::shared_ptr<joinCommand> joinCommander = std::make_shared<joinCommand>();
-  std::shared_ptr<diceCommand> diceCommander = std::make_shared<diceCommand>();
+  std::unique_ptr<helpCommand> helpHandler = std::make_unique<helpCommand>();
+  std::unique_ptr<dateCommand> dateHandler = std::make_unique<dateCommand>();
+  std::unique_ptr<repoCommand> repoHandler = std::make_unique<repoCommand>();
+  std::unique_ptr<voteCommand> voteHandler = std::make_unique<voteCommand>();
+  std::unique_ptr<joinCommand> joinHandler = std::make_unique<joinCommand>();
+  std::unique_ptr<diceCommand> diceHandler = std::make_unique<diceCommand>();
 
   // register for help command
   bot->on_ready([&](const dpp::ready_t& event)
@@ -41,7 +51,7 @@ int main()
     // register all call backs for command handlers
     if (dpp::run_once<struct register_bot_commands>())
     {
-      helpCommander->registerCommand(bot);
+      helpHandler->registerCommand(bot.get());
 
     }
   });
@@ -49,20 +59,12 @@ int main()
   // command has been executed, send it to each handler
   bot->on_slashcommand([&](const dpp::slashcommand_t& event)
   {
-    helpCommander->commandCallBack(event.command.get_command_name(), event);
+    helpHandler->commandCallBack(event.command.get_command_name(), event);
   });
 
   bot->on_message_create([&](const dpp::message_create_t& event)
   {
-    std::stringstream ss(event.msg.content);
-    std::string command;
-    ss >> command;
-    repoCommander->commandCallBack(event.msg.content, event);
-    voteCommander->commandCallBack(event.msg.content, event);
-    dateCommander->commandCallBack(event.msg.content, event);
-    joinCommander->commandCallBack(event.msg.content, event);
-    diceCommander->commandCallBack(event.msg.content, event);
-
+    handleMessage(event);
   });
 
   bot->start(false);

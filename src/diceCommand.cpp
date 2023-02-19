@@ -20,7 +20,7 @@ void diceCommand::executeCommand(const dpp::message_create_t& event)
   std::srand(time(0));
   int botDiceRoll = rand();
   std::stringstream ss;
-  ss << "I rolled " << botDiceRoll;
+  ss << event.msg.author << " has rolled " << botDiceRoll;
   std::string s = ss.str();
   dpp::message response_message;
   response_message.content = s;
