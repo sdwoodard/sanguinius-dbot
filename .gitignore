@@ -26,8 +26,11 @@
 *.a
 *.lib
 
-# Executables
-*.exe
-*.out
-*.app
-/Release/
+# CMake
+/build/CMakeCache.txt
+/build/*.cmake
+/build/Makefile
+/build/CMakeFiles/
+
+# VSCode
+.vscode/
