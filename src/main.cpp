@@ -16,16 +16,6 @@
 // path to file containing token on dedicated host
 static std::string TOKEN_ID_FILE = "/home/sigmar/.secrets/bot.token";
 
-void handleMessage(const dpp::message_create_t& event)
-{
-    std::stringstream ss(event.msg.content);
-    repoHandler->commandCallBack(event.msg.content, event);
-    voteHandler->commandCallBack(event.msg.content, event);
-    dateHandler->commandCallBack(event.msg.content, event);
-    joinHandler->commandCallBack(event.msg.content, event);
-    diceHandler->commandCallBack(event.msg.content, event);
-}
-
 int main()
 {
   // get bot token
@@ -64,7 +54,11 @@ int main()
 
   bot->on_message_create([&](const dpp::message_create_t& event)
   {
-    handleMessage(event);
+    repoHandler->commandCallBack(event.msg.content, event);
+    voteHandler->commandCallBack(event.msg.content, event);
+    dateHandler->commandCallBack(event.msg.content, event);
+    joinHandler->commandCallBack(event.msg.content, event);
+    diceHandler->commandCallBack(event.msg.content, event);
   });
 
   bot->start(false);

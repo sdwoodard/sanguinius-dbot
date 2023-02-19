@@ -17,10 +17,19 @@ void diceCommand::commandCallBack(std::string command, const dpp::message_create
 
 void diceCommand::executeCommand(const dpp::message_create_t& event)
 {
+  // Random number ceiling
+  std::istringstream iss(event.msg.content);
+  std::string ceilingString;
+  iss >> ceilingString >> ceilingString;
+  long ceilingLong = std::stol(ceilingString);
+
+  // Random number
   std::srand(time(0));
-  int botDiceRoll = rand();
+  int botDiceRoll = rand() % ceilingLong;
+
+  // Construct string
   std::stringstream ss;
-  ss << event.msg.author << " has rolled " << botDiceRoll;
+  ss << event.msg.author.username << " has rolled " << botDiceRoll;
   std::string s = ss.str();
   dpp::message response_message;
   response_message.content = s;
