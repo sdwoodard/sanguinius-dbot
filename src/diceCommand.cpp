@@ -8,7 +8,22 @@
 void diceCommand::commandCallBack(std::string command, const dpp::message_create_t& event)
 {
 
-  if (command == "!dice")
+  std::string keyword;
+  std::size_t spaceLoc = command.find(' ');
+  if (spaceLoc == std::string::npos)
+  {
+    keyword = command;
+  }
+  else
+  {
+    keyword = command.substr(0, spaceLoc);
+  }
+
+
+  std::cout << "Command is: " << command << std::endl;
+  std::cout << "Keyword is: " << keyword << std::endl;
+
+  if (keyword == "!dice")
   {
     this->executeCommand(event);
   }
@@ -22,6 +37,8 @@ void diceCommand::executeCommand(const dpp::message_create_t& event)
   std::string ceilingString;
   iss >> ceilingString >> ceilingString;
   long ceilingLong = std::stol(ceilingString);
+
+  std::cout << "Ceiling is: " << ceilingLng << std::endl;
 
   // Random number
   std::srand(time(0));
