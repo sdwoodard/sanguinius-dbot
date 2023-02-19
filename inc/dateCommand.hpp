@@ -12,7 +12,7 @@ public:
 
   ~dateCommand() = default;
 
-  void commandCallBack(std::string command, const dpp::message_create_t& event) override;
+  bool commandCallBack(std::string keyword, const dpp::message_create_t& event) override;
 
 private:
 

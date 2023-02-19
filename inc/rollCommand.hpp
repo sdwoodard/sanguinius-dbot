@@ -1,16 +1,16 @@
-#ifndef JOINCOMMAND_HPP_
-#define JOINCOMMAND_HPP_
+#ifndef ROLLCOMMAND_HPP_
+#define ROLLCOMMAND_HPP_
 
 #include <dpp/dpp.h>
 #include <ICommand.hpp>
 
-class joinCommand : public ICommand
+class rollCommand : public ICommand
 {
 public:
 
-  joinCommand() = default;
+  rollCommand() = default;
 
-  ~joinCommand() = default;
+  ~rollCommand() = default;
 
   bool commandCallBack(std::string keyword, const dpp::message_create_t& event) override;
 
@@ -22,4 +22,4 @@ private:
 
 };
 
-#endif /* JOINCOMMAND_HPP_ */
+#endif /* ROLLCOMMAND_HPP_ */

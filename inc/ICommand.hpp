@@ -13,7 +13,7 @@ public:
   virtual ~ICommand() = default;
 
   // must have common commandCallBack
-  virtual void commandCallBack(std::string, const dpp::message_create_t&) = 0;
+  virtual bool commandCallBack(std::string, const dpp::message_create_t&) = 0;
 };
 
 #endif /* ICOMMAND_HPP_ */

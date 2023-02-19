@@ -1,12 +1,17 @@
 #include <dpp/dpp.h>
 #include <dateCommand.hpp>
 
-void dateCommand::commandCallBack(std::string command, const dpp::message_create_t& event)
+bool dateCommand::commandCallBack(std::string keyword, const dpp::message_create_t& event)
 {
 
-  if (command == "!date")
+  if (keyword == "!date")
   {
     this->executeCommand(event);
+    return true;
+  }
+  else
+  {
+    return false;
   }
 
 }

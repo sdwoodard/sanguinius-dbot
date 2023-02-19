@@ -1,12 +1,17 @@
 #include <dpp/dpp.h>
 #include <voteCommand.hpp>
 
-void voteCommand::commandCallBack(std::string command, const dpp::message_create_t& event)
+bool voteCommand::commandCallBack(std::string keyword, const dpp::message_create_t& event)
 {
 
-  if (command == "!vote")
+  if (keyword == "!vote")
   {
     this->executeCommand(event);
+    return true;
+  }
+  else
+  {
+    return false;
   }
 
 }

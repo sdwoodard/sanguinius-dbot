@@ -1,12 +1,17 @@
 #include <dpp/dpp.h>
 #include <repoCommand.hpp>
 
-void repoCommand::commandCallBack(std::string command, const dpp::message_create_t& event)
+bool repoCommand::commandCallBack(std::string keyword, const dpp::message_create_t& event)
 {
 
-  if (command == "!repo")
+  if (keyword == "!repo")
   {
     this->executeCommand(event);
+    return true;
+  }
+  else
+  {
+    return false;
   }
 
 }

@@ -1,12 +1,7 @@
 #include <dpp/dpp.h>
 #include <fileUtilities.hpp>
+#include <messageHandler.hpp>
 #include <ICommand.hpp>
-#include <helpCommand.hpp>
-#include <dateCommand.hpp>
-#include <repoCommand.hpp>
-#include <voteCommand.hpp>
-#include <joinCommand.hpp>
-#include <diceCommand.hpp>
 
 #include <ctime>
 #include <string>
@@ -28,37 +23,11 @@ int main()
   bot->on_log(dpp::utility::cout_logger());
 
   // create objects that will handle commands
-  std::unique_ptr<helpCommand> helpHandler = std::make_unique<helpCommand>();
-  std::unique_ptr<dateCommand> dateHandler = std::make_unique<dateCommand>();
-  std::unique_ptr<repoCommand> repoHandler = std::make_unique<repoCommand>();
-  std::unique_ptr<voteCommand> voteHandler = std::make_unique<voteCommand>();
-  std::unique_ptr<joinCommand> joinHandler = std::make_unique<joinCommand>();
-  std::unique_ptr<diceCommand> diceHandler = std::make_unique<diceCommand>();
-
-  // register for help command
-  bot->on_ready([&](const dpp::ready_t& event)
-  {
-    // register all call backs for command handlers
-    if (dpp::run_once<struct register_bot_commands>())
-    {
-      helpHandler->registerCommand(bot.get());
-
-    }
-  });
-
-  // command has been executed, send it to each handler
-  bot->on_slashcommand([&](const dpp::slashcommand_t& event)
-  {
-    helpHandler->commandCallBack(event.command.get_command_name(), event);
-  });
+  std::unique_ptr<messageHandler> msgHandler = std::make_unique<messageHandler>(bot.get());
 
   bot->on_message_create([&](const dpp::message_create_t& event)
   {
-    repoHandler->commandCallBack(event.msg.content, event);
-    voteHandler->commandCallBack(event.msg.content, event);
-    dateHandler->commandCallBack(event.msg.content, event);
-    joinHandler->commandCallBack(event.msg.content, event);
-    diceHandler->commandCallBack(event.msg.content, event);
+    msgHandler->handleMessage(event);
   });
 
   bot->start(false);

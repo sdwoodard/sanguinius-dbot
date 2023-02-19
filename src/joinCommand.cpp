@@ -4,12 +4,17 @@
 #include <chrono>
 #include <thread>
 
-void joinCommand::commandCallBack(std::string command, const dpp::message_create_t& event)
+bool joinCommand::commandCallBack(std::string keyword, const dpp::message_create_t& event)
 {
 
-  if (command == "!join")
+  if (keyword == "!join")
   {
     this->executeCommand(event);
+    return true;
+  }
+  else
+  {
+    return false;
   }
 
 }
