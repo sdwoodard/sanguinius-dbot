@@ -6,7 +6,7 @@
 #include <helpCommand.hpp>
 #include <dateCommand.hpp>
 #include <repoCommand.hpp>
-#include <voteCommand.hpp>
+#include <agreeCommand.hpp>
 #include <joinCommand.hpp>
 #include <rollCommand.hpp>
 
@@ -29,11 +29,13 @@ private:
   std::unique_ptr<helpCommand> helpHandler = nullptr;
   std::unique_ptr<dateCommand> dateHandler = nullptr;
   std::unique_ptr<repoCommand> repoHandler = nullptr;
-  std::unique_ptr<voteCommand> voteHandler = nullptr;
+  std::unique_ptr<agreeCommand> agreeHandler = nullptr;
   std::unique_ptr<joinCommand> joinHandler = nullptr;
   std::unique_ptr<rollCommand> rollHandler = nullptr;
 
   std::vector<ICommand*> msgHandlers;
+
+  dpp::message oldMsg;
 
 };
 
