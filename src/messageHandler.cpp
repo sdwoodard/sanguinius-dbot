@@ -39,6 +39,8 @@ void messageHandler::handleMessage(const dpp::message_create_t& event)
       keyword = event.msg.content.substr(0, spaceLoc);
     }
 
+    agreeHandler->commandCallBack(keyword, event, oldMsg);
+
     bool msgHandled = false;
     for (auto handler : msgHandlers)
     {
@@ -48,11 +50,6 @@ void messageHandler::handleMessage(const dpp::message_create_t& event)
       }
       else
       {
-        // TODO: Fix
-        if (keyword == "!agree")
-        {
-          agreeHandler->commandCallBack(keyword, event, oldMsg);
-        }
         break;
       }
     }
