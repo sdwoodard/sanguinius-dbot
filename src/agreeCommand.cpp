@@ -31,7 +31,7 @@ void agreeCommand::executeCommand(const dpp::message_create_t& event, dpp::messa
   bot->message_delete(event.msg.id, event.msg.channel_id);
   
   dpp::message response = dpp::message()
-    .set_content("Yo, hard agree on this one boys.")
+    .set_content("Yo, Nyoo is the goat.")
     .set_type(dpp::mt_reply)
     .set_reference(oldMsg.id)
     .set_channel_id(oldMsg.channel_id);
