@@ -33,7 +33,8 @@ void agreeCommand::executeCommand(const dpp::message_create_t& event, dpp::messa
   dpp::message response = dpp::message()
     .set_content("Yo, hard agree on this one boys.")
     .set_type(dpp::mt_reply)
-    .set_reference(oldMsg.id);
+    .set_reference(oldMsg.id)
+    .set_channel_id(oldMsg.channel_id);
   bot->message_create(response);
 
 }
