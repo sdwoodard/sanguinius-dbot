@@ -28,7 +28,7 @@ void agreeCommand::executeCommand(const dpp::message_create_t& event, dpp::messa
 {
   std::cout << "Inside agreeCommand executeCommand" << std::endl;
 
-  bot->message_delete(event.msg.channel_id, event.msg.id);
+  bot->message_delete(event.msg.id, event.msg.channel_id);
   
   dpp::message response = dpp::message()
     .set_content("Yo, hard agree on this one boys.")
