@@ -1,0 +1,52 @@
+[
+{
+  "directory": "/home/sigmar/repo/sanguinius-dbot/build",
+  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/agreeCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/agreeCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/agreeCommand.cpp"
+},
+{
+  "directory": "/home/sigmar/repo/sanguinius-dbot/build",
+  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/dateCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/dateCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/dateCommand.cpp"
+},
+{
+  "directory": "/home/sigmar/repo/sanguinius-dbot/build",
+  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/eventRecorder.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/eventRecorder.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/eventRecorder.cpp"
+},
+{
+  "directory": "/home/sigmar/repo/sanguinius-dbot/build",
+  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/fileUtilities.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/fileUtilities.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/fileUtilities.cpp"
+},
+{
+  "directory": "/home/sigmar/repo/sanguinius-dbot/build",
+  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/helpCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/helpCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/helpCommand.cpp"
+},
+{
+  "directory": "/home/sigmar/repo/sanguinius-dbot/build",
+  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/joinCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/joinCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/joinCommand.cpp"
+},
+{
+  "directory": "/home/sigmar/repo/sanguinius-dbot/build",
+  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/main.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/main.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/main.cpp"
+},
+{
+  "directory": "/home/sigmar/repo/sanguinius-dbot/build",
+  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/messageHandler.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/messageHandler.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/messageHandler.cpp"
+},
+{
+  "directory": "/home/sigmar/repo/sanguinius-dbot/build",
+  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/repoCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/repoCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/repoCommand.cpp"
+},
+{
+  "directory": "/home/sigmar/repo/sanguinius-dbot/build",
+  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/rollCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/rollCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/rollCommand.cpp"
+}
+]

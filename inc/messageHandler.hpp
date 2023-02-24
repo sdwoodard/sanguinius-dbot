@@ -9,6 +9,7 @@
 #include <agreeCommand.hpp>
 #include <joinCommand.hpp>
 #include <rollCommand.hpp>
+#include <eventRecorder.hpp>
 
 #include <vector>
 
@@ -16,7 +17,7 @@ class messageHandler
 {
 public:
 
-  messageHandler(dpp::cluster* acBot);
+  messageHandler(dpp::cluster* acBot, eventRecorder* acEventRecords);
 
   ~messageHandler() = default;
 
@@ -26,6 +27,8 @@ private:
 
   dpp::cluster* bot;
 
+  eventRecorder* eventRecords;
+
   std::unique_ptr<helpCommand> helpHandler = nullptr;
   std::unique_ptr<dateCommand> dateHandler = nullptr;
   std::unique_ptr<repoCommand> repoHandler = nullptr;
@@ -34,8 +37,6 @@ private:
   std::unique_ptr<rollCommand> rollHandler = nullptr;
 
   std::vector<ICommand*> msgHandlers;
-
-  dpp::message oldMsg;
 
 };
 

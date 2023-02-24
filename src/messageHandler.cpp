@@ -1,30 +1,33 @@
-#include <dpp/dpp.h>
 #include <messageHandler.hpp>
 
-messageHandler::messageHandler(dpp::cluster* acBot)
+#include <dpp/dpp.h>
+#include <boost/log/trivial.hpp>
+
+messageHandler::messageHandler(dpp::cluster* acBot, eventRecorder* acEventRecords)
 :
   bot(acBot),
-  oldMsg()
+  eventRecords(acEventRecords)
 {
   helpHandler = std::make_unique<helpCommand>();
   dateHandler = std::make_unique<dateCommand>();
   repoHandler = std::make_unique<repoCommand>();
-  agreeHandler = std::make_unique<agreeCommand>(acBot);
+  agreeHandler = std::make_unique<agreeCommand>(acBot, acEventRecords);
   joinHandler = std::make_unique<joinCommand>();
   rollHandler = std::make_unique<rollCommand>();
 
   msgHandlers.push_back(helpHandler.get());
   msgHandlers.push_back(dateHandler.get());
   msgHandlers.push_back(repoHandler.get());
-  //msgHandlers.push_back(agreeHandler.get());
+  msgHandlers.push_back(agreeHandler.get());
   msgHandlers.push_back(joinHandler.get());
   msgHandlers.push_back(rollHandler.get());
 }
 
 void messageHandler::handleMessage(const dpp::message_create_t& event)
 {
+  BOOST_LOG_TRIVIAL(info) << event.msg.author.username << ": " << event.msg.content;
 
-  std::cout << "CHAT: " << event.msg.content << std::endl;
+  eventRecords->addRecord(event);
 
   if (event.msg.content[0] == '!')
   {
@@ -39,8 +42,6 @@ void messageHandler::handleMessage(const dpp::message_create_t& event)
       keyword = event.msg.content.substr(0, spaceLoc);
     }
 
-    agreeHandler->commandCallBack(keyword, event, oldMsg);
-
     bool msgHandled = false;
     for (auto handler : msgHandlers)
     {
@@ -54,7 +55,5 @@ void messageHandler::handleMessage(const dpp::message_create_t& event)
       }
     }
   }
-
-  oldMsg = event.msg;
 
 }
