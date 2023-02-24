@@ -18,7 +18,7 @@ private:
 
   void executeCommand(const dpp::message_create_t& event);
 
-  std::shared_ptr<dpp::cluster> bot;
+  dpp::cluster* bot;
 
 };
 
