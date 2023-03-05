@@ -32,5 +32,8 @@
 /build/Makefile
 /build/CMakeFiles/
 
+# Any data
+data/
+
 # VSCode
 .vscode/
