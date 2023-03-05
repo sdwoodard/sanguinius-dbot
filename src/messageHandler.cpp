@@ -33,6 +33,7 @@ void messageHandler::handleMessage(const dpp::message_create_t& event)
   BOOST_LOG_SEV(*logger, boost::log::trivial::info) << event.msg.author.username << ": " << event.msg.content;
 
   eventRecords->addRecord(event);
+  mpcPointHandler->updatePoints(event.msg.author.id, 1);
 
   if (event.msg.content[0] == '!')
   {
