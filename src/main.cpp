@@ -4,11 +4,13 @@
 #include <ICommand.hpp>
 
 #include <dpp/dpp.h>
-#include <boost/log/core.hpp>
+#include <boost/log/attributes.hpp>
+#include <boost/log/common.hpp>
 #include <boost/log/expressions.hpp>
+#include <boost/log/sources/logger.hpp>
+#include <boost/log/support/date_time.hpp>
 #include <boost/log/utility/setup/file.hpp>
-#include <boost/log/trivial.hpp>
-#include <boost/date_time/posix_time/posix_time.hpp>
+#include <boost/log/utility/setup/common_attributes.hpp>
 
 #include <ctime>
 #include <string>
@@ -24,9 +26,14 @@ int main()
   boost::posix_time::ptime now = boost::posix_time::second_clock::local_time();
   std::string timeStamp = boost::posix_time::to_iso_string(now);
   std::string logFile = "/home/sigmar/git/sanguinius-dbot/logs/sanguinius_" + timeStamp + ".log";
+
+  boost::log::formatter fmt = boost::log::expressions::format("[%1%] %2%")
+    % boost::log::expressions::format_date_time<boost::posix_time::ptime>("TimeStamp", "%Y-%m-%d %H:%M:%S.%f")
+    % boost::log::expressions::smessage;
+
   boost::log::add_file_log(
     boost::log::keywords::file_name = logFile,
-    boost::log::keywords::format = "[%TimeStamp%]: %Message%"
+    boost::log::keywords::format = fmt
   );
 
   // get bot token
