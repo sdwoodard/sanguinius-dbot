@@ -4,12 +4,12 @@
 #include <boost/log/trivial.hpp>
 
 messageHandler::messageHandler(dpp::cluster* acBot, eventRecorder* acEventRecords, pointHandler* acPointHandler,
-  boost::log::sources::severity_logger<boost::log::trivial::severity_level> acLogger)
+  boost::log::sources::severity_logger<boost::log::trivial::severity_level>* apcLogger)
 :
   bot(acBot),
   eventRecords(acEventRecords),
   mpcPointHandler(acPointHandler),
-  logger(acLogger)
+  logger(apcLogger)
 {
   helpHandler = std::make_unique<helpCommand>();
   dateHandler = std::make_unique<dateCommand>();
@@ -30,7 +30,7 @@ messageHandler::messageHandler(dpp::cluster* acBot, eventRecorder* acEventRecord
 
 void messageHandler::handleMessage(const dpp::message_create_t& event)
 {
-  BOOST_LOG_SEV(logger, boost::log::trivial::info) << event.msg.author.username << ": " << event.msg.content;
+  BOOST_LOG_SEV(*logger, boost::log::trivial::info) << event.msg.author.username << ": " << event.msg.content;
 
   eventRecords->addRecord(event);
 

@@ -24,7 +24,7 @@ class messageHandler
 public:
 
   messageHandler(dpp::cluster* acBot, eventRecorder* acEventRecords, pointHandler* acPointHandler,
-    boost::log::sources::severity_logger<boost::log::trivial::severity_level> acLogger);
+    boost::log::sources::severity_logger<boost::log::trivial::severity_level>* apcLogger);
 
   ~messageHandler() = default;
 
@@ -48,7 +48,7 @@ private:
 
   std::vector<ICommand*> msgHandlers;
 
-  boost::log::sources::severity_logger<boost::log::trivial::severity_level> logger;
+  boost::log::sources::severity_logger<boost::log::trivial::severity_level>* logger;
 
 };
 

@@ -50,12 +50,12 @@ int main()
   bot->on_log(dpp::utility::cout_logger());
 
   // create point handler
-  std::unique_ptr<pointHandler> lcPointHandler = std::make_unique<pointHandler>();
+  std::unique_ptr<pointHandler> lcPointHandler = std::make_unique<pointHandler>(&logger);
 
   std::unique_ptr<eventRecorder> eventRecords = std::make_unique<eventRecorder>();
 
   // create objects that will handle commands
-  std::unique_ptr<messageHandler> msgHandler = std::make_unique<messageHandler>(bot.get(), eventRecords.get(), lcPointHandler.get(), logger);
+  std::unique_ptr<messageHandler> msgHandler = std::make_unique<messageHandler>(bot.get(), eventRecords.get(), lcPointHandler.get(), &logger);
 
   bot->on_message_create([&](const dpp::message_create_t& event)
   {
