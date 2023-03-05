@@ -12,7 +12,6 @@
 pointHandler::pointHandler(boost::log::sources::severity_logger<boost::log::trivial::severity_level>* apcLogger)
 : mpcLogger(apcLogger)
 {
-   BOOST_LOG_SEV(*apcLogger, boost::log::trivial::info) << "Entering pointHandler constructor"; boost::log::core::get()->flush();
    // read XML file and populate map
    std::string filename = "/home/sigmar/git/sanguinius-dbot/data/userPoints.xml";
    std::ifstream file(filename);
@@ -20,12 +19,9 @@ pointHandler::pointHandler(boost::log::sources::severity_logger<boost::log::triv
       std::cerr << "Error opening file: " << filename << std::endl;
       return;
    }
-   BOOST_LOG_SEV(*apcLogger, boost::log::trivial::info) << "Reading file: " << filename; boost::log::core::get()->flush();
 
    boost::property_tree::ptree tree;
    boost::property_tree::read_xml(file, tree);
-
-   BOOST_LOG_SEV(*apcLogger, boost::log::trivial::info) << "Populating map"; boost::log::core::get()->flush();
 
    for (auto& child : tree.get_child("users")) {
       dpp::snowflake id = child.second.get<dpp::snowflake>("id");
@@ -33,21 +29,15 @@ pointHandler::pointHandler(boost::log::sources::severity_logger<boost::log::triv
       users_[id] = points;
    }
 
-   BOOST_LOG_SEV(*apcLogger, boost::log::trivial::info) << "Leaving pointHandler constructor"; boost::log::core::get()->flush();
-
    file.close();
-   BOOST_LOG_SEV(*apcLogger, boost::log::trivial::info) << "File closed"; boost::log::core::get()->flush();
 }
 
 int pointHandler::getPoints(dpp::snowflake id) const {
-   BOOST_LOG_SEV(*mpcLogger, boost::log::trivial::info) << "Entering getPoints"; boost::log::core::get()->flush();
    auto it = users_.find(id);
-   BOOST_LOG_SEV(*mpcLogger, boost::log::trivial::info) << "Looking up user with ID: " << id; boost::log::core::get()->flush();
    if (it == users_.end()) {
-      BOOST_LOG_SEV(*mpcLogger, boost::log::trivial::error) << "User with ID " << id << " not found"; boost::log::core::get()->flush();
+      BOOST_LOG_SEV(*mpcLogger, boost::log::trivial::error) << "User with ID " << id << " not found";
       return -1;
    }
-   BOOST_LOG_SEV(*mpcLogger, boost::log::trivial::info) << "Returning points: " << it->second; boost::log::core::get()->flush();
    return it->second;
 }
 
