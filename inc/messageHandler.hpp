@@ -12,6 +12,7 @@
 #include <eventRecorder.hpp>
 #include <pointsCommand.hpp>
 #include <pointHandler.hpp>
+#include <gambleCommand.hpp>
 
 #include <boost/log/core.hpp>
 #include <boost/log/trivial.hpp>
@@ -45,6 +46,7 @@ private:
   std::unique_ptr<joinCommand> joinHandler = nullptr;
   std::unique_ptr<rollCommand> rollHandler = nullptr;
   std::unique_ptr<pointsCommand> mpcPointsCommand = nullptr;
+  std::unique_ptr<gambleCommand> mpcGambleCommand = nullptr;
 
   std::vector<ICommand*> msgHandlers;
 

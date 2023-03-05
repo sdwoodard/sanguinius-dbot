@@ -18,6 +18,7 @@ messageHandler::messageHandler(dpp::cluster* acBot, eventRecorder* acEventRecord
   joinHandler = std::make_unique<joinCommand>();
   rollHandler = std::make_unique<rollCommand>();
   mpcPointsCommand = std::make_unique<pointsCommand>(mpcPointHandler, apcLogger);
+  mpcGambleCommand = std::make_unique<gambleCommand>(acBot, mpcPointHandler, apcLogger);
 
   msgHandlers.push_back(helpHandler.get());
   msgHandlers.push_back(dateHandler.get());
@@ -26,6 +27,7 @@ messageHandler::messageHandler(dpp::cluster* acBot, eventRecorder* acEventRecord
   msgHandlers.push_back(joinHandler.get());
   msgHandlers.push_back(rollHandler.get());
   msgHandlers.push_back(mpcPointsCommand.get());
+  msgHandlers.push_back(mpcGambleCommand.get());
 }
 
 void messageHandler::handleMessage(const dpp::message_create_t& event)
