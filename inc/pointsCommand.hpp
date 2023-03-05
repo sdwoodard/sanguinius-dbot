@@ -4,12 +4,15 @@
 #include <dpp/dpp.h>
 #include <ICommand.hpp>
 #include <pointHandler.hpp>
+#include <boost/log/core.hpp>
+#include <boost/log/trivial.hpp>
+#include <boost/log/sources/severity_logger.hpp>
 
 class pointsCommand : public ICommand
 {
 public:
 
-  pointsCommand(pointHandler* acPointHandler);
+  pointsCommand(pointHandler* acPointHandler, boost::log::sources::severity_logger<boost::log::trivial::severity_level>* apcLogger);
 
   ~pointsCommand() = default;
 
@@ -22,6 +25,8 @@ private:
   dpp::cluster* bot;
 
   pointHandler* mpcPointHandler;
+
+  boost::log::sources::severity_logger<boost::log::trivial::severity_level>* mpcLogger;
 
 };
 
