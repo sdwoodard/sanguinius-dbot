@@ -4,14 +4,15 @@
 #include <ICommand.hpp>
 
 #include <dpp/dpp.h>
-#include <boost/log/common.hpp>
+#include <boost/log/core.hpp>
+#include <boost/log/trivial.hpp>
 #include <boost/log/expressions.hpp>
+#include <boost/log/sinks/text_file_backend.hpp>
 #include <boost/log/utility/setup/file.hpp>
 #include <boost/log/utility/setup/common_attributes.hpp>
-#include <boost/log/attributes/timer.hpp>
-#include <boost/log/attributes/named_scope.hpp>
-#include <boost/log/sources/logger.hpp>
-#include <boost/log/support/date_time.hpp>
+#include <boost/log/sources/severity_logger.hpp>
+#include <boost/log/sources/record_ostream.hpp>
+#include <boost/date_time/posix_time/posix_time.hpp>
 
 #include <ctime>
 #include <string>
@@ -27,21 +28,16 @@ int main()
   boost::posix_time::ptime now = boost::posix_time::second_clock::local_time();
   std::string timeStamp = boost::posix_time::to_iso_string(now);
   std::string logFile = "/home/sigmar/git/sanguinius-dbot/logs/sanguinius_" + timeStamp + ".log";
-
   boost::log::add_file_log(
-    logFile,
-    boost::log::keywords::format = boost::log::expressions::stream
-      << "[" << boost::log::expressions::format_date_time<boost::posix_time::ptime>("TimeStamp", "%Y%m%d-%H:%M%S.%f") << "] "
-      << boost::log::expressions::message
+    boost::log::keywords::file_name = logFile,
+    boost::log::keywords::format = "[%TimeStamp%] %Message%"
+  );
+  boost::log::core::get()->set_filter(
+    boost::log::trivial::severity >= boost::log::trivial::info
   );
   boost::log::add_common_attributes();
-  boost::log::core::get()->add_thread_attribute("Scope", boost::log::attributes::named_scope());
-
-  BOOST_LOG_FUNCTION();
-
-  boost::log::sources::logger* lg;
-
-  BOOST_LOG(*lg) << "Testing!";
+  boost::log::sources::severity_logger<boost::log::trivial::severity_level> lg;
+  BOOST_LOG_SEV(lg, boost::log::trivial::info) << "Test!";
 
   // get bot token
   std::string botToken=fileUtilities::readStringFromFile(TOKEN_ID_FILE);
