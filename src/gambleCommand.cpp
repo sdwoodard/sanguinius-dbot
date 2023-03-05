@@ -120,4 +120,9 @@ void gambleCommand::executeCommand(const dpp::message_create_t& event)
     lcResponse << "Invalid command. Please use !gamble start, !gamble wager, !gamble results, !gamble repeat or !gamble cancel.";
   }
 
+  dpp::message response = dpp::message()
+    .set_content(lcResponse.str())
+    .set_channel_id(event.msg.channel_id);
+  bot->message_create(response);
+
 }
