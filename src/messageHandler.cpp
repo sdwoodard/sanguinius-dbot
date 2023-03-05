@@ -3,10 +3,13 @@
 #include <dpp/dpp.h>
 #include <boost/log/trivial.hpp>
 
-messageHandler::messageHandler(dpp::cluster* acBot, eventRecorder* acEventRecords)
+messageHandler::messageHandler(dpp::cluster* acBot, eventRecorder* acEventRecords, pointHandler* acPointHandler,
+  boost::log::sources::severity_logger<boost::log::trivial::severity_level> acLogger)
 :
   bot(acBot),
-  eventRecords(acEventRecords)
+  eventRecords(acEventRecords),
+  mpcPointHandler(acPointHandler),
+  logger(acLogger)
 {
   helpHandler = std::make_unique<helpCommand>();
   dateHandler = std::make_unique<dateCommand>();
@@ -14,6 +17,7 @@ messageHandler::messageHandler(dpp::cluster* acBot, eventRecorder* acEventRecord
   agreeHandler = std::make_unique<agreeCommand>(acBot, acEventRecords);
   joinHandler = std::make_unique<joinCommand>();
   rollHandler = std::make_unique<rollCommand>();
+  mpcPointsCommand = std::make_unique<pointsCommand>(mpcPointHandler);
 
   msgHandlers.push_back(helpHandler.get());
   msgHandlers.push_back(dateHandler.get());
@@ -21,11 +25,12 @@ messageHandler::messageHandler(dpp::cluster* acBot, eventRecorder* acEventRecord
   msgHandlers.push_back(agreeHandler.get());
   msgHandlers.push_back(joinHandler.get());
   msgHandlers.push_back(rollHandler.get());
+  msgHandlers.push_back(mpcPointsCommand.get());
 }
 
 void messageHandler::handleMessage(const dpp::message_create_t& event)
 {
-  BOOST_LOG_TRIVIAL(info) << event.msg.author.username << ": " << event.msg.content;
+  BOOST_LOG_SEV(logger, boost::log::trivial::info) << event.msg.author.username << ": " << event.msg.content;
 
   eventRecords->addRecord(event);
 
