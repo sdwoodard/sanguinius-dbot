@@ -33,7 +33,7 @@
 /build/CMakeFiles/
 
 # Any data
-data/
+data/userPoints.xml
 
 # VSCode
 .vscode/
