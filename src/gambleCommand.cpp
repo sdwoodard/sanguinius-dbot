@@ -52,31 +52,24 @@ void gambleCommand::executeCommand(const dpp::message_create_t& event)
 
   else if (arg1 == "wager")
   {
-    if (ongoingGamble)
-    {
-      std::string wagerOption, wagerAmountStr;
-      ss >> wagerOption >> wagerAmountStr;
+      if (ongoingGamble)
+      {
+          std::string wagerOption, wagerAmountStr;
+          ss >> wagerOption >> wagerAmountStr;
 
-      if (!wagerOption.empty() && voteMap.find(wagerOption) != voteMap.end())
-      {
-        int wagerAmount = std::stoi(wagerAmountStr);
-        if (mpcPointHandler->getPoints(event.msg.author.id) >= wagerAmount)
-        {
-          voteMap[wagerOption].push_back(event.msg.author.id);
-          mpcPointHandler->updatePoints(event.msg.author.id, -wagerAmount);
-          gambleAmount += wagerAmount;
-          lcResponse << "I've accepted " << event.msg.author.username << "'s wager of " << wagerAmount << " points for " << wagerOption << ".";
-        }
-        else
-        {
-          lcResponse << event.msg.author.username << " does not have enough points to wager that amount.";
-        }
+          int wagerAmount = std::stoi(wagerAmountStr);
+          if (mpcPointHandler->getPoints(event.msg.author.id) >= wagerAmount)
+          {
+              voteMap[wagerOption].push_back(event.msg.author.id);
+              mpcPointHandler->updatePoints(event.msg.author.id, -wagerAmount);
+              gambleAmount += wagerAmount;
+              lcResponse << "I've accepted " << event.msg.author.username << "'s wager of " << wagerAmount << " points for " << wagerOption << ".";
+          }
+          else
+          {
+              lcResponse << event.msg.author.username << " does not have enough points to wager that amount.";
+          }
       }
-      else
-      {
-        lcResponse << "Invalid wager option. Please choose one of the options provided in the question.";
-      }
-    }
   }
 
   else if (arg1 == "results")
