@@ -52,41 +52,25 @@ void gambleCommand::executeCommand(const dpp::message_create_t& event)
 
   else if (arg1 == "wager")
   {
-    if (ongoingGamble)
-    {
-      std::string wagerOption, wagerAmountStr;
-      ss >> wagerOption >> wagerAmountStr;
-
-      bool isNumeric = true;
-      for (char c : wagerAmountStr)
+      if (ongoingGamble)
       {
-        if (!isdigit(c))
-        {
-          isNumeric = false;
-          break;
-        }
-      }
-
-      if (isNumeric)
-      {
+        std::string wagerOption, wagerAmountStr;
+        std::getline(ss >> std::ws, wagerOption, ' ');
+        ss >> wagerAmountStr;
+        std::cout << "Option and amount: " << wagerOption << "-" << wagerAmountStr << "\n";
         int wagerAmount = std::stoi(wagerAmountStr);
-        if (mpcPointHandler->getPoints(event.msg.author.id) >= wagerAmount)
-        {
-          voteMap[wagerOption].push_back(event.msg.author.id);
-          mpcPointHandler->updatePoints(event.msg.author.id, -wagerAmount);
-          gambleAmount += wagerAmount;
-          lcResponse << "I've accepted " << event.msg.author.username << "'s wager of " << wagerAmount << " points for " << wagerOption << ".";
-        }
-        else
-        {
-          lcResponse << event.msg.author.username << " does not have enough points to wager that amount.";
-        }
+          if (mpcPointHandler->getPoints(event.msg.author.id) >= wagerAmount)
+          {
+              voteMap[wagerOption].push_back(event.msg.author.id);
+              mpcPointHandler->updatePoints(event.msg.author.id, -wagerAmount);
+              gambleAmount += wagerAmount;
+              lcResponse << "I've accepted " << event.msg.author.username << "'s wager of " << wagerAmount << " points for " << wagerOption << ".";
+          }
+          else
+          {
+              lcResponse << event.msg.author.username << " does not have enough points to wager that amount.";
+          }
       }
-      else
-      {
-        lcResponse << wagerAmountStr << " is not a valid wager amount.";
-      }
-    }
   }
 
   else if (arg1 == "results")
