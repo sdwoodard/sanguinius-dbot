@@ -130,6 +130,16 @@ void gambleCommand::executeCommand(const dpp::message_create_t& event)
     }
   }
 
+  else if (arg1 == "help")
+  {
+    lcResponse << "I support the following gamble commands:\n" 
+               << "    !gamble start <question> - Start a new gamble with the given question.\n"
+               << "    !gamble wager <option> <amount> - Wager the given amount of points on the given option.\n"
+               << "    !gamble results <option> - End the gamble and award points to the winners.\n"
+               << "    !gamble repeat - Repeat the current question.\n"
+               << "    !gamble cancel - Cancel the current gamble.\n";
+  }
+
   else
   {
     lcResponse << "Invalid command. Please use !gamble start, !gamble wager, !gamble results, !gamble repeat or !gamble cancel.";
