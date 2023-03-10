@@ -28,9 +28,9 @@ bool gambleCommand::commandCallBack(std::string keyword, const dpp::message_crea
 
 void gambleCommand::executeCommand(const dpp::message_create_t& event)
 {
-  std::string keyword, arg1, arg2;
+  std::string arg1, arg2;
   std::stringstream ss(event.msg.content);
-  ss >> keyword >> arg1;
+  ss >> arg1;
   getline(ss, arg2);
 
   std::stringstream lcResponse;
@@ -38,8 +38,9 @@ void gambleCommand::executeCommand(const dpp::message_create_t& event)
   {
     if (!ongoingGamble)
     {
-      gambleMap.clear();
+      voteMap.clear();
       ongoingGamble = true;
+      currentStake = arg2;
       lcResponse << event.msg.author.username << " has posed the question. Stake your wagers!";
     }
     else
@@ -52,16 +53,27 @@ void gambleCommand::executeCommand(const dpp::message_create_t& event)
   {
     if (ongoingGamble)
     {
-      if (mpcPointHandler->getPoints(event.msg.author.id) >= std::stoi(arg2))
+      std::string wagerOption, wagerAmountStr;
+      ss >> wagerOption >> wagerAmountStr;
+
+      if (!wagerOption.empty() && voteMap.find(wagerOption) != voteMap.end())
       {
-        gambleMap.insert(std::pair<bool, dpp::snowflake>(true, event.msg.author.id));
-        mpcPointHandler->updatePoints(event.msg.author.id, -std::stoi(arg2));
-        gambleAmount += std::stoi(arg2);
-        lcResponse << "I've accepted " << event.msg.author.username << "'s wager of " << arg2 << " points.";
+        int wagerAmount = std::stoi(wagerAmountStr);
+        if (mpcPointHandler->getPoints(event.msg.author.id) >= wagerAmount)
+        {
+          voteMap[wagerOption].push_back(event.msg.author.id);
+          mpcPointHandler->updatePoints(event.msg.author.id, -wagerAmount);
+          gambleAmount += wagerAmount;
+          lcResponse << "I've accepted " << event.msg.author.username << "'s wager of " << wagerAmount << " points for " << wagerOption << ".";
+        }
+        else
+        {
+          lcResponse << event.msg.author.username << " does not have enough points to wager that amount.";
+        }
       }
       else
       {
-        lcResponse << event.msg.author.username << " does not have enough points to wager that amount.";
+        lcResponse << "Invalid wager option. Please choose one of the options provided in the question.";
       }
     }
   }
@@ -70,20 +82,29 @@ void gambleCommand::executeCommand(const dpp::message_create_t& event)
   {
     if (ongoingGamble)
     {
-      if (gambleMap.size() > 1)
+      if (!arg2.empty() && voteMap.find(arg2) != voteMap.end())
       {
-        int lcRandom = rand() % gambleMap.size();
-        std::map<bool, dpp::snowflake>::iterator lcIterator = gambleMap.begin();
-        std::advance(lcIterator, lcRandom);
-        mpcPointHandler->updatePoints(lcIterator->second, gambleAmount);
-        lcResponse << "Congratulations to the winner for earning " << gambleAmount << " points!";
-        gambleMap.clear();
-        gambleAmount = 0;
-        ongoingGamble = false;
+        std::vector<dpp::snowflake>& winners = voteMap[arg2];
+        if (!winners.empty())
+        {
+          int prize = gambleAmount / winners.size();
+          for (dpp::snowflake winner : winners)
+          {
+            mpcPointHandler->updatePoints(winner, prize);
+          }
+          lcResponse << "Congratulations to the winners for earning " << prize << " points!";
+          voteMap.clear();
+          gambleAmount = 0;
+          ongoingGamble = false;
+        }
+        else
+        {
+          lcResponse << "No one voted for " << arg2 << ".";
+        }
       }
       else
       {
-        lcResponse << "There are not enough people to gamble.";
+        lcResponse << "There is no gamble in progress.";
       }
     }
   }
@@ -92,7 +113,7 @@ void gambleCommand::executeCommand(const dpp::message_create_t& event)
   {
     if (ongoingGamble)
     {
-      gambleMap.clear();
+      voteMap.clear();
       gambleAmount = 0;
       ongoingGamble = false;
       lcResponse << "The gamble has been cancelled.";
@@ -107,7 +128,7 @@ void gambleCommand::executeCommand(const dpp::message_create_t& event)
   {
     if (ongoingGamble)
     {
-      lcResponse << "The current question is: " << arg2;
+      lcResponse << "The current question is: " << currentStake;
     }
     else
     {
@@ -124,5 +145,4 @@ void gambleCommand::executeCommand(const dpp::message_create_t& event)
     .set_content(lcResponse.str())
     .set_channel_id(event.msg.channel_id);
   bot->message_create(response);
-
 }

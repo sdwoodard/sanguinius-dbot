@@ -8,7 +8,8 @@
 #include <boost/log/trivial.hpp>
 #include <boost/log/sources/severity_logger.hpp>
 
-#include <map>
+#include <unordered_map>
+#include <vector>
 
 class gambleCommand : public ICommand
 {
@@ -30,7 +31,9 @@ private:
 
   boost::log::sources::severity_logger<boost::log::trivial::severity_level>* mpcLogger;
 
-  std::map<bool, dpp::snowflake> gambleMap;
+  std::unordered_map<std::string, std::vector<dpp::snowflake>> voteMap;
+
+  std::string currentStake = "";
 
   int gambleAmount = 0;
 
