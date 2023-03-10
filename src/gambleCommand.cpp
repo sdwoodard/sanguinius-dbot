@@ -30,6 +30,7 @@ void gambleCommand::executeCommand(const dpp::message_create_t& event)
 {
   std::string arg1, arg2;
   std::stringstream ss(event.msg.content);
+  ss.ignore(std::numeric_limits<std::streamsize>::max(), ' '); // ignore the first word
   ss >> arg1;
   getline(ss, arg2);
 
