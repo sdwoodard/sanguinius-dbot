@@ -28,7 +28,8 @@ int main()
   std::string logFile = "/home/sigmar/git/sanguinius-dbot/logs/sanguinius_" + timeStamp + ".log";
   boost::log::add_file_log(
     boost::log::keywords::file_name = logFile,
-    boost::log::keywords::format = "[%TimeStamp%] %Message%"
+    boost::log::keywords::format = "[%TimeStamp%] %Message%",
+    boost::log::keywords::auto_flush = true
   );
 
   // set the logger severity level
