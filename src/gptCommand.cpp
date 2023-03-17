@@ -71,6 +71,9 @@ void gptCommand::executeCommand(const dpp::message_create_t& event)
     request.perform();
 
     std::string responseStr = responseStream.str();
+
+    std::cout << "Raw API Response: " << responseStr << std::endl;
+
     rapidjson::Document jsonResponse;
     jsonResponse.Parse(responseStr.c_str());
 
