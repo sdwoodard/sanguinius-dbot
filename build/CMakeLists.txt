@@ -22,7 +22,14 @@ include_directories(../inc)
 
 # Create executable
 add_executable(sanguinius_dbot ${SOURCES})
-target_link_libraries(sanguinius_dbot ${DPP_LIBRARY} ${Boost_LIBRARIES} -lboost_log_setup)
+
+find_library(CURLPP_LIBRARY curlpp)
+find_path(CURLPP_INCLUDE_DIR curlpp/cURLpp.hpp)
+
+find_package(CURL REQUIRED)
+
+target_link_libraries(sanguinius_dbot PRIVATE ${DPP_LIBRARY} ${Boost_LIBRARIES} ${CURL_LIBRARIES} ${CURLPP_LIBRARY} -lboost_log_setup)
+target_include_directories(sanguinius_dbot PRIVATE ${CURLPP_INCLUDE_DIR} ${CURL_INCLUDE_DIRS})
 
 # Set the output directory
 set_target_properties(sanguinius_dbot PROPERTIES

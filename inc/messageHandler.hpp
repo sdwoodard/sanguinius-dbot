@@ -13,6 +13,7 @@
 #include <pointsCommand.hpp>
 #include <pointHandler.hpp>
 #include <gambleCommand.hpp>
+#include <gptCommand.hpp>
 
 #include <boost/log/core.hpp>
 #include <boost/log/trivial.hpp>
@@ -47,6 +48,7 @@ private:
   std::unique_ptr<rollCommand> rollHandler = nullptr;
   std::unique_ptr<pointsCommand> mpcPointsCommand = nullptr;
   std::unique_ptr<gambleCommand> mpcGambleCommand = nullptr;
+  std::unique_ptr<gptCommand> mpcGptCommand = nullptr;
 
   std::vector<ICommand*> msgHandlers;
 
