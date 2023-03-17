@@ -8,7 +8,7 @@ class gptCommand : public ICommand
 {
 public:
 
-  gptCommand();
+  gptCommand(dpp::cluster* acBot);
 
   ~gptCommand() = default;
 

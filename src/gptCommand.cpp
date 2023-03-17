@@ -10,7 +10,9 @@
 #include <rapidjson/writer.h>
 #include <rapidjson/stringbuffer.h>
 
-gptCommand::gptCommand()
+gptCommand::gptCommand(dpp::cluster* acBot)
+:
+  bot(acBot)
 {
   std::ifstream file("/home/sigmar/.secrets/openai.key");
   std::getline(file, mcApiKey);
