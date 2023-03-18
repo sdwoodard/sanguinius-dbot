@@ -1,52 +1,86 @@
 [
 {
   "directory": "/home/sigmar/repo/sanguinius-dbot/build",
-  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/agreeCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/agreeCommand.cpp",
-  "file": "/home/sigmar/repo/sanguinius-dbot/src/agreeCommand.cpp"
+  "command": "/usr/bin/g++ -DBOOST_ATOMIC_DYN_LINK -DBOOST_ATOMIC_NO_LIB -DBOOST_CHRONO_DYN_LINK -DBOOST_CHRONO_NO_LIB -DBOOST_FILESYSTEM_DYN_LINK -DBOOST_FILESYSTEM_NO_LIB -DBOOST_LOG_DYN_LINK -DBOOST_LOG_NO_LIB -DBOOST_LOG_USE_CHAR -DBOOST_REGEX_DYN_LINK -DBOOST_REGEX_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DBOOST_THREAD_DYN_LINK -DBOOST_THREAD_NO_LIB -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/agreeCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/agreeCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/agreeCommand.cpp",
+  "output": "CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/agreeCommand.cpp.o"
 },
 {
   "directory": "/home/sigmar/repo/sanguinius-dbot/build",
-  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/dateCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/dateCommand.cpp",
-  "file": "/home/sigmar/repo/sanguinius-dbot/src/dateCommand.cpp"
+  "command": "/usr/bin/g++ -DBOOST_ATOMIC_DYN_LINK -DBOOST_ATOMIC_NO_LIB -DBOOST_CHRONO_DYN_LINK -DBOOST_CHRONO_NO_LIB -DBOOST_FILESYSTEM_DYN_LINK -DBOOST_FILESYSTEM_NO_LIB -DBOOST_LOG_DYN_LINK -DBOOST_LOG_NO_LIB -DBOOST_LOG_USE_CHAR -DBOOST_REGEX_DYN_LINK -DBOOST_REGEX_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DBOOST_THREAD_DYN_LINK -DBOOST_THREAD_NO_LIB -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/dateCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/dateCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/dateCommand.cpp",
+  "output": "CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/dateCommand.cpp.o"
 },
 {
   "directory": "/home/sigmar/repo/sanguinius-dbot/build",
-  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/eventRecorder.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/eventRecorder.cpp",
-  "file": "/home/sigmar/repo/sanguinius-dbot/src/eventRecorder.cpp"
+  "command": "/usr/bin/g++ -DBOOST_ATOMIC_DYN_LINK -DBOOST_ATOMIC_NO_LIB -DBOOST_CHRONO_DYN_LINK -DBOOST_CHRONO_NO_LIB -DBOOST_FILESYSTEM_DYN_LINK -DBOOST_FILESYSTEM_NO_LIB -DBOOST_LOG_DYN_LINK -DBOOST_LOG_NO_LIB -DBOOST_LOG_USE_CHAR -DBOOST_REGEX_DYN_LINK -DBOOST_REGEX_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DBOOST_THREAD_DYN_LINK -DBOOST_THREAD_NO_LIB -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/eventRecorder.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/eventRecorder.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/eventRecorder.cpp",
+  "output": "CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/eventRecorder.cpp.o"
 },
 {
   "directory": "/home/sigmar/repo/sanguinius-dbot/build",
-  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/fileUtilities.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/fileUtilities.cpp",
-  "file": "/home/sigmar/repo/sanguinius-dbot/src/fileUtilities.cpp"
+  "command": "/usr/bin/g++ -DBOOST_ATOMIC_DYN_LINK -DBOOST_ATOMIC_NO_LIB -DBOOST_CHRONO_DYN_LINK -DBOOST_CHRONO_NO_LIB -DBOOST_FILESYSTEM_DYN_LINK -DBOOST_FILESYSTEM_NO_LIB -DBOOST_LOG_DYN_LINK -DBOOST_LOG_NO_LIB -DBOOST_LOG_USE_CHAR -DBOOST_REGEX_DYN_LINK -DBOOST_REGEX_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DBOOST_THREAD_DYN_LINK -DBOOST_THREAD_NO_LIB -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/fileUtilities.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/fileUtilities.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/fileUtilities.cpp",
+  "output": "CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/fileUtilities.cpp.o"
 },
 {
   "directory": "/home/sigmar/repo/sanguinius-dbot/build",
-  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/helpCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/helpCommand.cpp",
-  "file": "/home/sigmar/repo/sanguinius-dbot/src/helpCommand.cpp"
+  "command": "/usr/bin/g++ -DBOOST_ATOMIC_DYN_LINK -DBOOST_ATOMIC_NO_LIB -DBOOST_CHRONO_DYN_LINK -DBOOST_CHRONO_NO_LIB -DBOOST_FILESYSTEM_DYN_LINK -DBOOST_FILESYSTEM_NO_LIB -DBOOST_LOG_DYN_LINK -DBOOST_LOG_NO_LIB -DBOOST_LOG_USE_CHAR -DBOOST_REGEX_DYN_LINK -DBOOST_REGEX_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DBOOST_THREAD_DYN_LINK -DBOOST_THREAD_NO_LIB -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/gambleCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/gambleCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/gambleCommand.cpp",
+  "output": "CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/gambleCommand.cpp.o"
 },
 {
   "directory": "/home/sigmar/repo/sanguinius-dbot/build",
-  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/joinCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/joinCommand.cpp",
-  "file": "/home/sigmar/repo/sanguinius-dbot/src/joinCommand.cpp"
+  "command": "/usr/bin/g++ -DBOOST_ATOMIC_DYN_LINK -DBOOST_ATOMIC_NO_LIB -DBOOST_CHRONO_DYN_LINK -DBOOST_CHRONO_NO_LIB -DBOOST_FILESYSTEM_DYN_LINK -DBOOST_FILESYSTEM_NO_LIB -DBOOST_LOG_DYN_LINK -DBOOST_LOG_NO_LIB -DBOOST_LOG_USE_CHAR -DBOOST_REGEX_DYN_LINK -DBOOST_REGEX_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DBOOST_THREAD_DYN_LINK -DBOOST_THREAD_NO_LIB -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/gptCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/gptCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/gptCommand.cpp",
+  "output": "CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/gptCommand.cpp.o"
 },
 {
   "directory": "/home/sigmar/repo/sanguinius-dbot/build",
-  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/main.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/main.cpp",
-  "file": "/home/sigmar/repo/sanguinius-dbot/src/main.cpp"
+  "command": "/usr/bin/g++ -DBOOST_ATOMIC_DYN_LINK -DBOOST_ATOMIC_NO_LIB -DBOOST_CHRONO_DYN_LINK -DBOOST_CHRONO_NO_LIB -DBOOST_FILESYSTEM_DYN_LINK -DBOOST_FILESYSTEM_NO_LIB -DBOOST_LOG_DYN_LINK -DBOOST_LOG_NO_LIB -DBOOST_LOG_USE_CHAR -DBOOST_REGEX_DYN_LINK -DBOOST_REGEX_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DBOOST_THREAD_DYN_LINK -DBOOST_THREAD_NO_LIB -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/helpCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/helpCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/helpCommand.cpp",
+  "output": "CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/helpCommand.cpp.o"
 },
 {
   "directory": "/home/sigmar/repo/sanguinius-dbot/build",
-  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/messageHandler.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/messageHandler.cpp",
-  "file": "/home/sigmar/repo/sanguinius-dbot/src/messageHandler.cpp"
+  "command": "/usr/bin/g++ -DBOOST_ATOMIC_DYN_LINK -DBOOST_ATOMIC_NO_LIB -DBOOST_CHRONO_DYN_LINK -DBOOST_CHRONO_NO_LIB -DBOOST_FILESYSTEM_DYN_LINK -DBOOST_FILESYSTEM_NO_LIB -DBOOST_LOG_DYN_LINK -DBOOST_LOG_NO_LIB -DBOOST_LOG_USE_CHAR -DBOOST_REGEX_DYN_LINK -DBOOST_REGEX_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DBOOST_THREAD_DYN_LINK -DBOOST_THREAD_NO_LIB -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/joinCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/joinCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/joinCommand.cpp",
+  "output": "CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/joinCommand.cpp.o"
 },
 {
   "directory": "/home/sigmar/repo/sanguinius-dbot/build",
-  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/repoCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/repoCommand.cpp",
-  "file": "/home/sigmar/repo/sanguinius-dbot/src/repoCommand.cpp"
+  "command": "/usr/bin/g++ -DBOOST_ATOMIC_DYN_LINK -DBOOST_ATOMIC_NO_LIB -DBOOST_CHRONO_DYN_LINK -DBOOST_CHRONO_NO_LIB -DBOOST_FILESYSTEM_DYN_LINK -DBOOST_FILESYSTEM_NO_LIB -DBOOST_LOG_DYN_LINK -DBOOST_LOG_NO_LIB -DBOOST_LOG_USE_CHAR -DBOOST_REGEX_DYN_LINK -DBOOST_REGEX_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DBOOST_THREAD_DYN_LINK -DBOOST_THREAD_NO_LIB -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/main.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/main.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/main.cpp",
+  "output": "CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/main.cpp.o"
 },
 {
   "directory": "/home/sigmar/repo/sanguinius-dbot/build",
-  "command": "/usr/bin/g++  -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/rollCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/rollCommand.cpp",
-  "file": "/home/sigmar/repo/sanguinius-dbot/src/rollCommand.cpp"
+  "command": "/usr/bin/g++ -DBOOST_ATOMIC_DYN_LINK -DBOOST_ATOMIC_NO_LIB -DBOOST_CHRONO_DYN_LINK -DBOOST_CHRONO_NO_LIB -DBOOST_FILESYSTEM_DYN_LINK -DBOOST_FILESYSTEM_NO_LIB -DBOOST_LOG_DYN_LINK -DBOOST_LOG_NO_LIB -DBOOST_LOG_USE_CHAR -DBOOST_REGEX_DYN_LINK -DBOOST_REGEX_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DBOOST_THREAD_DYN_LINK -DBOOST_THREAD_NO_LIB -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/messageHandler.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/messageHandler.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/messageHandler.cpp",
+  "output": "CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/messageHandler.cpp.o"
+},
+{
+  "directory": "/home/sigmar/repo/sanguinius-dbot/build",
+  "command": "/usr/bin/g++ -DBOOST_ATOMIC_DYN_LINK -DBOOST_ATOMIC_NO_LIB -DBOOST_CHRONO_DYN_LINK -DBOOST_CHRONO_NO_LIB -DBOOST_FILESYSTEM_DYN_LINK -DBOOST_FILESYSTEM_NO_LIB -DBOOST_LOG_DYN_LINK -DBOOST_LOG_NO_LIB -DBOOST_LOG_USE_CHAR -DBOOST_REGEX_DYN_LINK -DBOOST_REGEX_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DBOOST_THREAD_DYN_LINK -DBOOST_THREAD_NO_LIB -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/pointHandler.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/pointHandler.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/pointHandler.cpp",
+  "output": "CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/pointHandler.cpp.o"
+},
+{
+  "directory": "/home/sigmar/repo/sanguinius-dbot/build",
+  "command": "/usr/bin/g++ -DBOOST_ATOMIC_DYN_LINK -DBOOST_ATOMIC_NO_LIB -DBOOST_CHRONO_DYN_LINK -DBOOST_CHRONO_NO_LIB -DBOOST_FILESYSTEM_DYN_LINK -DBOOST_FILESYSTEM_NO_LIB -DBOOST_LOG_DYN_LINK -DBOOST_LOG_NO_LIB -DBOOST_LOG_USE_CHAR -DBOOST_REGEX_DYN_LINK -DBOOST_REGEX_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DBOOST_THREAD_DYN_LINK -DBOOST_THREAD_NO_LIB -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/pointsCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/pointsCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/pointsCommand.cpp",
+  "output": "CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/pointsCommand.cpp.o"
+},
+{
+  "directory": "/home/sigmar/repo/sanguinius-dbot/build",
+  "command": "/usr/bin/g++ -DBOOST_ATOMIC_DYN_LINK -DBOOST_ATOMIC_NO_LIB -DBOOST_CHRONO_DYN_LINK -DBOOST_CHRONO_NO_LIB -DBOOST_FILESYSTEM_DYN_LINK -DBOOST_FILESYSTEM_NO_LIB -DBOOST_LOG_DYN_LINK -DBOOST_LOG_NO_LIB -DBOOST_LOG_USE_CHAR -DBOOST_REGEX_DYN_LINK -DBOOST_REGEX_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DBOOST_THREAD_DYN_LINK -DBOOST_THREAD_NO_LIB -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/repoCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/repoCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/repoCommand.cpp",
+  "output": "CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/repoCommand.cpp.o"
+},
+{
+  "directory": "/home/sigmar/repo/sanguinius-dbot/build",
+  "command": "/usr/bin/g++ -DBOOST_ATOMIC_DYN_LINK -DBOOST_ATOMIC_NO_LIB -DBOOST_CHRONO_DYN_LINK -DBOOST_CHRONO_NO_LIB -DBOOST_FILESYSTEM_DYN_LINK -DBOOST_FILESYSTEM_NO_LIB -DBOOST_LOG_DYN_LINK -DBOOST_LOG_NO_LIB -DBOOST_LOG_USE_CHAR -DBOOST_REGEX_DYN_LINK -DBOOST_REGEX_NO_LIB -DBOOST_SYSTEM_DYN_LINK -DBOOST_SYSTEM_NO_LIB -DBOOST_THREAD_DYN_LINK -DBOOST_THREAD_NO_LIB -I/home/sigmar/repo/sanguinius-dbot/build/../inc -g -std=gnu++20 -o CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/rollCommand.cpp.o -c /home/sigmar/repo/sanguinius-dbot/src/rollCommand.cpp",
+  "file": "/home/sigmar/repo/sanguinius-dbot/src/rollCommand.cpp",
+  "output": "CMakeFiles/sanguinius_dbot.dir/home/sigmar/repo/sanguinius-dbot/src/rollCommand.cpp.o"
 }
 ]
