@@ -41,8 +41,20 @@ void gptCommand::executeCommand(const dpp::message_create_t& event)
   requestBody.SetObject();
   rapidjson::Document::AllocatorType& allocator = requestBody.GetAllocator();
 
-  requestBody.AddMember("engine", "gpt-3.5-turbo", allocator);
-  requestBody.AddMember("prompt", rapidjson::Value().SetString(prompt.c_str(), prompt.length(), allocator), allocator);
+  requestBody.AddMember("model", "gpt-3.5-turbo", allocator);
+
+  rapidjson::Value messages(rapidjson::kArrayType);
+  rapidjson::Value systemMessage(rapidjson::kObjectType);
+  systemMessage.AddMember("role", "system", allocator);
+  systemMessage.AddMember("content", "You are an AI language model trained to answer questions and engage in conversation.", allocator);
+  messages.PushBack(systemMessage, allocator);
+
+  rapidjson::Value userMessage(rapidjson::kObjectType);
+  userMessage.AddMember("role", "user", allocator);
+  userMessage.AddMember("content", rapidjson::Value().SetString(prompt.c_str(), prompt.length(), allocator), allocator);
+  messages.PushBack(userMessage, allocator);
+  requestBody.AddMember("messages", messages, allocator);
+
   requestBody.AddMember("max_tokens", 100, allocator);
 
   rapidjson::StringBuffer buffer;
@@ -61,7 +73,7 @@ void gptCommand::executeCommand(const dpp::message_create_t& event)
     headers.push_back("Authorization: Bearer " + mcApiKey);
 
     request.setOpt(new curlpp::options::HttpHeader(headers));
-    request.setOpt(new curlpp::options::Url("https://api.openai.com/v1/engines/gpt-3.5-turbo/completions"));
+    request.setOpt(new curlpp::options::Url("https://api.openai.com/v1/chat/completions"));
     request.setOpt(new curlpp::options::PostFields(jsonRequest));
     request.setOpt(new curlpp::options::PostFieldSize(jsonRequest.length()));
 
