@@ -1,8 +1,5 @@
-#include <fileUtilities.hpp>
-#include <messageHandler.hpp>
-#include <pointHandler.hpp>
-#include <eventRecorder.hpp>
-#include <ICommand.hpp>
+#include <tcFileUtilities.hpp>
+#include <tcMessageHandler.hpp>
 
 #include <dpp/dpp.h>
 #include <boost/log/core.hpp>
@@ -23,11 +20,11 @@ static std::string TOKEN_ID_FILE = "/home/sigmar/.secrets/bot.token";
 int main()
 {
   // set the logger filename and format
-  boost::posix_time::ptime now = boost::posix_time::second_clock::local_time();
-  std::string timeStamp = boost::posix_time::to_iso_string(now);
-  std::string logFile = "/home/sigmar/git/sanguinius-dbot/logs/sanguinius_" + timeStamp + ".log";
+  boost::posix_time::ptime lcNow = boost::posix_time::second_clock::local_time();
+  std::string lcTimeStamp = boost::posix_time::to_iso_string(lcNow);
+  std::string lcLogFile = "/home/sigmar/git/sanguinius-dbot/logs/sanguinius_" + lcTimeStamp + ".log";
   boost::log::add_file_log(
-    boost::log::keywords::file_name = logFile,
+    boost::log::keywords::file_name = lcLogFile,
     boost::log::keywords::format = "[%TimeStamp%] %Message%",
     boost::log::keywords::auto_flush = true
   );
@@ -39,29 +36,26 @@ int main()
 
   // add common attributes and instantiate logger
   boost::log::add_common_attributes();
-  boost::log::sources::severity_logger<boost::log::trivial::severity_level> logger;
+  boost::log::sources::severity_logger<boost::log::trivial::severity_level> lcLogger;
 
   // get bot token
-  std::string botToken=fileUtilities::readStringFromFile(TOKEN_ID_FILE);
+  std::string botToken=tcFileUtilities::ReadStringFromFile(TOKEN_ID_FILE);
 
   // instantiate bot
-  std::unique_ptr<dpp::cluster> bot = std::make_unique<dpp::cluster>(botToken, dpp::i_default_intents | dpp::i_message_content);
+  std::unique_ptr<dpp::cluster> lpcBot = std::make_unique<dpp::cluster>(botToken, dpp::i_default_intents | dpp::i_message_content);
 
   // log activities to console
-  bot->on_log(dpp::utility::cout_logger());
-
-  // create point handler
-  std::unique_ptr<pointHandler> lcPointHandler = std::make_unique<pointHandler>(&logger);
-
-  std::unique_ptr<eventRecorder> eventRecords = std::make_unique<eventRecorder>();
+  lpcBot->on_log(dpp::utility::cout_logger());
 
   // create objects that will handle commands
-  std::unique_ptr<messageHandler> msgHandler = std::make_unique<messageHandler>(bot.get(), eventRecords.get(), lcPointHandler.get(), &logger);
+  std::unique_ptr<tcMessageHandler> lpcMsgHandler = std::make_unique<tcMessageHandler>(lpcBot.get(), &lcLogger);
 
-  bot->on_message_create([&](const dpp::message_create_t& event)
+  lpcBot->on_message_create([&](const dpp::message_create_t& arcEvent)
   {
-    msgHandler->handleMessage(event);
+    lpcMsgHandler->HandleMessage(arcEvent);
   });
 
-  bot->start(false);
+  lpcBot->start(false);
+
+  return EXIT_SUCCESS;
 }

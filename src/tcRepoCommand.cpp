@@ -1,26 +1,10 @@
 #include <dpp/dpp.h>
-#include <repoCommand.hpp>
+#include <tcRepoCommand.hpp>
 
-bool repoCommand::commandCallBack(std::string keyword, const dpp::message_create_t& event)
+void tcRepoCommand::CommandCallBack(const dpp::message_create_t& arcEvent)
 {
-
-  if (keyword == "!repo")
-  {
-    this->executeCommand(event);
-    return true;
-  }
-  else
-  {
-    return false;
-  }
-
-}
-
-void repoCommand::executeCommand(const dpp::message_create_t& event)
-{
-
-  dpp::message response_message;
-  dpp::embed response_embed = dpp::embed().
+  dpp::message lcBotResponse;
+  dpp::embed lcBotResponseEmbed = dpp::embed().
     set_color(dpp::colors::sti_blue).
     set_title("Source code for Sanguinius").
     set_url("https://github.com/sdwoodard/sanguinius-dbot").
@@ -31,7 +15,7 @@ void repoCommand::executeCommand(const dpp::message_create_t& event)
     set_image("https://cdna.artstation.com/p/assets/images/images/020/463/234/large/adrian-prado-sanguinius-final.jpg?1567866804").
     set_footer(dpp::embed_footer().set_text("Come by sometime and try coding yourself!")).
     set_timestamp(time(0));
-  response_message.add_embed(response_embed);
-  event.reply(response_message);
+  lcBotResponse.add_embed(lcBotResponseEmbed);
+  arcEvent.reply(lcBotResponse);
 
 }
