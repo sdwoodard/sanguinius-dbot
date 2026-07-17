@@ -10,6 +10,9 @@ console_log="${project_root}/logs/console.log"
 if [[ -z "${SANGUINIUS_TOKEN:-}" && -z "${SANGUINIUS_TOKEN_FILE:-}" ]]; then
     export SANGUINIUS_TOKEN_FILE="${HOME}/.config/sanguinius/bot.token"
 fi
+if [[ -z "${OPENAI_API_KEY:-}" && -z "${SANGUINIUS_OPENAI_API_KEY_FILE:-}" ]]; then
+    export SANGUINIUS_OPENAI_API_KEY_FILE="${HOME}/.config/sanguinius/openai.key"
+fi
 
 if [[ ! -x "${binary}" ]]; then
     echo "Release binary not found. Run: ./scripts/build_bot.bash" >&2
@@ -19,6 +22,13 @@ fi
 if [[ -z "${SANGUINIUS_TOKEN:-}" && -n "${SANGUINIUS_TOKEN_FILE:-}" && ! -r "${SANGUINIUS_TOKEN_FILE}" ]]; then
     echo "Discord token file is not readable: ${SANGUINIUS_TOKEN_FILE}" >&2
     exit 1
+fi
+if [[ -z "${OPENAI_API_KEY:-}" && ! -r "${SANGUINIUS_OPENAI_API_KEY_FILE}" ]]; then
+    echo "OpenAI API key file is not readable: ${SANGUINIUS_OPENAI_API_KEY_FILE}" >&2
+    exit 1
+fi
+if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+    export OPENAI_API_KEY="$(<"${SANGUINIUS_OPENAI_API_KEY_FILE}")"
 fi
 
 if [[ -f "${pid_file}" ]]; then

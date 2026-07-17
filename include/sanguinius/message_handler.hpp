@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sanguinius/ai_responder.hpp"
 #include "sanguinius/message_logger.hpp"
 
 #include <dpp/dpp.h>
@@ -24,7 +25,8 @@ enum class Command {
 
 class MessageHandler {
 public:
-  MessageHandler(MessageLogger &logger, std::string command_prefix);
+  MessageHandler(MessageLogger &logger, AiResponder &ai_responder,
+                 std::string command_prefix);
   ~MessageHandler();
 
   MessageHandler(const MessageHandler &) = delete;
@@ -40,6 +42,7 @@ private:
   void send_help(const dpp::message_create_t &event) const;
   void send_repo(const dpp::message_create_t &event) const;
   MessageLogger &logger_;
+  AiResponder &ai_responder_;
   std::string command_prefix_;
   std::mutex queue_mutex_;
   std::condition_variable queue_ready_;

@@ -1,21 +1,32 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(sanguinius VERSION 2.0.0 LANGUAGES CXX)
+project(sanguinius VERSION 2.1.0 LANGUAGES CXX)
 
 include(CTest)
 
 find_package(dpp CONFIG REQUIRED)
+find_package(CURL REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
 add_library(sanguinius_core STATIC
+    src/ai_responder.cpp
     src/config.cpp
     src/message_handler.cpp
     src/message_logger.cpp
+    src/openai_client.cpp
 )
 
 target_compile_features(sanguinius_core PUBLIC cxx_std_20)
 target_include_directories(sanguinius_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(sanguinius_core PUBLIC dpp::dpp Threads::Threads)
+target_link_libraries(sanguinius_core
+    PUBLIC
+        dpp::dpp
+        Threads::Threads
+    PRIVATE
+        CURL::libcurl
+        nlohmann_json::nlohmann_json
+)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(sanguinius_core PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)

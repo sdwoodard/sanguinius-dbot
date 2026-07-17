@@ -17,7 +17,7 @@ public:
 
 private:
   [[nodiscard]] static std::string escape(std::string_view value);
-  [[nodiscard]] static std::string utc_timestamp();
+  [[nodiscard]] static std::string eastern_timestamp();
 
   std::mutex mutex_;
   std::ofstream stream_;

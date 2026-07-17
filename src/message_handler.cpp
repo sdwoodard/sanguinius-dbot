@@ -22,9 +22,10 @@ constexpr std::string_view repository_url{
 
 } // namespace
 
-MessageHandler::MessageHandler(MessageLogger &logger,
+MessageHandler::MessageHandler(MessageLogger &logger, AiResponder &ai_responder,
                                std::string command_prefix)
-    : logger_{logger}, command_prefix_{std::move(command_prefix)},
+    : logger_{logger}, ai_responder_{ai_responder},
+      command_prefix_{std::move(command_prefix)},
       worker_{&MessageHandler::run, this} {}
 
 MessageHandler::~MessageHandler() {
@@ -63,8 +64,19 @@ void MessageHandler::operator()(const dpp::message_create_t &event) noexcept {
     std::cerr << "Message logging failed: " << error.what() << '\n';
   }
 
-  if (event.msg.author.is_bot() ||
-      parse_command(event.msg.content, command_prefix_) == Command::none) {
+  if (event.msg.author.is_bot()) {
+    return;
+  }
+
+  if (ai_responder_.handles(event.msg)) {
+    if (!ai_responder_.enqueue(event.msg)) {
+      event.reply("I am handling too many requests right now. Please try "
+                  "again shortly.");
+    }
+    return;
+  }
+
+  if (parse_command(event.msg.content, command_prefix_) == Command::none) {
     return;
   }
 
@@ -120,7 +132,8 @@ void MessageHandler::dispatch_command(
 }
 
 void MessageHandler::send_help(const dpp::message_create_t &event) const {
-  event.reply("Sanguinius supports two commands:\n"
+  event.reply("Mention me at the beginning of a message to ask me something.\n"
+              "Sanguinius also supports two commands:\n"
               "`" +
               command_prefix_ +
               "help` — show this message\n"

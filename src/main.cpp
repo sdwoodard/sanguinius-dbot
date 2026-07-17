@@ -1,6 +1,8 @@
+#include "sanguinius/ai_responder.hpp"
 #include "sanguinius/config.hpp"
 #include "sanguinius/message_handler.hpp"
 #include "sanguinius/message_logger.hpp"
+#include "sanguinius/openai_client.hpp"
 
 #include <dpp/dpp.h>
 
@@ -14,7 +16,10 @@ int main() {
     dpp::cluster bot{config.token,
                      dpp::i_default_intents | dpp::i_message_content};
     sanguinius::MessageLogger logger{config.message_log};
-    sanguinius::MessageHandler handler{logger, config.command_prefix};
+    sanguinius::OpenAiClient openai{config.openai_api_key, config.openai_model};
+    sanguinius::AiResponder ai_responder{bot, openai, config.persona};
+    sanguinius::MessageHandler handler{logger, ai_responder,
+                                       config.command_prefix};
 
     bot.on_log(dpp::utility::cout_logger());
     bot.on_ready([&bot](const dpp::ready_t &) {
