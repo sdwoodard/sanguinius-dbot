@@ -1,39 +1,21 @@
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
+# CMake and compiled output
+/build/
+/bin/
+compile_commands.json
 *.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
 *.a
-*.lib
+*.so
 
-# CMake
-/build/CMakeCache.txt
-/build/*.cmake
-/build/Makefile
-/build/CMakeFiles/
+# Runtime state and logs
+/run/
+/logs/
 
-# Any data
-data/userPoints.xml
+# Local configuration and secrets
+.env
+.env.*
+*.token
 
-# VSCode
+# Editors
 .vscode/
+.idea/
+*~
