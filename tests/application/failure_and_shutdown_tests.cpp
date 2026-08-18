@@ -74,6 +74,11 @@ TEST_CASE("full application queue replies only to actionable input",
       .controls = {},
       .features = {},
       .build = {"test-version", "test-revision"},
+      .persistence = {true, 1, 1, "3.53.4",
+                      "00000000-0000-4000-8000-000000000001"},
+      .instance_id = "00000000-0000-4000-8000-000000000001",
+      .hostname = "test-host",
+      .process_id = 123,
       .message_queue_capacity = 1,
       .ai_queue_capacity = 64,
       .ai_worker_count = 1,
@@ -119,6 +124,11 @@ TEST_CASE("full AI queue preserves mention overload response",
       .controls = {},
       .features = {},
       .build = {"test-version", "test-revision"},
+      .persistence = {true, 1, 1, "3.53.4",
+                      "00000000-0000-4000-8000-000000000001"},
+      .instance_id = "00000000-0000-4000-8000-000000000001",
+      .hostname = "test-host",
+      .process_id = 123,
       .message_queue_capacity = 64,
       .ai_queue_capacity = 1,
       .ai_worker_count = 1,
@@ -154,6 +164,11 @@ TEST_CASE(
       .controls = {},
       .features = {},
       .build = {"test-version", "test-revision"},
+      .persistence = {true, 1, 1, "3.53.4",
+                      "00000000-0000-4000-8000-000000000001"},
+      .instance_id = "00000000-0000-4000-8000-000000000001",
+      .hostname = "test-host",
+      .process_id = 123,
       .message_queue_capacity = 64,
       .ai_queue_capacity = 64,
       .ai_worker_count = 1,
@@ -187,5 +202,26 @@ TEST_CASE("partial gateway startup unwinds workers and cannot restart",
 
   REQUIRE_THROWS_AS(fixture.application->start(), std::runtime_error);
   REQUIRE(fixture.discord->shutdown_called());
+  REQUIRE(fixture.instances->starts().size() == 1);
+  REQUIRE(fixture.instances->stops().size() == 1);
+  REQUIRE(fixture.instances->stops()[0].reason ==
+          sanguinius::ApplicationStopReason::startup_failure);
   REQUIRE_THROWS_AS(fixture.application->start(), std::logic_error);
+}
+
+TEST_CASE("clean shutdown records one application instance terminal state",
+          "[application][database][shutdown]") {
+  sanguinius::test::ApplicationFixture fixture;
+  fixture.clock->set(std::chrono::sys_seconds{std::chrono::seconds{1}});
+  fixture.application->start();
+  fixture.clock->set(std::chrono::sys_seconds{std::chrono::seconds{2}});
+  fixture.application->stop();
+  fixture.application->stop();
+
+  REQUIRE(fixture.instances->starts().size() == 1);
+  REQUIRE(fixture.instances->starts()[0].started_at_ms == 1'000);
+  REQUIRE(fixture.instances->stops().size() == 1);
+  REQUIRE(fixture.instances->stops()[0].stopped_at_ms == 2'000);
+  REQUIRE(fixture.instances->stops()[0].reason ==
+          sanguinius::ApplicationStopReason::clean_shutdown);
 }

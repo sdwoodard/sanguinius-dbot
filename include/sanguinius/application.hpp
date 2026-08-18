@@ -6,11 +6,14 @@
 #include "sanguinius/diagnostics.hpp"
 #include "sanguinius/discord_interfaces.hpp"
 #include "sanguinius/feature_config.hpp"
+#include "sanguinius/health.hpp"
 #include "sanguinius/id_generator.hpp"
 #include "sanguinius/message_log.hpp"
+#include "sanguinius/repositories.hpp"
 #include "sanguinius/server_scope_policy.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -23,6 +26,10 @@ struct ApplicationOptions {
   ControlConfiguration controls;
   FeatureConfiguration features;
   BuildInfo build;
+  PersistenceHealth persistence;
+  std::string instance_id;
+  std::string hostname;
+  std::int64_t process_id{};
   std::size_t message_queue_capacity{64};
   std::size_t ai_queue_capacity{64};
   std::size_t ai_worker_count{2};
@@ -33,6 +40,7 @@ struct ApplicationDependencies {
   std::unique_ptr<IdGenerator> id_generator;
   std::unique_ptr<Diagnostics> diagnostics;
   std::unique_ptr<MessageLog> message_log;
+  std::unique_ptr<ApplicationInstanceRepository> application_instances;
   std::unique_ptr<AiClient> ai_client;
   std::unique_ptr<DiscordRuntime> discord;
 };

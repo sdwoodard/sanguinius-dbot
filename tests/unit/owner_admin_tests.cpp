@@ -22,7 +22,8 @@ TEST_CASE("owner admin service applies enabled scope and owner boundaries",
   const sanguinius::HealthService health{
       {"test-version", "test-revision"},
       {.admin_commands_enabled = true, .test_mode = false},
-      {}};
+      {},
+      {true, 1, 1, "3.53.4", "instance"}};
   const sanguinius::OwnerAdminService service{
       {.admin_commands_enabled = true, .test_mode = false}, policy, health};
 
@@ -56,7 +57,8 @@ TEST_CASE("owner admin service applies enabled scope and owner boundaries",
 TEST_CASE("owner admin service is disabled independently of owner identity",
           "[admin]") {
   const sanguinius::ServerScopePolicy policy{{10, 20, 30}};
-  const sanguinius::HealthService health{{"version", "revision"}, {}, {}};
+  const sanguinius::HealthService health{
+      {"version", "revision"}, {}, {}, {true, 1, 1, "3.53.4", "instance"}};
   const sanguinius::OwnerAdminService service{{}, policy, health};
 
   const auto result = service.handle(

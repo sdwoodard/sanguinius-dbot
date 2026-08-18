@@ -5,6 +5,7 @@
 #include "sanguinius/message_handler.hpp"
 #include "sanguinius/owner_admin.hpp"
 
+#include <chrono>
 #include <mutex>
 #include <stdexcept>
 #include <utility>
@@ -20,10 +21,17 @@ enum class ApplicationState {
   stopped,
 };
 
+[[nodiscard]] std::int64_t unix_milliseconds(const Clock &clock) {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             clock.now().time_since_epoch())
+      .count();
+}
+
 void validate(const ApplicationDependencies &dependencies) {
   if (!dependencies.clock || !dependencies.id_generator ||
       !dependencies.diagnostics || !dependencies.message_log ||
-      !dependencies.ai_client || !dependencies.discord) {
+      !dependencies.application_instances || !dependencies.ai_client ||
+      !dependencies.discord) {
     throw std::invalid_argument{
         "Application dependencies must all be configured."};
   }
@@ -38,10 +46,11 @@ public:
         id_generator_{std::move(dependencies.id_generator)},
         diagnostics_{std::move(dependencies.diagnostics)},
         message_log_{std::move(dependencies.message_log)},
+        application_instances_{std::move(dependencies.application_instances)},
         ai_client_{std::move(dependencies.ai_client)},
         discord_{std::move(dependencies.discord)} {
     if (!clock_ || !id_generator_ || !diagnostics_ || !message_log_ ||
-        !ai_client_ || !discord_) {
+        !application_instances_ || !ai_client_ || !discord_) {
       throw std::invalid_argument{
           "Application dependencies must all be configured."};
     }
@@ -51,7 +60,8 @@ public:
         options_.ai_queue_capacity, options_.ai_worker_count);
     scope_policy_ = std::make_unique<ServerScopePolicy>(options_.server_scope);
     health_service_ = std::make_unique<HealthService>(
-        options_.build, options_.controls, options_.features);
+        options_.build, options_.controls, options_.features,
+        options_.persistence);
     owner_admin_ = std::make_unique<OwnerAdminService>(
         options_.controls, *scope_policy_, *health_service_);
     message_handler_ = std::make_unique<MessageHandler>(
@@ -69,6 +79,15 @@ public:
     }
 
     try {
+      application_instances_->record_start(ApplicationInstanceRecord{
+          .instance_id = options_.instance_id,
+          .application_version = options_.build.version,
+          .git_revision = options_.build.revision,
+          .hostname = options_.hostname,
+          .process_id = options_.process_id,
+          .started_at_ms = unix_milliseconds(*clock_),
+      });
+      instance_started_ = true;
       ai_responder_->start();
       ai_started_ = true;
       message_handler_->start();
@@ -91,6 +110,7 @@ public:
       state_ = ApplicationState::running;
     } catch (...) {
       stop_components();
+      finish_instance(ApplicationStopReason::startup_failure);
       {
         const std::scoped_lock lock{state_mutex_};
         state_ = ApplicationState::stopped;
@@ -110,6 +130,7 @@ public:
     }
 
     stop_components();
+    finish_instance(ApplicationStopReason::clean_shutdown);
 
     const std::scoped_lock lock{state_mutex_};
     state_ = ApplicationState::stopped;
@@ -129,11 +150,33 @@ private:
     discord_->shutdown();
   }
 
+  void finish_instance(const ApplicationStopReason reason) noexcept {
+    if (!instance_started_ || instance_finished_) {
+      return;
+    }
+    try {
+      application_instances_->record_stop(options_.instance_id,
+                                          unix_milliseconds(*clock_), reason);
+      instance_finished_ = true;
+    } catch (const std::exception &error) {
+      diagnostics_->emit({DiagnosticSeverity::error,
+                          "database.application_instance",
+                          error.what(),
+                          {}});
+    } catch (...) {
+      diagnostics_->emit({DiagnosticSeverity::error,
+                          "database.application_instance",
+                          "Unknown application instance update failure.",
+                          {}});
+    }
+  }
+
   ApplicationOptions options_;
   std::unique_ptr<Clock> clock_;
   std::unique_ptr<IdGenerator> id_generator_;
   std::unique_ptr<Diagnostics> diagnostics_;
   std::unique_ptr<MessageLog> message_log_;
+  std::unique_ptr<ApplicationInstanceRepository> application_instances_;
   std::unique_ptr<AiClient> ai_client_;
   std::unique_ptr<DiscordRuntime> discord_;
   std::unique_ptr<AiResponder> ai_responder_;
@@ -145,6 +188,8 @@ private:
   ApplicationState state_{ApplicationState::created};
   bool ai_started_{false};
   bool message_handler_started_{false};
+  bool instance_started_{false};
+  bool instance_finished_{false};
 };
 
 Application::Application(ApplicationOptions options,

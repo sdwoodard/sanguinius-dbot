@@ -1,0 +1,10 @@
+function(sanguinius_embed_migration input_file output_file template_file)
+    if(NOT EXISTS "${input_file}")
+        message(FATAL_ERROR "Migration source is missing: ${input_file}")
+    endif()
+
+    file(READ "${input_file}" SANGUINIUS_MIGRATION_SQL)
+    file(SHA256 "${input_file}" SANGUINIUS_MIGRATION_CHECKSUM)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${input_file}")
+    configure_file("${template_file}" "${output_file}" @ONLY)
+endfunction()

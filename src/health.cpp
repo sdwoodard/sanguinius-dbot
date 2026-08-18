@@ -60,8 +60,10 @@ void append_queue(std::ostringstream &output, const char *name,
 } // namespace
 
 HealthService::HealthService(BuildInfo build, ControlConfiguration controls,
-                             FeatureConfiguration features)
-    : build_{std::move(build)}, controls_{controls}, features_{features} {}
+                             FeatureConfiguration features,
+                             PersistenceHealth persistence)
+    : build_{std::move(build)}, controls_{controls}, features_{features},
+      persistence_{std::move(persistence)} {}
 
 HealthSnapshot HealthService::snapshot(const QueueSnapshot message_queue,
                                        const QueueSnapshot ai_queue,
@@ -72,6 +74,7 @@ HealthSnapshot HealthService::snapshot(const QueueSnapshot message_queue,
       .ai_queue = ai_queue,
       .controls = controls_,
       .features = features_,
+      .persistence = persistence_,
       .scope_matched = scope_matched,
   };
 }
@@ -82,6 +85,14 @@ std::string render_health(const HealthSnapshot &snapshot) {
          << "version=" << safe_build_metadata(snapshot.build.version) << '\n'
          << "revision=" << safe_build_metadata(snapshot.build.revision) << '\n'
          << "scope=" << (snapshot.scope_matched ? "matched" : "rejected")
+         << '\n'
+         << "database=" << (snapshot.persistence.ready ? "ready" : "failed")
+         << '\n'
+         << "schema=" << snapshot.persistence.schema_version << '/'
+         << snapshot.persistence.target_schema_version << '\n'
+         << "sqlite="
+         << safe_build_metadata(snapshot.persistence.sqlite_version) << '\n'
+         << "instance=" << safe_build_metadata(snapshot.persistence.instance_id)
          << '\n';
   append_queue(output, "message", snapshot.message_queue);
   append_queue(output, "ai", snapshot.ai_queue);

@@ -173,6 +173,18 @@ Config Config::from_environment() {
   return from_source(source);
 }
 
+std::filesystem::path database_file_from_environment() {
+  constexpr const char *variable = "SANGUINIUS_DATABASE_FILE";
+  const char *value = std::getenv(variable);
+  if (value == nullptr) {
+    return "state/sanguinius.sqlite3";
+  }
+  if (*value == '\0') {
+    throw std::runtime_error{"SANGUINIUS_DATABASE_FILE must not be empty."};
+  }
+  return value;
+}
+
 Config Config::from_source(const ConfigSource &source) {
   Config config;
 

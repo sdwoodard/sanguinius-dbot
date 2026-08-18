@@ -1,23 +1,69 @@
 #include "sanguinius/build_info.hpp"
+#include "sanguinius/clock.hpp"
 #include "sanguinius/composition_root.hpp"
 #include "sanguinius/config.hpp"
+#include "sanguinius/database_cli.hpp"
 #include "sanguinius/process_signals.hpp"
 
 #include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <optional>
+#include <string>
 #include <string_view>
 
 namespace {
 
 void print_usage(std::ostream &stream, const std::string_view executable) {
-  stream << "Usage: " << executable << " [--check-config|--help]\n";
+  stream << "Usage: " << executable << " [--check-config|--help]\n"
+         << "       " << executable << " db <status|check|migrate|integrity>\n"
+         << "       " << executable << " db backup <destination>\n";
+}
+
+[[nodiscard]] std::optional<sanguinius::DatabaseCommand>
+database_command(const int argc, char **argv) {
+  if (argc < 3 || std::string_view{argv[1]} != "db") {
+    return std::nullopt;
+  }
+  const std::string_view operation{argv[2]};
+  if (argc == 3 && operation == "status") {
+    return sanguinius::DatabaseCommand{sanguinius::DatabaseCommandType::status,
+                                       std::nullopt};
+  }
+  if (argc == 3 && operation == "check") {
+    return sanguinius::DatabaseCommand{sanguinius::DatabaseCommandType::check,
+                                       std::nullopt};
+  }
+  if (argc == 3 && operation == "migrate") {
+    return sanguinius::DatabaseCommand{sanguinius::DatabaseCommandType::migrate,
+                                       std::nullopt};
+  }
+  if (argc == 3 && operation == "integrity") {
+    return sanguinius::DatabaseCommand{
+        sanguinius::DatabaseCommandType::integrity, std::nullopt};
+  }
+  if (argc == 4 && operation == "backup") {
+    return sanguinius::DatabaseCommand{sanguinius::DatabaseCommandType::backup,
+                                       std::filesystem::path{argv[3]}};
+  }
+  return std::nullopt;
 }
 
 } // namespace
 
 int main(const int argc, char **argv) {
   try {
+    if (argc >= 2 && std::string_view{argv[1]} == "db") {
+      const auto command = database_command(argc, argv);
+      if (!command.has_value()) {
+        print_usage(std::cerr, argv[0]);
+        return 2;
+      }
+      const sanguinius::SystemClock clock;
+      return sanguinius::run_database_command(
+          *command, sanguinius::database_file_from_environment(),
+          sanguinius::current_build_info(), clock, std::cout, std::cerr);
+    }
     if (argc > 2) {
       print_usage(std::cerr, argv[0]);
       return 2;

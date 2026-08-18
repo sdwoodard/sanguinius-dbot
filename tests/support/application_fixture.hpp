@@ -8,6 +8,7 @@
 #include "support/fake_discord.hpp"
 #include "support/fake_id_generator.hpp"
 #include "support/fake_message_log.hpp"
+#include "support/fake_repositories.hpp"
 
 #include <memory>
 #include <utility>
@@ -16,22 +17,30 @@ namespace sanguinius::test {
 
 class ApplicationFixture {
 public:
-  explicit ApplicationFixture(ApplicationOptions options = ApplicationOptions{
-                                  .persona = "test persona",
-                                  .command_prefix = "!",
-                                  .server_scope = {10, 20, 30},
-                                  .controls = {},
-                                  .features = {},
-                                  .build = {"test-version", "test-revision"},
-                                  .message_queue_capacity = 64,
-                                  .ai_queue_capacity = 64,
-                                  .ai_worker_count = 2,
-                              }) {
+  explicit ApplicationFixture(
+      ApplicationOptions options = ApplicationOptions{
+          .persona = "test persona",
+          .command_prefix = "!",
+          .server_scope = {10, 20, 30},
+          .controls = {},
+          .features = {},
+          .build = {"test-version", "test-revision"},
+          .persistence = {true, 1, 1, "3.53.4",
+                          "00000000-0000-4000-8000-000000000001"},
+          .instance_id = "00000000-0000-4000-8000-000000000001",
+          .hostname = "test-host",
+          .process_id = 123,
+          .message_queue_capacity = 64,
+          .ai_queue_capacity = 64,
+          .ai_worker_count = 2,
+      }) {
     auto owned_clock = std::make_unique<FakeClock>();
     auto owned_ids = std::make_unique<FakeIdGenerator>(std::vector<std::string>{
         "correlation-1", "correlation-2", "correlation-3", "correlation-4"});
     auto owned_diagnostics = std::make_unique<FakeDiagnostics>();
     auto owned_log = std::make_unique<FakeMessageLog>();
+    auto owned_instances =
+        std::make_unique<FakeApplicationInstanceRepository>();
     auto owned_ai = std::make_unique<FakeAiClient>();
     auto owned_discord = std::make_unique<FakeDiscord>();
 
@@ -39,18 +48,21 @@ public:
     ids = owned_ids.get();
     diagnostics = owned_diagnostics.get();
     log = owned_log.get();
+    instances = owned_instances.get();
     ai = owned_ai.get();
     discord = owned_discord.get();
 
     application = std::make_unique<Application>(
-        std::move(options), ApplicationDependencies{
-                                .clock = std::move(owned_clock),
-                                .id_generator = std::move(owned_ids),
-                                .diagnostics = std::move(owned_diagnostics),
-                                .message_log = std::move(owned_log),
-                                .ai_client = std::move(owned_ai),
-                                .discord = std::move(owned_discord),
-                            });
+        std::move(options),
+        ApplicationDependencies{
+            .clock = std::move(owned_clock),
+            .id_generator = std::move(owned_ids),
+            .diagnostics = std::move(owned_diagnostics),
+            .message_log = std::move(owned_log),
+            .application_instances = std::move(owned_instances),
+            .ai_client = std::move(owned_ai),
+            .discord = std::move(owned_discord),
+        });
   }
 
   ~ApplicationFixture() {
@@ -66,6 +78,7 @@ public:
   FakeIdGenerator *ids{};
   FakeDiagnostics *diagnostics{};
   FakeMessageLog *log{};
+  FakeApplicationInstanceRepository *instances{};
   FakeAiClient *ai{};
   FakeDiscord *discord{};
   std::unique_ptr<Application> application;

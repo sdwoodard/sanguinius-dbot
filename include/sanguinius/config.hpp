@@ -74,4 +74,6 @@ configuration_origin_name(ConfigurationOrigin origin) noexcept;
 [[nodiscard]] std::string redacted_config_summary(const Config &config,
                                                   const BuildInfo &build);
 
+[[nodiscard]] std::filesystem::path database_file_from_environment();
+
 } // namespace sanguinius

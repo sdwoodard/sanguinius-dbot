@@ -44,12 +44,13 @@ AI work run outside D++ gateway callbacks.
 - D++ with its CMake package configuration installed
 - libcurl
 - nlohmann-json
+- SQLite 3.51.3 or newer, or the fixed 3.50.7/3.44.6 backport
 - Catch2 v3 when building tests
 
 On CachyOS/Arch Linux, install the dependencies supplied by the distribution:
 
 ```bash
-sudo pacman -S --needed cmake ninja gcc curl nlohmann-json catch2
+sudo pacman -S --needed cmake ninja gcc curl nlohmann-json sqlite catch2
 ```
 
 D++ must still be installed separately, as described above. CMake links the
@@ -137,7 +138,7 @@ Optional settings are:
 | `SANGUINIUS_OPENAI_MODEL` | `gpt-5.4-nano` | Responses API model. |
 | `SANGUINIUS_PERSONA_FILE` | `config/persona.txt` | Plaintext persona instructions. |
 | `SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS` | `10` | Discord REST timeout, from 1 through 300 seconds. |
-| `SANGUINIUS_DATABASE_FILE` | `state/sanguinius.sqlite3` | Reserved database path; Milestone 2 does not open or create it. |
+| `SANGUINIUS_DATABASE_FILE` | `state/sanguinius.sqlite3` | SQLite state file. Production should use an absolute path outside release directories. |
 | `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Enable the owner-only transitional health command. |
 | `SANGUINIUS_TEST_MODE` | `false` | Expose test-mode state to later owner controls. |
 | `SANGUINIUS_CHRONICLE_ENABLED` | `false` | Configured Chronicle mode; no Chronicle behavior exists yet. |
@@ -169,10 +170,50 @@ script runs this check before creating the background process.
 Do not commit tokens or environment files. A token exposed in source control
 must be regenerated in the Discord Developer Portal.
 
+## Database maintenance
+
+Database maintenance is deliberately offline and needs only
+`SANGUINIUS_DATABASE_FILE`; it does not construct D++, read Discord/OpenAI
+credentials, or contact the network:
+
+```bash
+./build/release/sanguinius db status
+./build/release/sanguinius db migrate
+./build/release/sanguinius db check
+./build/release/sanguinius db integrity
+./build/release/sanguinius db backup /restricted/backup/sanguinius.sqlite3
+```
+
+`db status` is safe for absent, uninitialized, pending, current, and
+incompatible databases; it prints an incompatible status but returns failure
+so automation cannot mistake it for a usable schema. `db check` requires the
+exact embedded schema and WAL mode. `db migrate` is the only command allowed to
+create a database, enable WAL, or apply forward migrations; stop the bot first
+because migration takes the exclusive database sidecar lock. Normal startup
+never creates or upgrades the schema.
+
+Migration `0001_core_foundation` contains only shared identity and
+configuration state: migration history, application instances, Discord users,
+the one-guild scope, and user preferences. The readable SQL is embedded into
+the executable with its SHA-256 checksum at build time. Applied history must be
+ordered, contiguous, and byte-for-byte checksum compatible with the running
+binary. The effective `sqlite_schema` must also match the schema reconstructed
+from every applied embedded migration, including table constraints, defaults,
+foreign keys, indexes, views, and triggers. Final schema validation occurs
+before the migration transaction commits.
+
+Backups use SQLite's online backup API, so `db backup` may run while the bot is
+active under a shared lock. A destination and its SQLite sidecar names must not
+already exist. The completed copy is converted to `DELETE` journal mode,
+reopened read-only, and checked for both database integrity and foreign-key
+violations before success is reported. Backup output is mode `0600`; keep its
+parent directory restricted as well.
+
 ## Build and run
 
 ```bash
 ./scripts/test_bot.bash --clean
+./build/release/sanguinius db migrate
 ./build/release/sanguinius
 ```
 
@@ -202,7 +243,8 @@ and stop the bot cleanly:
 
 `start_bot.bash` expects the release binary, the two default credential files,
 and the three required scope IDs described above, unless their environment
-overrides are set. It runs the offline configuration check before starting.
+overrides are set. It runs the offline configuration and exact-schema checks
+before starting; it never runs a migration.
 Console output goes to `logs/console.log`.
 
 Discord gateway callbacks translate each message into project-owned values and
@@ -236,11 +278,12 @@ during the staged interaction migration.
 ## Architecture
 
 `sanguinius_core` contains application services and project-owned interfaces;
-it has no D++, curl, or JSON dependency. `sanguinius_runtime` contains the D++
-gateway and OpenAI adapters plus the production composition root. Tests link
-only the core target and use deterministic fake clocks, IDs, AI, Discord,
-diagnostics, and message logs, so ordinary CTest runs need no Discord or OpenAI
-credentials and make no network calls.
+it has no SQLite, D++, curl, or JSON dependency. `sanguinius_persistence`
+contains the move-only SQLite RAII layer, transaction/migration/backup support,
+and concrete core repositories. `sanguinius_runtime` contains the D++ gateway
+and OpenAI adapters plus the production composition root. Tests use temporary
+SQLite files and deterministic fakes, so ordinary CTest runs need no Discord or
+OpenAI credentials and make no network calls.
 
 ## Message log
 

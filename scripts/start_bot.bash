@@ -24,6 +24,10 @@ if ! "${binary}" --check-config; then
     echo "Sanguinius configuration check failed; the bot was not started." >&2
     exit 1
 fi
+if ! "${binary}" db check; then
+    echo "Sanguinius database check failed; run the offline migration and integrity commands before starting." >&2
+    exit 1
+fi
 
 if [[ -f "${pid_file}" ]]; then
     existing_pid="$(<"${pid_file}")"

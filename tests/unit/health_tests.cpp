@@ -23,7 +23,8 @@ TEST_CASE("health snapshot renders build queues and configured modes",
        .tarot_enabled = false,
        .appearances_mode = sanguinius::AppearanceMode::dry_run,
        .vox_enabled = true,
-       .voice_input_enabled = false}};
+       .voice_input_enabled = false},
+      {true, 1, 1, "3.53.4", "00000000-0000-4000-8000-000000000001"}};
 
   const auto snapshot = service.snapshot(
       {.capacity = 64, .queued = 3, .active = 1, .accepting = true},
@@ -32,6 +33,9 @@ TEST_CASE("health snapshot renders build queues and configured modes",
 
   REQUIRE(contains(rendered, "version=2.1.0-test"));
   REQUIRE(contains(rendered, "revision=revision-test"));
+  REQUIRE(contains(rendered, "database=ready"));
+  REQUIRE(contains(rendered, "schema=1/1"));
+  REQUIRE(contains(rendered, "sqlite=3.53.4"));
   REQUIRE(contains(rendered, "message_queue=3/64 queued, 1 active, accepting"));
   REQUIRE(contains(rendered, "ai_queue=2/32 queued, 2 active, stopped"));
   REQUIRE(contains(rendered, "admin_commands=enabled"));
@@ -43,7 +47,9 @@ TEST_CASE("health snapshot renders build queues and configured modes",
       {std::string(4'000, 'v'),
        "revision\ninjected=" + std::string(4'000, 'r')},
       {.admin_commands_enabled = true, .test_mode = true},
-      {.appearances_mode = sanguinius::AppearanceMode::live}};
+      {.appearances_mode = sanguinius::AppearanceMode::live},
+      {true, 1, 1, std::string(4'000, 's'),
+       "instance\ninjected=" + std::string(4'000, 'i')}};
   const auto bounded = sanguinius::render_health(oversized_metadata.snapshot(
       {.capacity = 64, .queued = 1, .active = 1, .accepting = true},
       {.capacity = 64, .accepting = true}, true));
@@ -55,7 +61,7 @@ TEST_CASE("health snapshot renders build queues and configured modes",
 
 TEST_CASE("health types cannot expose secret configuration", "[health]") {
   const sanguinius::HealthService service{
-      {"safe-version", "safe-revision"}, {}, {}};
+      {"safe-version", "safe-revision"}, {}, {}, {true, 1, 1, "3.53.4", "id"}};
   const auto rendered = sanguinius::render_health(
       service.snapshot({.capacity = 1}, {.capacity = 1}, true));
 
