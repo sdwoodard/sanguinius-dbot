@@ -7,6 +7,17 @@
 
 namespace {
 
+class FakeStatusProvider final : public sanguinius::DiscordStatusProvider {
+public:
+  [[nodiscard]] sanguinius::DiscordRuntimeStatus
+  status() const noexcept override {
+    return {.ready = true,
+            .command_registration =
+                sanguinius::CommandRegistrationState::synchronized,
+            .command_catalog_version = 1};
+  }
+};
+
 [[nodiscard]] bool contains(const std::string_view value,
                             const std::string_view fragment) {
   return value.find(fragment) != std::string_view::npos;
@@ -16,6 +27,7 @@ namespace {
 
 TEST_CASE("health snapshot renders build queues and configured modes",
           "[health]") {
+  const FakeStatusProvider discord;
   const sanguinius::HealthService service{
       {"2.1.0-test", "revision-test"},
       {.admin_commands_enabled = true, .test_mode = true},
@@ -24,7 +36,14 @@ TEST_CASE("health snapshot renders build queues and configured modes",
        .appearances_mode = sanguinius::AppearanceMode::dry_run,
        .vox_enabled = true,
        .voice_input_enabled = false},
-      {true, 1, 1, "3.53.4", "00000000-0000-4000-8000-000000000001"}};
+      {true, 1, 1, "3.53.4", "00000000-0000-4000-8000-000000000001"},
+      {.discord_status = &discord,
+       .interaction_queue =
+           [] {
+             return sanguinius::QueueSnapshot{
+                 .capacity = 16, .queued = 1, .active = 1, .accepting = true};
+           },
+       .pending_notice_count = [] { return std::size_t{7}; }}};
 
   const auto snapshot = service.snapshot(
       {.capacity = 64, .queued = 3, .active = 1, .accepting = true},
@@ -38,6 +57,12 @@ TEST_CASE("health snapshot renders build queues and configured modes",
   REQUIRE(contains(rendered, "sqlite=3.53.4"));
   REQUIRE(contains(rendered, "message_queue=3/64 queued, 1 active, accepting"));
   REQUIRE(contains(rendered, "ai_queue=2/32 queued, 2 active, stopped"));
+  REQUIRE(
+      contains(rendered, "interaction_queue=1/16 queued, 1 active, accepting"));
+  REQUIRE(contains(rendered, "discord_ready=enabled"));
+  REQUIRE(contains(rendered, "command_catalog=1"));
+  REQUIRE(contains(rendered, "command_registration=synchronized"));
+  REQUIRE(contains(rendered, "pending_notices=7"));
   REQUIRE(contains(rendered, "admin_commands=enabled"));
   REQUIRE(contains(rendered, "test_mode=enabled"));
   REQUIRE(contains(rendered, "appearances=dry_run"));
@@ -49,7 +74,9 @@ TEST_CASE("health snapshot renders build queues and configured modes",
       {.admin_commands_enabled = true, .test_mode = true},
       {.appearances_mode = sanguinius::AppearanceMode::live},
       {true, 1, 1, std::string(4'000, 's'),
-       "instance\ninjected=" + std::string(4'000, 'i')}};
+       "instance\ninjected=" + std::string(4'000, 'i')},
+      {.interaction_queue = [] { return sanguinius::QueueSnapshot{}; },
+       .pending_notice_count = [] { return std::size_t{}; }}};
   const auto bounded = sanguinius::render_health(oversized_metadata.snapshot(
       {.capacity = 64, .queued = 1, .active = 1, .accepting = true},
       {.capacity = 64, .accepting = true}, true));
@@ -61,7 +88,12 @@ TEST_CASE("health snapshot renders build queues and configured modes",
 
 TEST_CASE("health types cannot expose secret configuration", "[health]") {
   const sanguinius::HealthService service{
-      {"safe-version", "safe-revision"}, {}, {}, {true, 1, 1, "3.53.4", "id"}};
+      {"safe-version", "safe-revision"},
+      {},
+      {},
+      {true, 1, 1, "3.53.4", "id"},
+      {.interaction_queue = [] { return sanguinius::QueueSnapshot{}; },
+       .pending_notice_count = [] { return std::size_t{}; }}};
   const auto rendered = sanguinius::render_health(
       service.snapshot({.capacity = 1}, {.capacity = 1}, true));
 

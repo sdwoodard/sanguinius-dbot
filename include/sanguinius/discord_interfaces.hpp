@@ -4,10 +4,31 @@
 
 #include <cstddef>
 #include <functional>
+#include <memory>
 #include <stop_token>
 #include <vector>
 
 namespace sanguinius {
+
+using DeliveryCallback = std::function<void(DeliveryResult)>;
+
+class DiscordInteractionResponder {
+public:
+  virtual ~DiscordInteractionResponder() = default;
+
+  virtual void reply(const InteractionMessage &message,
+                     ResponseVisibility visibility,
+                     DeliveryCallback callback = {}) = 0;
+  virtual void defer(ResponseVisibility visibility,
+                     DeliveryCallback callback = {}) = 0;
+  virtual void edit_original(const InteractionMessage &message,
+                             DeliveryCallback callback = {}) = 0;
+  virtual void follow_up(const InteractionMessage &message,
+                         ResponseVisibility visibility,
+                         DeliveryCallback callback = {}) = 0;
+  virtual void show_modal(const ModalPayload &modal,
+                          DeliveryCallback callback = {}) = 0;
+};
 
 class DiscordTextDelivery {
 public:
@@ -32,17 +53,41 @@ public:
 class DiscordGateway {
 public:
   using MessageCallback = std::function<void(IncomingMessage)>;
+  using InteractionCallback = std::function<void(IncomingInteraction)>;
 
   virtual ~DiscordGateway() = default;
 
-  virtual void start(MessageCallback message_callback) = 0;
+  virtual void start(MessageCallback message_callback,
+                     InteractionCallback interaction_callback,
+                     CommandCatalog command_catalog) = 0;
   virtual void stop_accepting() noexcept = 0;
+  /**
+   * Stop the gateway and fence every callback previously accepted by this
+   * runtime. On return, callbacks have either completed or are permanently
+   * suppressed.
+   */
   virtual void shutdown() noexcept = 0;
+};
+
+class DiscordPublicDelivery {
+public:
+  virtual ~DiscordPublicDelivery() = default;
+
+  virtual void send_public(const PublicMessageRequest &request,
+                           DeliveryCallback callback = {}) = 0;
+};
+
+class DiscordStatusProvider {
+public:
+  virtual ~DiscordStatusProvider() = default;
+  [[nodiscard]] virtual DiscordRuntimeStatus status() const noexcept = 0;
 };
 
 class DiscordRuntime : public DiscordGateway,
                        public DiscordTextDelivery,
-                       public DiscordConversation {
+                       public DiscordConversation,
+                       public DiscordPublicDelivery,
+                       public DiscordStatusProvider {
 public:
   ~DiscordRuntime() override = default;
 };

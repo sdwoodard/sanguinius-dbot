@@ -1,11 +1,11 @@
 # Sanguinius
 
 Sanguinius is a Discord bot built with modern C++ and [D++](https://dpp.dev/).
-It supports two public prefix commands, answers messages that begin with a bot
-mention through the OpenAI Responses API, and writes every visible guild
-message-create event to an append-only text log. Typed configuration fixes the
-bot's future feature boundary to one guild, one primary text channel, and one
-owner.
+It supports guild-scoped slash commands and sealed notices, preserves two
+public prefix commands, answers messages that begin with a bot mention through
+the OpenAI Responses API, and writes every visible guild message-create event
+to an append-only text log. Typed configuration fixes the bot's feature
+boundary to one guild, one primary text channel, and one owner.
 
 ## Commands
 
@@ -14,14 +14,32 @@ owner.
 | `!help` | List the supported commands. |
 | `!repo` | Link to this source repository. |
 
+The configured guild also receives command catalog version 1:
+
+| Command | Visibility and behavior |
+| --- | --- |
+| `/sanguinius status` | Ephemeral readiness, feature-mode, and unopened-notice summary. |
+| `/sanguinius inbox` | Ephemerally opens the oldest pending sealed notice. Duplicate Discord interaction IDs replay the same result. |
+| `/sanguinius privacy` | Ephemeral identity/preference, voice-input, no-DM, and raw-voice-retention summary. |
+| `/sang-admin health` | Ephemeral owner-only health; registered only when admin commands are enabled. |
+| `/sang-admin test-notice` | Owner-only, test-mode-gated creation of a fixed, self-targeted 24-hour notice. |
+
 Command names are case-insensitive. Messages written by bots are logged but are
 not treated as commands.
 
-When owner administration is explicitly enabled, the temporary
-`!sang-admin health` command provides a public but strictly redacted health
-snapshot in the configured primary channel. It is not listed by `!help`, is
-silent for other users or channels, and will move to an ephemeral interaction
-in a later milestone.
+When owner administration is explicitly enabled, the transitional
+`!sang-admin health` command continues to provide a public but strictly
+redacted health snapshot in the configured primary channel. It is not listed
+by `!help` and is silent for other users or channels. Prefer the ephemeral
+slash-command form for routine use.
+
+Feature interactions are accepted only in the configured guild and primary
+channel. Ordinary slash responses are ephemeral. Discord cannot proactively
+send an arbitrary user an ephemeral message, and Sanguinius never uses DMs;
+private proactive content is stored as a pending notice. A neutral public card
+may mention only its target and contains no private title/body or database
+identifier. The target retrieves the content by clicking its opaque,
+expiring button or by running `/sanguinius inbox`.
 
 To talk to the AI persona, mention the bot at the start of a message:
 
@@ -139,8 +157,8 @@ Optional settings are:
 | `SANGUINIUS_PERSONA_FILE` | `config/persona.txt` | Plaintext persona instructions. |
 | `SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS` | `10` | Discord REST timeout, from 1 through 300 seconds. |
 | `SANGUINIUS_DATABASE_FILE` | `state/sanguinius.sqlite3` | SQLite state file. Production should use an absolute path outside release directories. |
-| `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Enable the owner-only transitional health command. |
-| `SANGUINIUS_TEST_MODE` | `false` | Expose test-mode state to later owner controls. |
+| `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Register owner slash controls and enable the transitional prefix health command. |
+| `SANGUINIUS_TEST_MODE` | `false` | Enable auditable owner test controls such as self-targeted `test-notice`. |
 | `SANGUINIUS_CHRONICLE_ENABLED` | `false` | Configured Chronicle mode; no Chronicle behavior exists yet. |
 | `SANGUINIUS_TAROT_ENABLED` | `false` | Configured Tarot mode; no Tarot behavior exists yet. |
 | `SANGUINIUS_APPEARANCES_MODE` | `off` | Configured `off`, `dry_run`, or `live` intent; no appearance service exists yet. |
@@ -194,13 +212,36 @@ never creates or upgrades the schema.
 
 Migration `0001_core_foundation` contains only shared identity and
 configuration state: migration history, application instances, Discord users,
-the one-guild scope, and user preferences. The readable SQL is embedded into
-the executable with its SHA-256 checksum at build time. Applied history must be
-ordered, contiguous, and byte-for-byte checksum compatible with the running
-binary. The effective `sqlite_schema` must also match the schema reconstructed
-from every applied embedded migration, including table constraints, defaults,
-foreign keys, indexes, views, and triggers. Final schema validation occurs
-before the migration transaction commits.
+the one-guild scope, and user preferences. Migration
+`0002_discord_interactions` adds pending notices, scoped opaque interaction
+tokens, durable reveal-attempt/idempotency records, state/timestamp constraints,
+and lookup/expiry indexes. A notice remains pending until Discord confirms its
+private interaction response; failed or interrupted delivery leaves it
+retrievable through the inbox. The readable SQL for each ordered migration is
+embedded independently with its SHA-256
+checksum. Applied history must be ordered, contiguous, and byte-for-byte
+checksum compatible with the running binary. The effective `sqlite_schema`
+must also match the schema reconstructed from every applied embedded
+migration, including table constraints, defaults, foreign keys, indexes,
+views, and triggers. Final schema validation occurs before the migration
+transaction commits.
+
+### Guild command management
+
+Normal startup compares a canonical projection of the configured guild's
+commands and bulk-reconciles the catalog only when it differs. It never creates
+global commands. The following explicit operator modes use only the Discord
+token, guild ID, REST timeout, and admin-command flag; they do not open SQLite,
+construct OpenAI, or start the normal application:
+
+```bash
+./build/release/sanguinius discord commands sync
+./build/release/sanguinius discord commands clear --confirm
+```
+
+The catalog is authoritative for this bot application in its one configured
+guild. `clear` deliberately requires the exact `--confirm` guard and is the
+command-registration portion of rollback.
 
 Backups use SQLite's online backup API, so `db backup` may run while the bot is
 active under a shared lock. A destination and its SQLite sidecar names must not
@@ -247,12 +288,15 @@ overrides are set. It runs the offline configuration and exact-schema checks
 before starting; it never runs a migration.
 Console output goes to `logs/console.log`.
 
-Discord gateway callbacks translate each message into project-owned values and
-place it on a bounded 64-item application queue. A single worker preserves
-log-before-routing order and keeps filesystem work out of the gateway callback.
-When that queue is full, actionable commands or mentions receive the normal
-overload reply; ordinary and bot-authored messages are dropped with a
-diagnostic to avoid public spam.
+Discord gateway callbacks translate messages and interactions into
+project-owned values. Messages enter a bounded 64-item application queue; a
+single worker preserves log-before-routing order and keeps filesystem work out
+of the gateway callback. Interactions apply inexpensive scope/authorization,
+acknowledge ephemerally, and enter a separate bounded single-worker queue for
+identity and notice database work. Saturated deferred interactions are edited
+with an ephemeral overload response. When the message queue is full,
+actionable commands or mentions receive the normal overload reply; ordinary
+and bot-authored messages are dropped with a diagnostic to avoid public spam.
 
 AI mentions use a separate two-thread pool with its own bounded 64-item queue.
 Each OpenAI request has a connection timeout and an overall timeout, and
@@ -264,10 +308,13 @@ set `store` to `false` so generated responses are not retained for later
 retrieval through the API.
 
 The application owns all long-lived services. SIGINT or SIGTERM first detaches
-Discord message intake, then discards queued application work, cancels queued
-and in-flight AI work, joins every worker, and finally shuts down D++. Pending
-work cancelled solely because of shutdown does not emit a misleading failure
-reply.
+Discord message and interaction intake, then stops the interaction, message,
+and AI workers before shutting down D++. Pending work cancelled solely because
+of shutdown does not emit a misleading failure reply. Callback fences wait for
+already-running interaction, gateway, REST-delivery, and command-registration
+callbacks while permanently suppressing late completions, so D++ teardown
+cannot access destroyed application state. An interrupted notice reveal remains
+pending and is recovered on the next startup.
 
 The application enforces owner health requests through one reusable server
 scope policy: configured guild, then primary channel, then owner identity.

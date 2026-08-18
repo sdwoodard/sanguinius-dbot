@@ -1,9 +1,13 @@
 #include "sanguinius/persistent_id.hpp"
 
 #include <array>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
-#include <random>
+#include <stdexcept>
+#include <system_error>
+
+#include <sys/random.h>
 
 namespace sanguinius {
 namespace {
@@ -16,10 +20,22 @@ namespace {
 } // namespace
 
 std::string UuidV4Generator::next_id() {
-  std::random_device random;
   std::array<std::uint8_t, 16> bytes{};
-  for (auto &byte : bytes) {
-    byte = static_cast<std::uint8_t>(random() & 0xffU);
+  std::size_t offset{};
+  while (offset < bytes.size()) {
+    const auto received =
+        ::getrandom(bytes.data() + offset, bytes.size() - offset, 0);
+    if (received < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      throw std::system_error{errno, std::generic_category(),
+                              "Unable to generate a persistent UUID"};
+    }
+    if (received == 0) {
+      throw std::runtime_error{"Unable to generate a persistent UUID."};
+    }
+    offset += static_cast<std::size_t>(received);
   }
   bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0fU) | 0x40U);
   bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3fU) | 0x80U);

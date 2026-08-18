@@ -1,6 +1,7 @@
 #include "sanguinius/health.hpp"
 
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 
 namespace sanguinius {
@@ -61,9 +62,14 @@ void append_queue(std::ostringstream &output, const char *name,
 
 HealthService::HealthService(BuildInfo build, ControlConfiguration controls,
                              FeatureConfiguration features,
-                             PersistenceHealth persistence)
+                             PersistenceHealth persistence,
+                             HealthRuntimeProviders runtime)
     : build_{std::move(build)}, controls_{controls}, features_{features},
-      persistence_{std::move(persistence)} {}
+      persistence_{std::move(persistence)}, runtime_{std::move(runtime)} {
+  if (!runtime_.interaction_queue || !runtime_.pending_notice_count) {
+    throw std::invalid_argument{"Health runtime providers are required."};
+  }
+}
 
 HealthSnapshot HealthService::snapshot(const QueueSnapshot message_queue,
                                        const QueueSnapshot ai_queue,
@@ -72,9 +78,14 @@ HealthSnapshot HealthService::snapshot(const QueueSnapshot message_queue,
       .build = build_,
       .message_queue = message_queue,
       .ai_queue = ai_queue,
+      .interaction_queue = runtime_.interaction_queue(),
       .controls = controls_,
       .features = features_,
       .persistence = persistence_,
+      .discord = runtime_.discord_status == nullptr
+                     ? DiscordRuntimeStatus{}
+                     : runtime_.discord_status->status(),
+      .pending_notice_count = runtime_.pending_notice_count(),
       .scope_matched = scope_matched,
   };
 }
@@ -96,6 +107,17 @@ std::string render_health(const HealthSnapshot &snapshot) {
          << '\n';
   append_queue(output, "message", snapshot.message_queue);
   append_queue(output, "ai", snapshot.ai_queue);
+  if (snapshot.interaction_queue.capacity != 0) {
+    append_queue(output, "interaction", snapshot.interaction_queue);
+  }
+  output << "discord_ready=" << enabled(snapshot.discord.ready) << '\n'
+         << "command_catalog=" << snapshot.discord.command_catalog_version
+         << '\n'
+         << "command_registration="
+         << command_registration_state_name(
+                snapshot.discord.command_registration)
+         << '\n'
+         << "pending_notices=" << snapshot.pending_notice_count << '\n';
   output << "admin_commands="
          << enabled(snapshot.controls.admin_commands_enabled) << '\n'
          << "test_mode=" << enabled(snapshot.controls.test_mode) << '\n'
@@ -107,6 +129,21 @@ std::string render_health(const HealthSnapshot &snapshot) {
          << "voice_input=" << enabled(snapshot.features.voice_input_enabled)
          << '\n';
   return bounded_health_message(output.str());
+}
+
+const char *
+command_registration_state_name(const CommandRegistrationState state) noexcept {
+  switch (state) {
+  case CommandRegistrationState::not_started:
+    return "not_started";
+  case CommandRegistrationState::synchronizing:
+    return "synchronizing";
+  case CommandRegistrationState::synchronized:
+    return "synchronized";
+  case CommandRegistrationState::failed:
+    return "failed";
+  }
+  return "failed";
 }
 
 } // namespace sanguinius

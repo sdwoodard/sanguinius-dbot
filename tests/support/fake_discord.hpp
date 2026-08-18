@@ -16,13 +16,151 @@
 
 namespace sanguinius::test {
 
+class FakeInteractionResponder final : public DiscordInteractionResponder {
+public:
+  void reply(const InteractionMessage &message,
+             const ResponseVisibility visibility,
+             DeliveryCallback callback = {}) override {
+    {
+      const std::scoped_lock lock{mutex_};
+      replies_.emplace_back(message, visibility);
+    }
+    if (callback) {
+      callback(reply_result_);
+    }
+  }
+
+  void defer(const ResponseVisibility visibility,
+             DeliveryCallback callback = {}) override {
+    {
+      const std::scoped_lock lock{mutex_};
+      deferrals_.push_back(visibility);
+    }
+    if (callback) {
+      callback(defer_result_);
+    }
+  }
+
+  void edit_original(const InteractionMessage &message,
+                     DeliveryCallback callback = {}) override {
+    DeliveryResult result;
+    bool hold_completion;
+    {
+      const std::scoped_lock lock{mutex_};
+      edits_.push_back(message);
+      result = edit_result_;
+      hold_completion = hold_edit_completions_;
+      if (callback && hold_completion) {
+        pending_edit_completions_.push_back(std::move(callback));
+      }
+    }
+    if (callback && !hold_completion) {
+      callback(result);
+    }
+    changed_.notify_all();
+  }
+
+  void follow_up(const InteractionMessage &message,
+                 const ResponseVisibility visibility,
+                 DeliveryCallback callback = {}) override {
+    {
+      const std::scoped_lock lock{mutex_};
+      follow_ups_.emplace_back(message, visibility);
+    }
+    if (callback) {
+      callback(DeliveryResult::success);
+    }
+  }
+
+  void show_modal(const ModalPayload &modal,
+                  DeliveryCallback callback = {}) override {
+    {
+      const std::scoped_lock lock{mutex_};
+      modals_.push_back(modal);
+    }
+    if (callback) {
+      callback(DeliveryResult::success);
+    }
+  }
+
+  void set_defer_result(const DeliveryResult result) {
+    const std::scoped_lock lock{mutex_};
+    defer_result_ = result;
+  }
+  void set_edit_result(const DeliveryResult result) {
+    const std::scoped_lock lock{mutex_};
+    edit_result_ = result;
+  }
+  void hold_edit_completions(const bool hold = true) {
+    const std::scoped_lock lock{mutex_};
+    hold_edit_completions_ = hold;
+  }
+  void complete_edit_completions() {
+    std::vector<DeliveryCallback> callbacks;
+    DeliveryResult result;
+    {
+      const std::scoped_lock lock{mutex_};
+      callbacks.swap(pending_edit_completions_);
+      result = edit_result_;
+    }
+    for (auto &callback : callbacks) {
+      callback(result);
+    }
+  }
+
+  [[nodiscard]] bool
+  wait_for_edit_count(const std::size_t count,
+                      const std::chrono::milliseconds timeout) const {
+    std::unique_lock lock{mutex_};
+    return changed_.wait_for(lock, timeout,
+                             [this, count] { return edits_.size() >= count; });
+  }
+
+  [[nodiscard]] std::vector<InteractionMessage> edits() const {
+    const std::scoped_lock lock{mutex_};
+    return edits_;
+  }
+
+  [[nodiscard]] std::vector<std::pair<InteractionMessage, ResponseVisibility>>
+  replies() const {
+    const std::scoped_lock lock{mutex_};
+    return replies_;
+  }
+
+  [[nodiscard]] std::vector<ResponseVisibility> deferrals() const {
+    const std::scoped_lock lock{mutex_};
+    return deferrals_;
+  }
+
+private:
+  mutable std::mutex mutex_;
+  mutable std::condition_variable changed_;
+  std::vector<std::pair<InteractionMessage, ResponseVisibility>> replies_;
+  std::vector<ResponseVisibility> deferrals_;
+  std::vector<InteractionMessage> edits_;
+  std::vector<std::pair<InteractionMessage, ResponseVisibility>> follow_ups_;
+  std::vector<ModalPayload> modals_;
+  DeliveryResult reply_result_{DeliveryResult::success};
+  DeliveryResult defer_result_{DeliveryResult::success};
+  DeliveryResult edit_result_{DeliveryResult::success};
+  bool hold_edit_completions_{};
+  std::vector<DeliveryCallback> pending_edit_completions_;
+};
+
 class FakeDiscord final : public DiscordRuntime {
 public:
-  void start(MessageCallback message_callback) override {
+  void start(MessageCallback message_callback,
+             InteractionCallback interaction_callback,
+             CommandCatalog command_catalog) override {
     const std::scoped_lock lock{mutex_};
     lifecycle_.push_back("gateway.start");
     callback_ = std::move(message_callback);
+    interaction_callback_ = std::move(interaction_callback);
+    command_catalog_ = std::move(command_catalog);
     accepting_ = true;
+    status_ = {.ready = true,
+               .command_registration = CommandRegistrationState::synchronized,
+               .command_catalog_version = command_catalog_.version};
     if (fail_start_) {
       throw std::runtime_error{"scripted gateway startup failure"};
     }
@@ -49,6 +187,8 @@ public:
         shutdown_ = true;
         accepting_ = false;
         callback_ = {};
+        interaction_callback_ = {};
+        status_.ready = false;
         observer = shutdown_observer_;
       }
       if (observer) {
@@ -71,6 +211,29 @@ public:
     }
     replies_.push_back(request);
     changed_.notify_all();
+  }
+
+  void send_public(const PublicMessageRequest &request,
+                   DeliveryCallback callback = {}) override {
+    DeliveryResult result;
+    {
+      const std::scoped_lock lock{mutex_};
+      public_messages_.push_back(request);
+      result = public_delivery_result_;
+      changed_.notify_all();
+    }
+    if (callback) {
+      callback(result);
+    }
+  }
+
+  [[nodiscard]] DiscordRuntimeStatus status() const noexcept override {
+    try {
+      const std::scoped_lock lock{mutex_};
+      return status_;
+    } catch (...) {
+      return {};
+    }
   }
 
   [[nodiscard]] std::vector<ConversationEntry>
@@ -113,6 +276,23 @@ public:
       callback = callback_;
     }
     callback(std::move(message));
+  }
+
+  void emit(IncomingInteraction interaction) {
+    InteractionCallback callback;
+    {
+      const std::scoped_lock lock{mutex_};
+      if (!accepting_ || !interaction_callback_) {
+        return;
+      }
+      callback = interaction_callback_;
+    }
+    callback(std::move(interaction));
+  }
+
+  void set_public_delivery_result(const DeliveryResult result) {
+    const std::scoped_lock lock{mutex_};
+    public_delivery_result_ = result;
   }
 
   void set_recent(std::vector<ConversationEntry> recent) {
@@ -168,6 +348,16 @@ public:
     return lifecycle_;
   }
 
+  [[nodiscard]] std::vector<PublicMessageRequest> public_messages() const {
+    const std::scoped_lock lock{mutex_};
+    return public_messages_;
+  }
+
+  [[nodiscard]] CommandCatalog command_catalog() const {
+    const std::scoped_lock lock{mutex_};
+    return command_catalog_;
+  }
+
   [[nodiscard]] bool shutdown_called() const {
     const std::scoped_lock lock{mutex_};
     return shutdown_;
@@ -177,9 +367,13 @@ private:
   mutable std::mutex mutex_;
   mutable std::condition_variable changed_;
   MessageCallback callback_;
+  InteractionCallback interaction_callback_;
+  CommandCatalog command_catalog_;
+  DiscordRuntimeStatus status_;
   std::vector<ConversationEntry> recent_;
   std::unordered_map<DiscordId, ConversationEntry> fetched_;
   std::vector<ReplyRequest> replies_;
+  std::vector<PublicMessageRequest> public_messages_;
   std::vector<DiscordId> typing_channels_;
   std::vector<std::string> lifecycle_;
   std::function<void()> shutdown_observer_;
@@ -189,6 +383,7 @@ private:
   bool history_failure_{false};
   bool reply_context_failure_{false};
   bool delivery_failure_{false};
+  DeliveryResult public_delivery_result_{DeliveryResult::success};
 };
 
 [[nodiscard]] inline IncomingMessage
@@ -206,6 +401,31 @@ incoming(std::string content, const DiscordId message_id = 100,
       .content = std::move(content),
       .author_is_bot = author_is_bot,
       .replied_to = std::nullopt,
+  };
+}
+
+[[nodiscard]] inline IncomingInteraction
+interaction(std::shared_ptr<DiscordInteractionResponder> responder,
+            const InteractionKind kind = InteractionKind::slash_command,
+            const DiscordId interaction_id = 200, const DiscordId guild_id = 10,
+            const DiscordId channel_id = 20, const DiscordId user_id = 30) {
+  return IncomingInteraction{
+      .correlation_id = {},
+      .interaction_id = interaction_id,
+      .guild_id = guild_id,
+      .channel_id = channel_id,
+      .user_id = user_id,
+      .username = "test-user",
+      .display_name = "Test User",
+      .kind = kind,
+      .command_name = {},
+      .subcommand_name = {},
+      .command_options = {},
+      .custom_id = {},
+      .selected_values = {},
+      .modal_fields = {},
+      .context_message = std::nullopt,
+      .responder = std::move(responder),
   };
 }
 

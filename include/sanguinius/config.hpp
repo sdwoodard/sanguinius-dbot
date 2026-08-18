@@ -28,6 +28,13 @@ struct DiscordConfiguration {
   std::chrono::seconds request_timeout{10};
 };
 
+struct DiscordCommandConfiguration {
+  std::string token;
+  DiscordSnowflake guild_id;
+  std::chrono::seconds request_timeout{10};
+  bool admin_commands_enabled{};
+};
+
 struct AiConfiguration {
   std::string api_key;
   std::string model{"gpt-5.4-nano"};
@@ -75,5 +82,10 @@ configuration_origin_name(ConfigurationOrigin origin) noexcept;
                                                   const BuildInfo &build);
 
 [[nodiscard]] std::filesystem::path database_file_from_environment();
+
+[[nodiscard]] DiscordCommandConfiguration
+discord_command_configuration_from_environment();
+[[nodiscard]] DiscordCommandConfiguration
+discord_command_configuration_from_source(const ConfigSource &source);
 
 } // namespace sanguinius

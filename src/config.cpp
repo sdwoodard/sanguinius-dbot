@@ -173,6 +173,35 @@ Config Config::from_environment() {
   return from_source(source);
 }
 
+DiscordCommandConfiguration discord_command_configuration_from_environment() {
+  const EnvironmentConfigSource source;
+  return discord_command_configuration_from_source(source);
+}
+
+DiscordCommandConfiguration
+discord_command_configuration_from_source(const ConfigSource &source) {
+  DiscordCommandConfiguration config;
+  const auto token = optional_nonempty(source, "SANGUINIUS_TOKEN");
+  const auto token_file = optional_nonempty(source, "SANGUINIUS_TOKEN_FILE");
+  if (token.has_value()) {
+    config.token = *token;
+  } else if (token_file.has_value()) {
+    config.token =
+        secret_from_file(source, *token_file, "SANGUINIUS_TOKEN_FILE");
+  }
+  if (config.token.empty()) {
+    throw std::runtime_error{"No Discord token configured. Set "
+                             "SANGUINIUS_TOKEN or SANGUINIUS_TOKEN_FILE."};
+  }
+
+  config.guild_id = required_snowflake(source, "SANGUINIUS_GUILD_ID");
+  ConfigurationOrigin ignored_origin{};
+  config.request_timeout = request_timeout(source, ignored_origin);
+  config.admin_commands_enabled =
+      optional_boolean(source, "SANGUINIUS_ADMIN_COMMANDS_ENABLED", false);
+  return config;
+}
+
 std::filesystem::path database_file_from_environment() {
   constexpr const char *variable = "SANGUINIUS_DATABASE_FILE";
   const char *value = std::getenv(variable);

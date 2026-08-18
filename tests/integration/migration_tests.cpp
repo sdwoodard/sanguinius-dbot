@@ -33,7 +33,7 @@ using sanguinius::persistence::SchemaState;
 
 } // namespace
 
-TEST_CASE("production migration moves an empty database to version one",
+TEST_CASE("production migration moves an empty database to version two",
           "[migration]") {
   sanguinius::test::TemporaryDatabase temporary;
   sanguinius::test::FakeClock clock{
@@ -44,26 +44,34 @@ TEST_CASE("production migration moves an empty database to version one",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::uninitialized);
   REQUIRE(before.current_version == 0);
-  REQUIRE(before.target_version == 1);
+  REQUIRE(before.target_version == 2);
 
   const auto applied = migrator.apply(database.connection());
   REQUIRE(applied.state == SchemaState::current);
-  REQUIRE(applied.current_version == 1);
-  REQUIRE(count(database.connection(), "schema_migrations") == 1);
+  REQUIRE(applied.current_version == 2);
+  REQUIRE(count(database.connection(), "schema_migrations") == 2);
   REQUIRE(count(database.connection(), "application_instance") == 0);
   REQUIRE(count(database.connection(), "guild_config") == 0);
+  REQUIRE(count(database.connection(), "pending_notice") == 0);
+  REQUIRE(count(database.connection(), "interaction_token") == 0);
+  REQUIRE(count(database.connection(), "notice_reveal_attempt") == 0);
 
   auto history = database.connection().prepare(
-      "SELECT name, checksum, applied_at_ms FROM schema_migrations");
+      "SELECT name, checksum, applied_at_ms FROM schema_migrations "
+      "ORDER BY version");
   REQUIRE(history.step());
   REQUIRE(history.column_text(0) == "core_foundation");
+  REQUIRE(history.column_text(1).size() == 64);
+  REQUIRE(history.column_int64(2) == 123'000);
+  REQUIRE(history.step());
+  REQUIRE(history.column_text(0) == "discord_interactions");
   REQUIRE(history.column_text(1).size() == 64);
   REQUIRE(history.column_int64(2) == 123'000);
 
   clock.set(std::chrono::sys_seconds{std::chrono::seconds{456}});
   const auto repeated = migrator.apply(database.connection());
   REQUIRE(repeated.state == SchemaState::current);
-  REQUIRE(count(database.connection(), "schema_migrations") == 1);
+  REQUIRE(count(database.connection(), "schema_migrations") == 2);
   auto unchanged = database.connection().prepare(
       "SELECT applied_at_ms FROM schema_migrations");
   REQUIRE(unchanged.step());
@@ -90,18 +98,43 @@ TEST_CASE("migration metadata detects checksum gaps and newer schemas",
       "UPDATE schema_migrations SET checksum = '" +
       std::string{
           sanguinius::persistence::production_migrations()[0].checksum} +
-      "', name = 'renamed'");
+      "', name = 'renamed' WHERE version = 1");
   REQUIRE(migrator.inspect(database.connection()).state ==
           SchemaState::incompatible);
 
   database.connection().execute("DELETE FROM schema_migrations");
   database.connection().execute(
       "INSERT INTO schema_migrations VALUES "
-      "(2, 'future', "
+      "(3, 'future', "
       "'0000000000000000000000000000000000000000000000000000000000000000', "
       "0, 'future')");
   REQUIRE(migrator.inspect(database.connection()).state ==
           SchemaState::incompatible);
+}
+
+TEST_CASE("production migration upgrades version one atomically",
+          "[migration][rollback]") {
+  sanguinius::test::TemporaryDatabase temporary;
+  sanguinius::test::FakeClock clock;
+  auto database = Database::open_migration(temporary.path(), 25ms);
+  const auto production = sanguinius::persistence::production_migrations();
+  const Migrator version_one{std::span<const Migration>{production.data(), 1},
+                             {"test-version", "test-revision"},
+                             clock};
+  REQUIRE(version_one.apply(database.connection()).current_version == 1);
+
+  auto migrator = production_migrator(clock);
+  const auto before = migrator.inspect(database.connection());
+  REQUIRE(before.state == SchemaState::pending);
+  REQUIRE(before.current_version == 1);
+  REQUIRE(before.pending_count == 1);
+
+  const auto applied = migrator.apply(database.connection());
+  REQUIRE(applied.state == SchemaState::current);
+  REQUIRE(applied.current_version == 2);
+  REQUIRE(count(database.connection(), "pending_notice") == 0);
+  REQUIRE(count(database.connection(), "interaction_token") == 0);
+  REQUIRE(count(database.connection(), "notice_reveal_attempt") == 0);
 }
 
 TEST_CASE("unmanaged schema and malformed migration table fail closed",

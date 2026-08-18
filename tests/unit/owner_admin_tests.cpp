@@ -23,7 +23,13 @@ TEST_CASE("owner admin service applies enabled scope and owner boundaries",
       {"test-version", "test-revision"},
       {.admin_commands_enabled = true, .test_mode = false},
       {},
-      {true, 1, 1, "3.53.4", "instance"}};
+      {true, 1, 1, "3.53.4", "instance"},
+      {.interaction_queue =
+           [] {
+             return sanguinius::QueueSnapshot{
+                 .capacity = 16, .queued = 2, .accepting = true};
+           },
+       .pending_notice_count = [] { return std::size_t{3}; }}};
   const sanguinius::OwnerAdminService service{
       {.admin_commands_enabled = true, .test_mode = false}, policy, health};
 
@@ -34,6 +40,9 @@ TEST_CASE("owner admin service applies enabled scope and owner boundaries",
   REQUIRE(allowed.authorization.allowed());
   REQUIRE(allowed.health.has_value());
   REQUIRE(allowed.health->scope_matched);
+  REQUIRE(allowed.health->interaction_queue.capacity == 16);
+  REQUIRE(allowed.health->interaction_queue.queued == 2);
+  REQUIRE(allowed.health->pending_notice_count == 3);
 
   const auto wrong_guild = service.handle(
       {{11, 20, 30}, sanguinius::AdminOperation::health}, {}, {});
@@ -58,7 +67,12 @@ TEST_CASE("owner admin service is disabled independently of owner identity",
           "[admin]") {
   const sanguinius::ServerScopePolicy policy{{10, 20, 30}};
   const sanguinius::HealthService health{
-      {"version", "revision"}, {}, {}, {true, 1, 1, "3.53.4", "instance"}};
+      {"version", "revision"},
+      {},
+      {},
+      {true, 1, 1, "3.53.4", "instance"},
+      {.interaction_queue = [] { return sanguinius::QueueSnapshot{}; },
+       .pending_notice_count = [] { return std::size_t{}; }}};
   const sanguinius::OwnerAdminService service{{}, policy, health};
 
   const auto result = service.handle(

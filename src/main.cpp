@@ -1,8 +1,11 @@
 #include "sanguinius/build_info.hpp"
 #include "sanguinius/clock.hpp"
+#include "sanguinius/command_registry.hpp"
 #include "sanguinius/composition_root.hpp"
 #include "sanguinius/config.hpp"
 #include "sanguinius/database_cli.hpp"
+#include "sanguinius/discord_command_cli.hpp"
+#include "sanguinius/dpp_discord_adapter.hpp"
 #include "sanguinius/process_signals.hpp"
 
 #include <cstdlib>
@@ -11,13 +14,16 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
 void print_usage(std::ostream &stream, const std::string_view executable) {
   stream << "Usage: " << executable << " [--check-config|--help]\n"
          << "       " << executable << " db <status|check|migrate|integrity>\n"
-         << "       " << executable << " db backup <destination>\n";
+         << "       " << executable << " db backup <destination>\n"
+         << "       " << executable << " discord commands sync\n"
+         << "       " << executable << " discord commands clear --confirm\n";
 }
 
 [[nodiscard]] std::optional<sanguinius::DatabaseCommand>
@@ -67,6 +73,26 @@ int main(const int argc, char **argv) {
       return sanguinius::run_database_command(
           *command, sanguinius::database_file_from_environment(),
           sanguinius::current_build_info(), clock, std::cout, std::cerr);
+    }
+    if (argc >= 2 && std::string_view{argv[1]} == "discord") {
+      std::vector<std::string_view> arguments;
+      arguments.reserve(static_cast<std::size_t>(argc - 1));
+      for (int index = 1; index < argc; ++index) {
+        arguments.emplace_back(argv[index]);
+      }
+      const auto operation = sanguinius::parse_discord_command(arguments);
+      if (!operation.has_value()) {
+        print_usage(std::cerr, argv[0]);
+        return 2;
+      }
+      auto command_config =
+          sanguinius::discord_command_configuration_from_environment();
+      return sanguinius::run_discord_command_operator(
+          *operation, std::move(command_config.token),
+          command_config.request_timeout,
+          sanguinius::DiscordId{command_config.guild_id.value()},
+          sanguinius::command_catalog(command_config.admin_commands_enabled),
+          std::cout, std::cerr);
     }
     if (argc > 2) {
       print_usage(std::cerr, argv[0]);

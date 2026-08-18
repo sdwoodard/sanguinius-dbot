@@ -9,6 +9,7 @@
 #include "sanguinius/health.hpp"
 #include "sanguinius/id_generator.hpp"
 #include "sanguinius/message_log.hpp"
+#include "sanguinius/persistent_id.hpp"
 #include "sanguinius/repositories.hpp"
 #include "sanguinius/server_scope_policy.hpp"
 
@@ -33,14 +34,18 @@ struct ApplicationOptions {
   std::size_t message_queue_capacity{64};
   std::size_t ai_queue_capacity{64};
   std::size_t ai_worker_count{2};
+  std::size_t interaction_queue_capacity{64};
 };
 
 struct ApplicationDependencies {
   std::unique_ptr<Clock> clock;
   std::unique_ptr<IdGenerator> id_generator;
+  std::unique_ptr<PersistentIdGenerator> persistent_id_generator;
   std::unique_ptr<Diagnostics> diagnostics;
   std::unique_ptr<MessageLog> message_log;
   std::unique_ptr<ApplicationInstanceRepository> application_instances;
+  std::unique_ptr<CoreIdentityRepository> identities;
+  std::unique_ptr<PendingNoticeRepository> pending_notices;
   std::unique_ptr<AiClient> ai_client;
   std::unique_ptr<DiscordRuntime> discord;
 };

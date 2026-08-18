@@ -1,20 +1,12 @@
 #include "sanguinius/persistence/migrator.hpp"
 
-#include <string_view>
 #include <vector>
 
 namespace sanguinius::persistence {
-namespace {
-
-constexpr std::string_view migration_sql = R"SANGMIG(
-@SANGUINIUS_MIGRATION_SQL@)SANGMIG";
-
-} // namespace
 
 const std::vector<Migration> &production_migrations() {
   static const std::vector<Migration> migrations{
-      Migration{1, "core_foundation", "@SANGUINIUS_MIGRATION_CHECKSUM@",
-                migration_sql},
+@SANGUINIUS_MIGRATION_ENTRIES@
   };
   return migrations;
 }

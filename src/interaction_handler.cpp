@@ -1,0 +1,337 @@
+#include "sanguinius/interaction_handler.hpp"
+
+#include <chrono>
+#include <optional>
+#include <sstream>
+#include <stdexcept>
+#include <utility>
+
+namespace sanguinius {
+namespace {
+
+[[nodiscard]] std::optional<std::string> cache_value(const std::string &value) {
+  if (value.empty() || value.size() > 128) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+[[nodiscard]] std::string enabled(const bool value) {
+  return value ? "enabled" : "disabled";
+}
+
+[[nodiscard]] InteractionMessage
+status_message(const FeatureConfiguration &features,
+               const std::size_t pending_notices) {
+  std::ostringstream output;
+  output << "Sanguinius is ready.\n"
+         << "Unopened sealed notices: " << pending_notices << "\n"
+         << "Chronicle: " << enabled(features.chronicle_enabled) << "\n"
+         << "Tarot: " << enabled(features.tarot_enabled) << "\n"
+         << "Appearances: " << appearance_mode_name(features.appearances_mode)
+         << "\n"
+         << "Vox: " << enabled(features.vox_enabled);
+  return text_message(output.str());
+}
+
+[[nodiscard]] InteractionMessage
+privacy_message(const FeatureConfiguration &features,
+                const UserPreferences &preferences,
+                const std::size_t pending_notices) {
+  std::ostringstream output;
+  output << "Your Sanguinius privacy summary\n"
+         << "Discord identity cache: stored for stable account identity\n"
+         << "Chronicle opt-in: " << enabled(preferences.chronicle_opt_in)
+         << "\nMemory callbacks: "
+         << enabled(preferences.memory_callback_opt_in)
+         << "\nAppearance callbacks: "
+         << enabled(preferences.appearance_callback_opt_in)
+         << "\nVoice input globally: " << enabled(features.voice_input_enabled)
+         << "\nYour voice-input opt-in: "
+         << enabled(preferences.voice_input_opt_in)
+         << "\nUnopened sealed notices: " << pending_notices
+         << "\nDiscord DMs are never used. Raw received voice audio is never "
+            "persisted.";
+  return text_message(output.str());
+}
+
+} // namespace
+
+InteractionHandler::InteractionHandler(
+    CoreIdentityRepository &identities, PendingNoticeService &notices,
+    const Clock &clock, DiscordPublicDelivery &public_delivery,
+    HealthService &health_service, Diagnostics &diagnostics,
+    const FeatureConfiguration features,
+    std::function<QueueSnapshot()> message_queue,
+    std::function<QueueSnapshot()> ai_queue, const std::size_t queue_capacity)
+    : identities_{identities}, notices_{notices}, clock_{clock},
+      public_delivery_{public_delivery}, health_service_{health_service},
+      diagnostics_{diagnostics}, features_{features},
+      message_queue_{std::move(message_queue)}, ai_queue_{std::move(ai_queue)},
+      callbacks_{std::make_shared<CallbackFence>()},
+      worker_{queue_capacity, 1} {
+  if (!message_queue_ || !ai_queue_) {
+    throw std::invalid_argument{"Interaction queue observers are required."};
+  }
+}
+
+InteractionHandler::~InteractionHandler() { stop(); }
+
+void InteractionHandler::start() { worker_.start(); }
+
+void InteractionHandler::stop() noexcept {
+  worker_.stop();
+  callbacks_->close_and_wait();
+}
+
+SubmitResult InteractionHandler::enqueue(RoutedInteraction interaction) {
+  auto responder = interaction.interaction.responder;
+  auto correlation_id = interaction.interaction.correlation_id;
+  const auto result = worker_.try_submit([this,
+                                          interaction = std::move(interaction)](
+                                             const std::stop_token token) {
+    if (token.stop_requested()) {
+      return;
+    }
+    try {
+      process(interaction);
+    } catch (const std::exception &error) {
+      diagnostics_.emit({DiagnosticSeverity::error, "interaction.handling",
+                         error.what(), interaction.interaction.correlation_id});
+      edit(interaction.interaction,
+           text_message("I could not complete that interaction. Please "
+                        "try again shortly."),
+           "interaction.response");
+    } catch (...) {
+      diagnostics_.emit({DiagnosticSeverity::error, "interaction.handling",
+                         "Unknown interaction handling failure.",
+                         interaction.interaction.correlation_id});
+      edit(interaction.interaction,
+           text_message("I could not complete that interaction. Please "
+                        "try again shortly."),
+           "interaction.response");
+    }
+  });
+  if (result == SubmitResult::full) {
+    diagnostics_.emit({DiagnosticSeverity::warning, "interaction.queue_full",
+                       "Incoming interaction was rejected because the "
+                       "interaction queue is full.",
+                       correlation_id});
+    if (responder) {
+      responder->edit_original(text_message(
+          "I am handling too many interactions right now. Please try again "
+          "shortly."));
+    }
+  }
+  return result;
+}
+
+QueueSnapshot InteractionHandler::queue_snapshot() const {
+  return worker_.snapshot();
+}
+
+void InteractionHandler::process(const RoutedInteraction &request) {
+  ensure_user(request.interaction);
+  switch (request.operation) {
+  case InteractionOperation::status:
+    edit(request.interaction,
+         status_message(features_,
+                        notices_.pending_count(request.interaction.user_id)),
+         "interaction.status");
+    return;
+  case InteractionOperation::privacy: {
+    const auto preferences =
+        identities_.load_preferences(request.interaction.user_id);
+    if (!preferences.has_value()) {
+      throw std::runtime_error{"User preferences were not initialized."};
+    }
+    edit(request.interaction,
+         privacy_message(features_, *preferences,
+                         notices_.pending_count(request.interaction.user_id)),
+         "interaction.privacy");
+    return;
+  }
+  case InteractionOperation::inbox:
+    edit_reveal(request.interaction, notices_.open_inbox(request.interaction),
+                "interaction.inbox");
+    return;
+  case InteractionOperation::open_component:
+    edit_reveal(request.interaction,
+                notices_.open_component(request.interaction),
+                "interaction.component");
+    return;
+  case InteractionOperation::admin_health: {
+    const auto snapshot =
+        health_service_.snapshot(message_queue_(), ai_queue_(), true);
+    edit(request.interaction, text_message(render_health(snapshot)),
+         "interaction.health");
+    return;
+  }
+  case InteractionOperation::test_notice: {
+    auto creation = notices_.create_test_notice(request.interaction);
+    if (!creation.persistence.created) {
+      diagnostics_.emit(
+          {DiagnosticSeverity::info, "interaction.test_notice",
+           "Owner test notice creation was replayed idempotently.",
+           request.interaction.correlation_id});
+      edit(request.interaction,
+           text_message("That test notice was already created. Open it from "
+                        "its card or with `/sanguinius inbox`."),
+           "interaction.test_notice");
+      return;
+    }
+    diagnostics_.emit({DiagnosticSeverity::info, "interaction.test_notice",
+                       "Owner test notice was created.",
+                       request.interaction.correlation_id});
+    const auto responder = request.interaction.responder;
+    const auto correlation_id = request.interaction.correlation_id;
+    const auto callbacks = callbacks_;
+    public_delivery_.send_public(
+        creation.public_card, [this, callbacks, responder,
+                               correlation_id](const DeliveryResult result) {
+          try {
+            static_cast<void>(callbacks->invoke([this, responder,
+                                                 correlation_id, result] {
+              if (!responder) {
+                return;
+              }
+              if (result == DeliveryResult::success) {
+                responder->edit_original(text_message(
+                    "The test notice was stored and its neutral card was "
+                    "posted."));
+                return;
+              }
+              diagnostics_.emit({DiagnosticSeverity::warning,
+                                 "discord.public_notice",
+                                 "A neutral notice card was not confirmed "
+                                 "delivered; the notice remains in the inbox.",
+                                 correlation_id});
+              responder->edit_original(text_message(
+                  "The test notice was stored, but its public card was not "
+                  "confirmed delivered. Use `/sanguinius inbox` to open it."));
+            }));
+          } catch (...) {
+          }
+        });
+    return;
+  }
+  }
+}
+
+void InteractionHandler::ensure_user(const IncomingInteraction &interaction) {
+  identities_.ensure_user(DiscordUserRecord{
+      .user_id = interaction.user_id,
+      .display_name = cache_value(interaction.display_name),
+      .username = cache_value(interaction.username),
+      .is_bot = false,
+      .observed_at_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            clock_.now().time_since_epoch())
+                            .count(),
+  });
+}
+
+void InteractionHandler::edit(
+    const IncomingInteraction &interaction, InteractionMessage message,
+    const std::string_view diagnostic_category) const noexcept {
+  try {
+    if (!interaction.responder) {
+      throw std::runtime_error{"Interaction responder is missing."};
+    }
+    const auto correlation_id = interaction.correlation_id;
+    const auto category = std::string{diagnostic_category};
+    const auto callbacks = callbacks_;
+    interaction.responder->edit_original(
+        message, [this, callbacks, correlation_id,
+                  category](const DeliveryResult result) {
+          try {
+            static_cast<void>(callbacks->invoke([this, correlation_id, category,
+                                                 result] {
+              if (result != DeliveryResult::success) {
+                diagnostics_.emit({DiagnosticSeverity::warning, category,
+                                   "Discord did not confirm the interaction "
+                                   "response.",
+                                   correlation_id});
+              }
+            }));
+          } catch (...) {
+          }
+        });
+  } catch (const std::exception &error) {
+    diagnostics_.emit({DiagnosticSeverity::error,
+                       std::string{diagnostic_category}, error.what(),
+                       interaction.correlation_id});
+  } catch (...) {
+    diagnostics_.emit(
+        {DiagnosticSeverity::error, std::string{diagnostic_category},
+         "Unknown interaction response failure.", interaction.correlation_id});
+  }
+}
+
+void InteractionHandler::edit_reveal(
+    const IncomingInteraction &interaction, OpenPendingNoticeResult reveal,
+    const std::string_view diagnostic_category) const noexcept {
+  const auto delivery_key = reveal.delivery_idempotency_key;
+  if (!delivery_key.has_value()) {
+    edit(interaction, render_private_notice(reveal), diagnostic_category);
+    return;
+  }
+
+  try {
+    if (!interaction.responder) {
+      throw std::runtime_error{"Interaction responder is missing."};
+    }
+    const auto correlation_id = interaction.correlation_id;
+    const auto category = std::string{diagnostic_category};
+    const auto callbacks = callbacks_;
+    interaction.responder->edit_original(
+        render_private_notice(reveal),
+        [this, callbacks, correlation_id, category,
+         delivery_key = *delivery_key](const DeliveryResult result) {
+          try {
+            static_cast<void>(callbacks->invoke([this, correlation_id, category,
+                                                 delivery_key, result] {
+              try {
+                static_cast<void>(
+                    notices_.complete_delivery(delivery_key, result));
+              } catch (const std::exception &error) {
+                diagnostics_.emit({DiagnosticSeverity::error,
+                                   "interaction.delivery_state", error.what(),
+                                   correlation_id});
+              } catch (...) {
+                diagnostics_.emit(
+                    {DiagnosticSeverity::error, "interaction.delivery_state",
+                     "Unknown notice delivery-state failure.", correlation_id});
+              }
+              if (result != DeliveryResult::success) {
+                diagnostics_.emit(
+                    {DiagnosticSeverity::warning, category,
+                     "Discord did not confirm the interaction response; "
+                     "the notice remains retrievable.",
+                     correlation_id});
+              }
+            }));
+          } catch (...) {
+          }
+        });
+  } catch (const std::exception &error) {
+    try {
+      static_cast<void>(notices_.complete_delivery(
+          *delivery_key, DeliveryResult::permanent_failure));
+    } catch (...) {
+    }
+    diagnostics_.emit({DiagnosticSeverity::error,
+                       std::string{diagnostic_category}, error.what(),
+                       interaction.correlation_id});
+  } catch (...) {
+    try {
+      static_cast<void>(notices_.complete_delivery(
+          *delivery_key, DeliveryResult::unknown_outcome));
+    } catch (...) {
+    }
+    diagnostics_.emit(
+        {DiagnosticSeverity::error, std::string{diagnostic_category},
+         "Unknown interaction response failure.", interaction.correlation_id});
+  }
+}
+
+} // namespace sanguinius

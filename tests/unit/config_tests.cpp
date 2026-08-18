@@ -125,6 +125,25 @@ TEST_CASE("typed configuration loads safe defaults and full snowflakes",
           std::vector<std::filesystem::path>{"config/persona.txt"});
 }
 
+TEST_CASE("Discord command configuration does not load application services",
+          "[config][discord-commands]") {
+  FakeConfigSource source;
+  source.values.erase("OPENAI_API_KEY");
+  source.values.erase("SANGUINIUS_PRIMARY_CHANNEL_ID");
+  source.values.erase("SANGUINIUS_OWNER_USER_ID");
+  source.values["SANGUINIUS_ADMIN_COMMANDS_ENABLED"] = "true";
+  source.values["SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS"] = "17";
+  source.files.clear();
+
+  const auto config =
+      sanguinius::discord_command_configuration_from_source(source);
+  REQUIRE(config.token == "DISCORD_SECRET_SENTINEL");
+  REQUIRE(config.guild_id.str() == "18446744073709551615");
+  REQUIRE(config.request_timeout == std::chrono::seconds{17});
+  REQUIRE(config.admin_commands_enabled);
+  REQUIRE(source.read_paths.empty());
+}
+
 TEST_CASE("typed configuration parses strict controls features and duration",
           "[config]") {
   FakeConfigSource source;

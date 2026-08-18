@@ -48,10 +48,11 @@ endif()
 
 include(cmake/EmbedMigrations.cmake)
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
-sanguinius_embed_migration(
-    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0001_core_foundation.sql"
+sanguinius_embed_migrations(
     "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_migrations.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embedded_migration.cpp.in"
+    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0001_core_foundation.sql"
+    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0002_discord_interactions.sql"
 )
 
 function(sanguinius_enable_warnings target)
@@ -72,15 +73,22 @@ add_library(sanguinius_core STATIC
     src/ai_responder.cpp
     src/application.cpp
     src/build_info.cpp
+    src/callback_fence.cpp
     src/clock.cpp
+    src/command_registry.cpp
     src/config.cpp
     src/diagnostics.cpp
+    src/discord_command_cli.cpp
     src/feature_config.cpp
     src/health.cpp
     src/id_generator.cpp
+    src/interaction_handler.cpp
+    src/interaction_response_state.cpp
+    src/interaction_router.cpp
     src/message_handler.cpp
     src/message_logger.cpp
     src/owner_admin.cpp
+    src/pending_notice.cpp
     src/persistent_id.cpp
     src/repositories.cpp
     src/server_scope_policy.cpp
@@ -121,10 +129,12 @@ target_link_libraries(sanguinius_persistence
         sanguinius_core
     PRIVATE
         SQLite3::SQLite3
+        nlohmann_json::nlohmann_json
 )
 
 add_library(sanguinius_runtime STATIC
     src/composition_root.cpp
+    src/dpp_command_registry.cpp
     src/dpp_discord_adapter.cpp
     src/openai_client.cpp
     src/process_signals.cpp
@@ -171,6 +181,7 @@ if(BUILD_TESTING)
         tests/unit/config_tests.cpp
         tests/unit/command_parse_tests.cpp
         tests/unit/health_tests.cpp
+        tests/unit/interaction_core_tests.cpp
         tests/unit/mention_parse_tests.cpp
         tests/unit/message_logger_tests.cpp
         tests/unit/owner_admin_tests.cpp
@@ -181,6 +192,7 @@ if(BUILD_TESTING)
     add_sanguinius_test(sanguinius_application_tests
         tests/application/application_flow_tests.cpp
         tests/application/failure_and_shutdown_tests.cpp
+        tests/application/interaction_flow_tests.cpp
     )
 
     add_executable(sanguinius_persistence_tests
@@ -201,6 +213,23 @@ if(BUILD_TESTING)
         Catch2::Catch2WithMain
     )
     catch_discover_tests(sanguinius_persistence_tests
+        PROPERTIES TIMEOUT 10
+    )
+
+    add_executable(sanguinius_runtime_tests
+        tests/runtime/dpp_command_registration_tests.cpp
+    )
+    target_compile_features(sanguinius_runtime_tests PRIVATE cxx_std_20)
+    target_include_directories(sanguinius_runtime_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+    )
+    sanguinius_enable_warnings(sanguinius_runtime_tests)
+    target_link_libraries(sanguinius_runtime_tests PRIVATE
+        sanguinius_runtime
+        dpp::dpp
+        Catch2::Catch2WithMain
+    )
+    catch_discover_tests(sanguinius_runtime_tests
         PROPERTIES TIMEOUT 10
     )
 

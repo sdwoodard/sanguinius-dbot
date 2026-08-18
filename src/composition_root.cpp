@@ -52,14 +52,18 @@ std::unique_ptr<Application> make_application(const Config &config) {
   auto repository_context =
       std::make_shared<persistence::SqliteRepositoryContext>(
           std::move(database));
-  persistence::SqliteCoreIdentityRepository identities{repository_context};
-  identities.initialize_or_validate_scope(config.discord.server_scope,
-                                          unix_milliseconds(*clock));
+  auto identities = std::make_unique<persistence::SqliteCoreIdentityRepository>(
+      repository_context);
+  identities->initialize_or_validate_scope(config.discord.server_scope,
+                                           unix_milliseconds(*clock));
   auto application_instances =
       std::make_unique<persistence::SqliteApplicationInstanceRepository>(
           repository_context);
-  UuidV4Generator persistent_ids;
-  const auto instance_id = persistent_ids.next_id();
+  auto persistent_ids = std::make_unique<UuidV4Generator>();
+  const auto instance_id = persistent_ids->next_id();
+  auto pending_notices =
+      std::make_unique<persistence::SqlitePendingNoticeRepository>(
+          repository_context);
 
   auto id_generator = std::make_unique<ProcessIdGenerator>();
   auto diagnostics = std::make_unique<ConsoleDiagnostics>();
@@ -68,7 +72,8 @@ std::unique_ptr<Application> make_application(const Config &config) {
   auto ai_client =
       std::make_unique<OpenAiClient>(config.ai.api_key, config.ai.model);
   auto discord = std::make_unique<DppDiscordAdapter>(
-      config.discord.token, config.discord.request_timeout, *diagnostics);
+      config.discord.token, config.discord.request_timeout,
+      config.discord.server_scope.guild_id, *diagnostics);
 
   return std::make_unique<Application>(
       ApplicationOptions{
@@ -92,13 +97,17 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .message_queue_capacity = 64,
           .ai_queue_capacity = 64,
           .ai_worker_count = 2,
+          .interaction_queue_capacity = 64,
       },
       ApplicationDependencies{
           .clock = std::move(clock),
           .id_generator = std::move(id_generator),
+          .persistent_id_generator = std::move(persistent_ids),
           .diagnostics = std::move(diagnostics),
           .message_log = std::move(message_log),
           .application_instances = std::move(application_instances),
+          .identities = std::move(identities),
+          .pending_notices = std::move(pending_notices),
           .ai_client = std::move(ai_client),
           .discord = std::move(discord),
       });

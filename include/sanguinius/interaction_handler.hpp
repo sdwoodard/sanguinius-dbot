@@ -1,0 +1,75 @@
+#pragma once
+
+#include "sanguinius/callback_fence.hpp"
+#include "sanguinius/clock.hpp"
+#include "sanguinius/diagnostics.hpp"
+#include "sanguinius/discord_interfaces.hpp"
+#include "sanguinius/feature_config.hpp"
+#include "sanguinius/health.hpp"
+#include "sanguinius/pending_notice.hpp"
+#include "sanguinius/repositories.hpp"
+#include "sanguinius/work_queue.hpp"
+
+#include <cstddef>
+#include <functional>
+#include <memory>
+
+namespace sanguinius {
+
+enum class InteractionOperation {
+  status,
+  inbox,
+  privacy,
+  admin_health,
+  test_notice,
+  open_component,
+};
+
+struct RoutedInteraction {
+  IncomingInteraction interaction;
+  InteractionOperation operation{InteractionOperation::status};
+};
+
+class InteractionHandler {
+public:
+  InteractionHandler(CoreIdentityRepository &identities,
+                     PendingNoticeService &notices, const Clock &clock,
+                     DiscordPublicDelivery &public_delivery,
+                     HealthService &health_service, Diagnostics &diagnostics,
+                     FeatureConfiguration features,
+                     std::function<QueueSnapshot()> message_queue,
+                     std::function<QueueSnapshot()> ai_queue,
+                     std::size_t queue_capacity = 64);
+  ~InteractionHandler();
+
+  InteractionHandler(const InteractionHandler &) = delete;
+  InteractionHandler &operator=(const InteractionHandler &) = delete;
+
+  void start();
+  void stop() noexcept;
+  [[nodiscard]] SubmitResult enqueue(RoutedInteraction interaction);
+  [[nodiscard]] QueueSnapshot queue_snapshot() const;
+
+private:
+  void process(const RoutedInteraction &request);
+  void ensure_user(const IncomingInteraction &interaction);
+  void edit(const IncomingInteraction &interaction, InteractionMessage message,
+            std::string_view diagnostic_category) const noexcept;
+  void edit_reveal(const IncomingInteraction &interaction,
+                   OpenPendingNoticeResult reveal,
+                   std::string_view diagnostic_category) const noexcept;
+
+  CoreIdentityRepository &identities_;
+  PendingNoticeService &notices_;
+  const Clock &clock_;
+  DiscordPublicDelivery &public_delivery_;
+  HealthService &health_service_;
+  Diagnostics &diagnostics_;
+  FeatureConfiguration features_;
+  std::function<QueueSnapshot()> message_queue_;
+  std::function<QueueSnapshot()> ai_queue_;
+  std::shared_ptr<CallbackFence> callbacks_;
+  BoundedExecutor worker_;
+};
+
+} // namespace sanguinius

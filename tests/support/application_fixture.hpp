@@ -33,14 +33,22 @@ public:
           .message_queue_capacity = 64,
           .ai_queue_capacity = 64,
           .ai_worker_count = 2,
+          .interaction_queue_capacity = 64,
       }) {
     auto owned_clock = std::make_unique<FakeClock>();
     auto owned_ids = std::make_unique<FakeIdGenerator>(std::vector<std::string>{
         "correlation-1", "correlation-2", "correlation-3", "correlation-4"});
+    auto owned_persistent_ids = std::make_unique<FakePersistentIdGenerator>(
+        std::vector<std::string>{"00000000-0000-4000-8000-000000000101",
+                                 "00000000-0000-4000-8000-000000000102",
+                                 "00000000-0000-4000-8000-000000000103",
+                                 "00000000-0000-4000-8000-000000000104"});
     auto owned_diagnostics = std::make_unique<FakeDiagnostics>();
     auto owned_log = std::make_unique<FakeMessageLog>();
     auto owned_instances =
         std::make_unique<FakeApplicationInstanceRepository>();
+    auto owned_identities = std::make_unique<FakeCoreIdentityRepository>();
+    auto owned_notices = std::make_unique<FakePendingNoticeRepository>();
     auto owned_ai = std::make_unique<FakeAiClient>();
     auto owned_discord = std::make_unique<FakeDiscord>();
 
@@ -49,6 +57,8 @@ public:
     diagnostics = owned_diagnostics.get();
     log = owned_log.get();
     instances = owned_instances.get();
+    identities = owned_identities.get();
+    notices = owned_notices.get();
     ai = owned_ai.get();
     discord = owned_discord.get();
 
@@ -57,9 +67,12 @@ public:
         ApplicationDependencies{
             .clock = std::move(owned_clock),
             .id_generator = std::move(owned_ids),
+            .persistent_id_generator = std::move(owned_persistent_ids),
             .diagnostics = std::move(owned_diagnostics),
             .message_log = std::move(owned_log),
             .application_instances = std::move(owned_instances),
+            .identities = std::move(owned_identities),
+            .pending_notices = std::move(owned_notices),
             .ai_client = std::move(owned_ai),
             .discord = std::move(owned_discord),
         });
@@ -71,6 +84,7 @@ public:
     // worker so Catch2 can report the original failure instead of hanging.
     if (application) {
       log->release();
+      identities->release();
     }
   }
 
@@ -79,6 +93,8 @@ public:
   FakeDiagnostics *diagnostics{};
   FakeMessageLog *log{};
   FakeApplicationInstanceRepository *instances{};
+  FakeCoreIdentityRepository *identities{};
+  FakePendingNoticeRepository *notices{};
   FakeAiClient *ai{};
   FakeDiscord *discord{};
   std::unique_ptr<Application> application;
