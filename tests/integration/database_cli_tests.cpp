@@ -83,16 +83,20 @@ TEST_CASE("database backup command requires its destination",
           "[database-cli][usage]") {
   sanguinius::test::TemporaryDatabase temporary;
   sanguinius::test::FakeClock clock;
-  const auto result =
-      run({sanguinius::DatabaseCommandType::backup, std::nullopt},
-          temporary.path(), clock);
-  REQUIRE(result.exit_code == 2);
-  REQUIRE(result.output.empty());
-  REQUIRE(result.errors == "Database backup destination is required.\n");
+  for (const auto &destination :
+       {std::optional<std::filesystem::path>{std::nullopt},
+        std::optional<std::filesystem::path>{std::filesystem::path{}}}) {
+    const auto result =
+        run({sanguinius::DatabaseCommandType::backup, destination},
+            temporary.path(), clock);
+    REQUIRE(result.exit_code == 2);
+    REQUIRE(result.output.empty());
+    REQUIRE(result.errors == "Database backup destination is required.\n");
+  }
 }
 
-TEST_CASE("database status reports incompatible state with failure exit",
-          "[database-cli]") {
+TEST_CASE("incompatible migration fails without changing journal mode",
+          "[database-cli][migration][rollback]") {
   sanguinius::test::TemporaryDatabase temporary;
   sanguinius::test::FakeClock clock;
   {
@@ -100,12 +104,30 @@ TEST_CASE("database status reports incompatible state with failure exit",
         sanguinius::persistence::Database::open_migration(temporary.path());
     database.connection().execute(
         "CREATE TABLE unmanaged (id INTEGER PRIMARY KEY) STRICT");
+    auto mode = database.connection().prepare("PRAGMA journal_mode");
+    REQUIRE(mode.step());
+    REQUIRE(mode.column_text(0) == "delete");
   }
 
-  const auto result =
+  const auto status =
       run({sanguinius::DatabaseCommandType::status, std::nullopt},
           temporary.path(), clock);
-  REQUIRE(result.exit_code == 1);
-  REQUIRE(result.output.find("database=incompatible") != std::string::npos);
-  REQUIRE(result.errors.empty());
+  REQUIRE(status.exit_code == 1);
+  REQUIRE(status.output.find("database=incompatible") != std::string::npos);
+  REQUIRE(status.errors.empty());
+
+  const auto migration =
+      run({sanguinius::DatabaseCommandType::migrate, std::nullopt},
+          temporary.path(), clock);
+  REQUIRE(migration.exit_code == 1);
+  REQUIRE(migration.output.empty());
+  REQUIRE(migration.errors == "Database command failed (incompatible).\n");
+
+  auto reopened = sanguinius::persistence::SqliteConnection::open(
+      temporary.path(), sanguinius::persistence::SqliteOpenMode::read_only);
+  auto mode = reopened.prepare("PRAGMA journal_mode");
+  REQUIRE(mode.step());
+  REQUIRE(mode.column_text(0) == "delete");
+  REQUIRE_FALSE(std::filesystem::exists(temporary.path().string() + "-wal"));
+  REQUIRE_FALSE(std::filesystem::exists(temporary.path().string() + "-shm"));
 }

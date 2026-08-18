@@ -1,5 +1,6 @@
 #include "sanguinius/persistence/migrator.hpp"
 
+#include "sanguinius/persistence/database.hpp"
 #include "sanguinius/persistence/transaction.hpp"
 
 #include <sqlite3.h>
@@ -89,6 +90,16 @@ Migrator::Migrator(const std::span<const Migration> migrations, BuildInfo build,
   validate_manifest();
 }
 
+MigrationStatus Migrator::version_zero_status() const noexcept {
+  const auto target = migrations_.empty() ? 0 : migrations_.back().version;
+  return MigrationStatus{
+      .state = target == 0 ? SchemaState::current : SchemaState::uninitialized,
+      .current_version = 0,
+      .target_version = target,
+      .pending_count = migrations_.size(),
+  };
+}
+
 MigrationStatus Migrator::inspect(SqliteConnection &connection) const {
   try {
     return inspect_validated(connection);
@@ -117,6 +128,7 @@ MigrationStatus Migrator::apply(SqliteConnection &connection) const {
                         SQLITE_SCHEMA,
                         "Database schema is incompatible with this release."};
   }
+  enable_wal_mode(connection);
   if (initial.state == SchemaState::current) {
     return initial;
   }
@@ -161,13 +173,7 @@ Migrator::inspect_validated(SqliteConnection &connection) const {
     if (!schema_objects(connection).empty()) {
       return incompatible_status(migrations_);
     }
-    return MigrationStatus{
-        .state =
-            target == 0 ? SchemaState::current : SchemaState::uninitialized,
-        .current_version = 0,
-        .target_version = target,
-        .pending_count = migrations_.size(),
-    };
+    return version_zero_status();
   }
 
   auto statement = connection.prepare(

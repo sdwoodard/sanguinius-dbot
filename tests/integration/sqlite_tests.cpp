@@ -38,6 +38,12 @@ TEST_CASE("SQLite connections enforce WAL safety and defensive limits",
   auto database = Database::open_migration(temporary.path(), 25ms);
   auto &connection = database.connection();
 
+  auto initial_mode = connection.prepare("PRAGMA journal_mode");
+  REQUIRE(initial_mode.step());
+  REQUIRE(initial_mode.column_text(0) == "delete");
+  REQUIRE_FALSE(initial_mode.step());
+  sanguinius::persistence::enable_wal_mode(connection);
+
   const auto require_private = [](const std::filesystem::path &path) {
     const auto permissions = std::filesystem::status(path).permissions();
     REQUIRE((permissions & std::filesystem::perms::owner_read) !=
@@ -206,6 +212,7 @@ TEST_CASE("WAL readers keep snapshots and competing writers become busy",
   sanguinius::test::TemporaryDatabase temporary;
   {
     auto database = Database::open_migration(temporary.path(), 25ms);
+    sanguinius::persistence::enable_wal_mode(database.connection());
     database.connection().execute(
         "CREATE TABLE sample (value INTEGER NOT NULL) STRICT");
     database.connection().execute("INSERT INTO sample VALUES (1)");
@@ -240,9 +247,50 @@ TEST_CASE("runtime shared lock excludes migration but permits inspection",
   sanguinius::test::TemporaryDatabase temporary;
   {
     auto migration = Database::open_migration(temporary.path(), 25ms);
+    sanguinius::persistence::enable_wal_mode(migration.connection());
   }
   auto runtime = Database::open_runtime(temporary.path(), 25ms);
   REQUIRE_THROWS_AS(Database::open_migration(temporary.path(), 25ms),
                     DatabaseError);
   REQUIRE_NOTHROW(Database::open_inspection(temporary.path(), 25ms));
+}
+
+TEST_CASE("database locks use canonical paths and reject hard-link aliases",
+          "[sqlite][lock]") {
+  SECTION("a symlink and its target share one sidecar lock") {
+    sanguinius::test::TemporaryDatabase temporary;
+    {
+      auto migration = Database::open_migration(temporary.path(), 25ms);
+      sanguinius::persistence::enable_wal_mode(migration.connection());
+    }
+    const auto alias = temporary.root() / "database-alias.sqlite3";
+    std::filesystem::create_symlink(temporary.path(), alias);
+
+    auto runtime = Database::open_runtime(alias, 25ms);
+    try {
+      static_cast<void>(Database::open_migration(temporary.path(), 25ms));
+      FAIL("migration unexpectedly bypassed the canonical runtime lock");
+    } catch (const DatabaseError &error) {
+      REQUIRE(error.category() == DatabaseErrorCategory::busy);
+    }
+    REQUIRE_NOTHROW(Database::open_inspection(temporary.path(), 25ms));
+    REQUIRE_FALSE(std::filesystem::exists(alias.string() + ".lock"));
+  }
+
+  SECTION("multiple hard links are rejected") {
+    sanguinius::test::TemporaryDatabase temporary;
+    {
+      auto migration = Database::open_migration(temporary.path(), 25ms);
+      sanguinius::persistence::enable_wal_mode(migration.connection());
+    }
+    const auto alias = temporary.root() / "database-hard-link.sqlite3";
+    std::filesystem::create_hard_link(temporary.path(), alias);
+
+    try {
+      static_cast<void>(Database::open_runtime(temporary.path(), 25ms));
+      FAIL("database with a hard-link alias unexpectedly opened");
+    } catch (const DatabaseError &error) {
+      REQUIRE(error.category() == DatabaseErrorCategory::incompatible);
+    }
+  }
 }

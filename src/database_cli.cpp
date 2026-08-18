@@ -40,6 +40,7 @@ int run_database_command(const DatabaseCommand &command,
                          const BuildInfo &build, const Clock &clock,
                          std::ostream &output, std::ostream &errors) {
   try {
+    persistence::verify_sqlite_runtime();
     const Migrator migrator{persistence::production_migrations(), build, clock};
     if (command.type == DatabaseCommandType::status) {
       std::error_code status_error;
@@ -52,10 +53,11 @@ int run_database_command(const DatabaseCommand &command,
                             "Database status inspection failed (io)."};
       }
       if (absent) {
+        const auto status = migrator.version_zero_status();
         output << "database=absent\n"
-               << "current_schema=0\n"
-               << "target_schema=1\n"
-               << "pending_migrations=1\n"
+               << "current_schema=" << status.current_version << '\n'
+               << "target_schema=" << status.target_version << '\n'
+               << "pending_migrations=" << status.pending_count << '\n'
                << "sqlite=" << persistence::sqlite_runtime_version() << '\n';
         return 0;
       }
@@ -102,7 +104,7 @@ int run_database_command(const DatabaseCommand &command,
       return result.ok() ? 0 : 1;
     }
     case DatabaseCommandType::backup: {
-      if (!command.destination.has_value()) {
+      if (!command.destination.has_value() || command.destination->empty()) {
         errors << "Database backup destination is required.\n";
         return 2;
       }

@@ -38,6 +38,7 @@ public:
   Migrator(std::span<const Migration> migrations, BuildInfo build,
            const Clock &clock);
 
+  [[nodiscard]] MigrationStatus version_zero_status() const noexcept;
   [[nodiscard]] MigrationStatus inspect(SqliteConnection &connection) const;
   void require_current(SqliteConnection &connection) const;
   [[nodiscard]] MigrationStatus apply(SqliteConnection &connection) const;

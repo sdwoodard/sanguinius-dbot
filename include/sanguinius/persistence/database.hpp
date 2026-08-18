@@ -66,6 +66,7 @@ private:
 void configure_connection(SqliteConnection &connection,
                           std::chrono::milliseconds busy_timeout,
                           bool enable_wal, bool require_wal);
+void enable_wal_mode(SqliteConnection &connection);
 void ensure_database_parent(const std::filesystem::path &path);
 void restrict_database_file(const std::filesystem::path &path);
 [[nodiscard]] std::string sqlite_runtime_version();

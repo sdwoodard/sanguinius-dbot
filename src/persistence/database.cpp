@@ -29,7 +29,40 @@ constexpr int maximum_worker_threads = 0;
 
 [[nodiscard]] std::filesystem::path
 lock_path(const std::filesystem::path &database_path) {
-  auto result = database_path;
+  std::error_code canonical_error;
+  auto result =
+      std::filesystem::weakly_canonical(database_path, canonical_error);
+  if (canonical_error) {
+    throw DatabaseError{DatabaseErrorCategory::io, SQLITE_CANTOPEN,
+                        SQLITE_CANTOPEN,
+                        "Database lock path resolution failed (io)."};
+  }
+
+  std::error_code status_error;
+  const auto status = std::filesystem::status(database_path, status_error);
+  const bool absent = status_error == std::errc::no_such_file_or_directory ||
+                      (!status_error && !std::filesystem::exists(status));
+  if (status_error && !absent) {
+    throw DatabaseError{DatabaseErrorCategory::io, SQLITE_CANTOPEN,
+                        SQLITE_CANTOPEN,
+                        "Database lock path inspection failed (io)."};
+  }
+  if (!absent && std::filesystem::is_regular_file(status)) {
+    std::error_code link_error;
+    const auto links =
+        std::filesystem::hard_link_count(database_path, link_error);
+    if (link_error) {
+      throw DatabaseError{DatabaseErrorCategory::io, SQLITE_CANTOPEN,
+                          SQLITE_CANTOPEN,
+                          "Database link inspection failed (io)."};
+    }
+    if (links != 1) {
+      throw DatabaseError{DatabaseErrorCategory::incompatible, SQLITE_CANTOPEN,
+                          SQLITE_CANTOPEN,
+                          "Database hard-link aliases are not supported."};
+    }
+  }
+
   result += ".lock";
   return result;
 }
@@ -201,7 +234,8 @@ Database::open_migration(const std::filesystem::path &path,
   auto lock = DatabaseFileLock::acquire(path, DatabaseLockMode::exclusive);
   auto connection = SqliteConnection::open(path, SqliteOpenMode::create);
   restrict_database_file(path);
-  configure_connection(connection, busy_timeout, true, true);
+  // Migrator::apply validates compatibility before making WAL persistent.
+  configure_connection(connection, busy_timeout, false, false);
   restrict_database_file(path);
   return Database{std::move(lock), std::move(connection)};
 }
@@ -287,13 +321,8 @@ void configure_connection(SqliteConnection &connection,
                         "SQLite could not enable normal locking mode."};
   }
   if (enable_wal) {
-    if (scalar_text(connection, "PRAGMA journal_mode = WAL") != "wal") {
-      throw DatabaseError{DatabaseErrorCategory::incompatible, SQLITE_ERROR,
-                          SQLITE_ERROR,
-                          "SQLite could not enable required WAL mode."};
-    }
-  }
-  if (enable_wal || require_wal) {
+    enable_wal_mode(connection);
+  } else if (require_wal) {
     if (scalar_integer(connection, "PRAGMA wal_autocheckpoint = 1000") !=
             1000 ||
         scalar_integer(connection, "PRAGMA journal_size_limit = 16777216") !=
@@ -304,6 +333,21 @@ void configure_connection(SqliteConnection &connection,
     }
   }
   verify_connection_settings(connection, require_wal);
+}
+
+void enable_wal_mode(SqliteConnection &connection) {
+  if (scalar_text(connection, "PRAGMA journal_mode = WAL") != "wal") {
+    throw DatabaseError{DatabaseErrorCategory::incompatible, SQLITE_ERROR,
+                        SQLITE_ERROR,
+                        "SQLite could not enable required WAL mode."};
+  }
+  if (scalar_integer(connection, "PRAGMA wal_autocheckpoint = 1000") != 1000 ||
+      scalar_integer(connection, "PRAGMA journal_size_limit = 16777216") !=
+          16777216) {
+    throw DatabaseError{DatabaseErrorCategory::incompatible, SQLITE_ERROR,
+                        SQLITE_ERROR, "SQLite WAL settings are incompatible."};
+  }
+  verify_connection_settings(connection, true);
 }
 
 void ensure_database_parent(const std::filesystem::path &path) {

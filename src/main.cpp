@@ -43,8 +43,12 @@ database_command(const int argc, char **argv) {
         sanguinius::DatabaseCommandType::integrity, std::nullopt};
   }
   if (argc == 4 && operation == "backup") {
+    const std::filesystem::path destination{argv[3]};
+    if (destination.empty()) {
+      return std::nullopt;
+    }
     return sanguinius::DatabaseCommand{sanguinius::DatabaseCommandType::backup,
-                                       std::filesystem::path{argv[3]}};
+                                       destination};
   }
   return std::nullopt;
 }

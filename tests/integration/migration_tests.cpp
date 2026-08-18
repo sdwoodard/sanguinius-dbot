@@ -207,6 +207,12 @@ TEST_CASE("schema validation follows every applied migration version",
   auto database = Database::open_migration(temporary.path(), 25ms);
   const Migrator migrator{migrations, {"test", "revision"}, clock};
 
+  const auto version_zero = migrator.version_zero_status();
+  REQUIRE(version_zero.state == SchemaState::uninitialized);
+  REQUIRE(version_zero.current_version == 0);
+  REQUIRE(version_zero.target_version == 2);
+  REQUIRE(version_zero.pending_count == 2);
+
   const auto applied = migrator.apply(database.connection());
   REQUIRE(applied.state == SchemaState::current);
   REQUIRE(applied.current_version == 2);
