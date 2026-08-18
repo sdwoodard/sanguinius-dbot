@@ -6,7 +6,9 @@
 
 namespace sanguinius {
 
-MessageLogger::MessageLogger(const std::filesystem::path &path) {
+MessageLogger::MessageLogger(const std::filesystem::path &path,
+                             const Clock &clock)
+    : clock_{clock} {
   if (path.has_parent_path()) {
     std::filesystem::create_directories(path.parent_path());
   }
@@ -22,11 +24,11 @@ MessageLogger::MessageLogger(const std::filesystem::path &path) {
                                std::filesystem::perm_options::replace);
 }
 
-void MessageLogger::log(const dpp::message &message) {
+void MessageLogger::append(const LoggedMessage &message) {
   std::scoped_lock lock{mutex_};
 
   stream_ << eastern_timestamp() << " author=\""
-          << escape(message.author.username) << "\" message=\""
+          << escape(message.author_username) << "\" message=\""
           << escape(message.content) << "\"\n";
   stream_.flush();
   if (!stream_) {
@@ -64,11 +66,9 @@ std::string MessageLogger::escape(const std::string_view value) {
   return escaped;
 }
 
-std::string MessageLogger::eastern_timestamp() {
+std::string MessageLogger::eastern_timestamp() const {
   static const auto *new_york = std::chrono::locate_zone("America/New_York");
-  const std::chrono::zoned_time timestamp{
-      new_york, std::chrono::floor<std::chrono::seconds>(
-                    std::chrono::system_clock::now())};
+  const std::chrono::zoned_time timestamp{new_york, clock_.now()};
   return std::format("{:%FT%T%Ez}", timestamp);
 }
 

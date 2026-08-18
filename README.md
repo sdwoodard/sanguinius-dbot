@@ -24,9 +24,9 @@ To talk to the AI persona, mention the bot at the start of a message:
 The bot supplies the replied-to message, when present, plus up to eight recent
 messages from the same channel as optional context. The persona is defined in
 [`config/persona.txt`](config/persona.txt). Two AI workers process requests in
-parallel, while a bounded queue prevents an influx of mentions from consuming
-unlimited memory. Message logging and Discord event ingestion never wait for an
-OpenAI request.
+parallel, while bounded 64-item application and AI queues prevent an influx of
+messages from consuming unlimited memory. Message logging, command routing, and
+AI work run outside D++ gateway callbacks.
 
 ## Requirements
 
@@ -36,20 +36,25 @@ OpenAI request.
 - D++ with its CMake package configuration installed
 - libcurl
 - nlohmann-json
+- Catch2 v3 when building tests
 
 On CachyOS/Arch Linux, install the dependencies supplied by the distribution:
 
 ```bash
-sudo pacman -S --needed cmake ninja gcc curl nlohmann-json
+sudo pacman -S --needed cmake ninja gcc curl nlohmann-json catch2
 ```
 
 D++ must still be installed separately, as described above. CMake links the
 well-established libcurl HTTP client and header-only nlohmann-json parser; no
 OpenAI-specific third-party SDK is required.
 
-The locally built D++ 10.1.6 installation under `/usr/local` is discovered by
+The locally built D++ 10.1.7 installation under `/usr/local` is discovered by
 its exported `dpp::dpp` CMake target. If D++ is installed under a different
 prefix, configure with `-DCMAKE_PREFIX_PATH=/path/to/prefix`.
+
+Catch2 is a development-only dependency. CMake requires it only when
+`BUILD_TESTING=ON`; a prebuilt production executable does not require Catch2 on
+the runtime host.
 
 The Discord application must have the **Message Content Intent** enabled in the
 Developer Portal. The bot also needs permission to view channels, read message
@@ -116,8 +121,7 @@ must be regenerated in the Discord Developer Portal.
 ## Build and run
 
 ```bash
-./scripts/build_bot.bash --clean
-ctest --test-dir build/release --output-on-failure
+./scripts/test_bot.bash --clean
 ./build/release/sanguinius
 ```
 
@@ -133,6 +137,10 @@ output.
 ./scripts/build_bot.bash --clean debug
 ```
 
+`test_bot.bash` builds and runs the individually discovered Catch2/CTest cases
+in both debug and release by default. Pass `debug` or `release` to limit it to
+one configuration.
+
 For routine background operation, the helper scripts preserve the process ID
 and stop the bot cleanly:
 
@@ -145,19 +153,36 @@ and stop the bot cleanly:
 described above, unless their environment overrides are set. Console output
 goes to `logs/console.log`.
 
-Discord gateway callbacks log each message and place command events onto a
-dedicated worker queue. Command execution therefore cannot block D++ from
-receiving and logging later messages. A future command that needs parallel
-execution should manage that concurrency explicitly rather than blocking the
-single command worker indefinitely.
+Discord gateway callbacks translate each message into project-owned values and
+place it on a bounded 64-item application queue. A single worker preserves
+log-before-routing order and keeps filesystem work out of the gateway callback.
+When that queue is full, actionable commands or mentions receive the normal
+overload reply; ordinary and bot-authored messages are dropped with a
+diagnostic to avoid public spam.
 
-AI mentions use a separate two-thread worker pool. Each OpenAI request has a
-connection timeout and an overall timeout, and responses are truncated safely
-below Discord's message-size limit. Reply-context lookup requires the bot's
-**Read Message History** permission. If context retrieval fails, the bot still
-answers using the triggering message and does not expose API credentials or raw
-API responses. Responses API requests set `store` to `false` so generated
-responses are not retained for later retrieval through the API.
+AI mentions use a separate two-thread pool with its own bounded 64-item queue.
+Each OpenAI request has a connection timeout and an overall timeout, and
+responses are truncated safely below Discord's message-size limit.
+Reply-context lookup requires the bot's **Read Message History** permission. If
+context retrieval fails, the bot still answers using the triggering message and
+does not expose API credentials or raw API responses. Responses API requests
+set `store` to `false` so generated responses are not retained for later
+retrieval through the API.
+
+The application owns all long-lived services. SIGINT or SIGTERM first detaches
+Discord message intake, then discards queued application work, cancels queued
+and in-flight AI work, joins every worker, and finally shuts down D++. Pending
+work cancelled solely because of shutdown does not emit a misleading failure
+reply.
+
+## Architecture
+
+`sanguinius_core` contains application services and project-owned interfaces;
+it has no D++, curl, or JSON dependency. `sanguinius_runtime` contains the D++
+gateway and OpenAI adapters plus the production composition root. Tests link
+only the core target and use deterministic fake clocks, IDs, AI, Discord,
+diagnostics, and message logs, so ordinary CTest runs need no Discord or OpenAI
+credentials and make no network calls.
 
 ## Message log
 

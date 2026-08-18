@@ -2,7 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
-#include <iostream>
+#include <optional>
 #include <utility>
 
 namespace sanguinius {
@@ -10,8 +10,11 @@ namespace {
 
 constexpr std::string_view repository_url{
     "https://github.com/sdwoodard/sanguinius-dbot"};
+constexpr std::uint32_t repository_embed_color = 0x0E4BEFU;
+constexpr std::string_view overload_message{
+    "I am handling too many requests right now. Please try again shortly."};
 
-[[nodiscard]] std::string lowercase(std::string_view value) {
+[[nodiscard]] std::string lowercase(const std::string_view value) {
   std::string result{value};
   std::transform(result.begin(), result.end(), result.begin(),
                  [](const unsigned char character) {
@@ -20,22 +23,12 @@ constexpr std::string_view repository_url{
   return result;
 }
 
-} // namespace
-
-MessageHandler::MessageHandler(MessageLogger &logger, AiResponder &ai_responder,
-                               std::string command_prefix)
-    : logger_{logger}, ai_responder_{ai_responder},
-      command_prefix_{std::move(command_prefix)},
-      worker_{&MessageHandler::run, this} {}
-
-MessageHandler::~MessageHandler() {
-  {
-    const std::scoped_lock lock{queue_mutex_};
-    stopping_ = true;
-  }
-  queue_ready_.notify_one();
-  worker_.join();
+[[nodiscard]] MessageReference target(const IncomingMessage &message) {
+  return MessageReference{message.message_id, message.guild_id,
+                          message.channel_id};
 }
+
+} // namespace
 
 Command parse_command(const std::string_view content,
                       const std::string_view prefix) {
@@ -57,99 +50,124 @@ Command parse_command(const std::string_view content,
   return Command::none;
 }
 
-void MessageHandler::operator()(const dpp::message_create_t &event) noexcept {
-  try {
-    logger_.log(event.msg);
-  } catch (const std::exception &error) {
-    std::cerr << "Message logging failed: " << error.what() << '\n';
-  }
+MessageHandler::MessageHandler(MessageLog &message_log,
+                               AiResponder &ai_responder,
+                               DiscordTextDelivery &delivery,
+                               Diagnostics &diagnostics,
+                               std::string command_prefix,
+                               const std::size_t queue_capacity)
+    : message_log_{message_log}, ai_responder_{ai_responder},
+      delivery_{delivery}, diagnostics_{diagnostics},
+      command_prefix_{std::move(command_prefix)}, worker_{queue_capacity, 1} {}
 
-  if (event.msg.author.is_bot()) {
-    return;
-  }
+MessageHandler::~MessageHandler() { stop(); }
 
-  if (ai_responder_.handles(event.msg)) {
-    if (!ai_responder_.enqueue(event.msg)) {
-      event.reply("I am handling too many requests right now. Please try "
-                  "again shortly.");
-    }
-    return;
-  }
+void MessageHandler::start() { worker_.start(); }
 
-  if (parse_command(event.msg.content, command_prefix_) == Command::none) {
-    return;
-  }
+void MessageHandler::stop() noexcept { worker_.stop(); }
 
-  try {
-    {
-      const std::scoped_lock lock{queue_mutex_};
-      if (stopping_) {
-        return;
-      }
-      command_queue_.push(event);
-    }
-    queue_ready_.notify_one();
-  } catch (const std::exception &error) {
-    std::cerr << "Unable to queue command: " << error.what() << '\n';
-  }
-}
-
-void MessageHandler::run() {
-  while (true) {
-    dpp::message_create_t event;
-    {
-      std::unique_lock lock{queue_mutex_};
-      queue_ready_.wait(
-          lock, [this] { return stopping_ || !command_queue_.empty(); });
-
-      if (command_queue_.empty()) {
-        if (stopping_) {
+SubmitResult MessageHandler::enqueue(IncomingMessage message) {
+  const bool should_notify = actionable(message);
+  const auto result =
+      worker_.try_submit([this, message](const std::stop_token stop_token) {
+        if (stop_token.stop_requested()) {
           return;
         }
-        continue;
-      }
+        try {
+          process(message);
+        } catch (const std::exception &error) {
+          diagnostics_.emit({DiagnosticSeverity::error, "message.handling",
+                             error.what(), message.correlation_id});
+        }
+      });
 
-      event = std::move(command_queue_.front());
-      command_queue_.pop();
-    }
-
-    try {
-      dispatch_command(event);
-    } catch (const std::exception &error) {
-      std::cerr << "Command handling failed: " << error.what() << '\n';
+  if (result == SubmitResult::full) {
+    diagnostics_.emit({DiagnosticSeverity::warning, "message.queue_full",
+                       "Incoming message was rejected because the application "
+                       "queue is full.",
+                       message.correlation_id});
+    if (should_notify) {
+      send_overload(message);
     }
   }
+  return result;
 }
 
-void MessageHandler::dispatch_command(
-    const dpp::message_create_t &event) const {
-  const auto command = parse_command(event.msg.content, command_prefix_);
+void MessageHandler::process(const IncomingMessage &message) const {
+  try {
+    message_log_.append({message.author_username, message.content});
+  } catch (const std::exception &error) {
+    diagnostics_.emit({DiagnosticSeverity::error, "message.logging",
+                       error.what(), message.correlation_id});
+  }
+
+  if (message.author_is_bot) {
+    return;
+  }
+
+  if (ai_responder_.handles(message)) {
+    if (ai_responder_.enqueue(message) == SubmitResult::full) {
+      send_overload(message);
+    }
+    return;
+  }
+
+  const auto command = parse_command(message.content, command_prefix_);
   if (command == Command::help) {
-    send_help(event);
+    send_help(message);
   } else if (command == Command::repo) {
-    send_repo(event);
+    send_repo(message);
   }
 }
 
-void MessageHandler::send_help(const dpp::message_create_t &event) const {
-  event.reply("Mention me at the beginning of a message to ask me something.\n"
-              "Sanguinius also supports two commands:\n"
-              "`" +
-              command_prefix_ +
-              "help` — show this message\n"
-              "`" +
-              command_prefix_ + "repo` — show the source repository");
+void MessageHandler::send_help(const IncomingMessage &message) const {
+  delivery_.reply({
+      .target = target(message),
+      .content =
+          "Mention me at the beginning of a message to ask me something.\n"
+          "Sanguinius also supports two commands:\n`" +
+          command_prefix_ + "help` — show this message\n`" + command_prefix_ +
+          "repo` — show the source repository",
+      .embed = std::nullopt,
+      .suppress_mentions = true,
+  });
 }
 
-void MessageHandler::send_repo(const dpp::message_create_t &event) const {
-  dpp::embed embed;
-  embed.set_color(dpp::colors::sti_blue)
-      .set_title("Sanguinius source code")
-      .set_url(std::string{repository_url})
-      .set_description(
-          "Build instructions and source code for the Sanguinius Discord bot.");
+void MessageHandler::send_repo(const IncomingMessage &message) const {
+  delivery_.reply({
+      .target = target(message),
+      .content = {},
+      .embed =
+          EmbedPayload{
+              .color = repository_embed_color,
+              .title = "Sanguinius source code",
+              .url = std::string{repository_url},
+              .description = "Build instructions and source code for the "
+                             "Sanguinius Discord bot.",
+          },
+      .suppress_mentions = true,
+  });
+}
 
-  event.reply(dpp::message{}.add_embed(embed));
+void MessageHandler::send_overload(
+    const IncomingMessage &message) const noexcept {
+  try {
+    delivery_.reply({
+        .target = target(message),
+        .content = std::string{overload_message},
+        .embed = std::nullopt,
+        .suppress_mentions = true,
+    });
+  } catch (const std::exception &error) {
+    diagnostics_.emit({DiagnosticSeverity::error, "discord.delivery",
+                       error.what(), message.correlation_id});
+  }
+}
+
+bool MessageHandler::actionable(const IncomingMessage &message) const {
+  return !message.author_is_bot &&
+         (ai_responder_.handles(message) ||
+          parse_command(message.content, command_prefix_) != Command::none);
 }
 
 } // namespace sanguinius

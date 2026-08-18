@@ -37,6 +37,12 @@ size_t append_response(const char *data, const size_t size, const size_t count,
   return bytes;
 }
 
+int cancel_transfer(void *context, curl_off_t, curl_off_t, curl_off_t,
+                    curl_off_t) {
+  const auto *stop_token = static_cast<const std::stop_token *>(context);
+  return stop_token->stop_requested() ? 1 : 0;
+}
+
 [[nodiscard]] std::string api_error(const std::string &body,
                                     const long status) {
   try {
@@ -81,19 +87,22 @@ OpenAiClient::OpenAiClient(std::string api_key, std::string model)
   static_cast<void>(curl_global());
 }
 
-std::string OpenAiClient::generate(
-    const std::string_view instructions,
-    const std::vector<ConversationMessage> &conversation) const {
+std::string OpenAiClient::generate(const AiRequest &ai_request,
+                                   const std::stop_token stop_token) const {
+  if (stop_token.stop_requested()) {
+    throw OperationCancelled{};
+  }
+
   nlohmann::json input = nlohmann::json::array();
-  for (const auto &[role, content] : conversation) {
+  for (const auto &[role, content] : ai_request.conversation) {
     input.push_back({{"role", role}, {"content", content}});
   }
 
   const nlohmann::json request = {
       {"model", model_},
-      {"instructions", instructions},
+      {"instructions", ai_request.instructions},
       {"input", std::move(input)},
-      {"max_output_tokens", 500},
+      {"max_output_tokens", ai_request.max_output_tokens},
       {"store", false},
   };
   const std::string request_body = request.dump();
@@ -132,6 +141,10 @@ std::string OpenAiClient::generate(
   curl_easy_setopt(request_handle.get(), CURLOPT_WRITEDATA, &response_body);
   curl_easy_setopt(request_handle.get(), CURLOPT_ERRORBUFFER,
                    error_buffer.data());
+  curl_easy_setopt(request_handle.get(), CURLOPT_NOPROGRESS, 0L);
+  curl_easy_setopt(request_handle.get(), CURLOPT_XFERINFOFUNCTION,
+                   cancel_transfer);
+  curl_easy_setopt(request_handle.get(), CURLOPT_XFERINFODATA, &stop_token);
   curl_easy_setopt(request_handle.get(), CURLOPT_CONNECTTIMEOUT, 10L);
   curl_easy_setopt(request_handle.get(), CURLOPT_TIMEOUT, 60L);
   curl_easy_setopt(request_handle.get(), CURLOPT_USERAGENT,
@@ -141,6 +154,9 @@ std::string OpenAiClient::generate(
   long status = 0;
   curl_easy_getinfo(request_handle.get(), CURLINFO_RESPONSE_CODE, &status);
 
+  if (result == CURLE_ABORTED_BY_CALLBACK && stop_token.stop_requested()) {
+    throw OperationCancelled{};
+  }
   if (result != CURLE_OK) {
     const std::string detail = error_buffer[0] == '\0'
                                    ? curl_easy_strerror(result)

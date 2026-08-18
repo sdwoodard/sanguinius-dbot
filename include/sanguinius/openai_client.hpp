@@ -1,22 +1,17 @@
 #pragma once
 
+#include "sanguinius/ai_client.hpp"
+
 #include <string>
-#include <vector>
 
 namespace sanguinius {
 
-struct ConversationMessage {
-  std::string role;
-  std::string content;
-};
-
-class OpenAiClient {
+class OpenAiClient final : public AiClient {
 public:
   OpenAiClient(std::string api_key, std::string model);
 
-  [[nodiscard]] std::string
-  generate(std::string_view instructions,
-           const std::vector<ConversationMessage> &conversation) const;
+  [[nodiscard]] std::string generate(const AiRequest &request,
+                                     std::stop_token stop_token) const override;
 
 private:
   std::string api_key_;

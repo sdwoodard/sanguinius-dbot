@@ -1,6 +1,7 @@
 #pragma once
 
-#include <dpp/dpp.h>
+#include "sanguinius/clock.hpp"
+#include "sanguinius/message_log.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -9,16 +10,17 @@
 
 namespace sanguinius {
 
-class MessageLogger {
+class MessageLogger final : public MessageLog {
 public:
-  explicit MessageLogger(const std::filesystem::path &path);
+  MessageLogger(const std::filesystem::path &path, const Clock &clock);
 
-  void log(const dpp::message &message);
+  void append(const LoggedMessage &message) override;
 
 private:
   [[nodiscard]] static std::string escape(std::string_view value);
-  [[nodiscard]] static std::string eastern_timestamp();
+  [[nodiscard]] std::string eastern_timestamp() const;
 
+  const Clock &clock_;
   std::mutex mutex_;
   std::ofstream stream_;
 };

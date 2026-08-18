@@ -1,16 +1,14 @@
 #pragma once
 
 #include "sanguinius/ai_responder.hpp"
-#include "sanguinius/message_logger.hpp"
+#include "sanguinius/diagnostics.hpp"
+#include "sanguinius/discord_interfaces.hpp"
+#include "sanguinius/message_log.hpp"
+#include "sanguinius/work_queue.hpp"
 
-#include <dpp/dpp.h>
-
-#include <condition_variable>
-#include <mutex>
-#include <queue>
+#include <cstddef>
 #include <string>
 #include <string_view>
-#include <thread>
 
 namespace sanguinius {
 
@@ -25,8 +23,9 @@ enum class Command {
 
 class MessageHandler {
 public:
-  MessageHandler(MessageLogger &logger, AiResponder &ai_responder,
-                 std::string command_prefix);
+  MessageHandler(MessageLog &message_log, AiResponder &ai_responder,
+                 DiscordTextDelivery &delivery, Diagnostics &diagnostics,
+                 std::string command_prefix, std::size_t queue_capacity = 64);
   ~MessageHandler();
 
   MessageHandler(const MessageHandler &) = delete;
@@ -34,21 +33,23 @@ public:
   MessageHandler(MessageHandler &&) = delete;
   MessageHandler &operator=(MessageHandler &&) = delete;
 
-  void operator()(const dpp::message_create_t &event) noexcept;
+  void start();
+  void stop() noexcept;
+  [[nodiscard]] SubmitResult enqueue(IncomingMessage message);
 
 private:
-  void run();
-  void dispatch_command(const dpp::message_create_t &event) const;
-  void send_help(const dpp::message_create_t &event) const;
-  void send_repo(const dpp::message_create_t &event) const;
-  MessageLogger &logger_;
+  void process(const IncomingMessage &message) const;
+  void send_help(const IncomingMessage &message) const;
+  void send_repo(const IncomingMessage &message) const;
+  void send_overload(const IncomingMessage &message) const noexcept;
+  [[nodiscard]] bool actionable(const IncomingMessage &message) const;
+
+  MessageLog &message_log_;
   AiResponder &ai_responder_;
+  DiscordTextDelivery &delivery_;
+  Diagnostics &diagnostics_;
   std::string command_prefix_;
-  std::mutex queue_mutex_;
-  std::condition_variable queue_ready_;
-  std::queue<dpp::message_create_t> command_queue_;
-  bool stopping_{false};
-  std::thread worker_;
+  BoundedExecutor worker_;
 };
 
 } // namespace sanguinius

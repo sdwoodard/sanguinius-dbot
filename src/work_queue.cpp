@@ -1,0 +1,123 @@
+#include "sanguinius/work_queue.hpp"
+
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <stdexcept>
+#include <thread>
+#include <utility>
+#include <vector>
+
+namespace sanguinius {
+
+class BoundedExecutor::Impl {
+public:
+  Impl(const std::size_t capacity, const std::size_t worker_count)
+      : capacity_{capacity}, worker_count_{worker_count} {
+    if (capacity_ == 0) {
+      throw std::invalid_argument{"Queue capacity must be at least one."};
+    }
+    if (worker_count_ == 0) {
+      throw std::invalid_argument{"Worker count must be at least one."};
+    }
+  }
+
+  void start() {
+    {
+      const std::scoped_lock lock{mutex_};
+      if (started_) {
+        throw std::logic_error{"Bounded executor may only be started once."};
+      }
+      started_ = true;
+      accepting_ = true;
+    }
+
+    try {
+      workers_.reserve(worker_count_);
+      for (std::size_t index = 0; index < worker_count_; ++index) {
+        static_cast<void>(index);
+        workers_.emplace_back(
+            [this](const std::stop_token stop_token) { run(stop_token); });
+      }
+    } catch (...) {
+      stop();
+      throw;
+    }
+  }
+
+  [[nodiscard]] SubmitResult try_submit(Task task) {
+    {
+      const std::scoped_lock lock{mutex_};
+      if (!accepting_) {
+        return SubmitResult::stopping;
+      }
+      if (tasks_.size() >= capacity_) {
+        return SubmitResult::full;
+      }
+      tasks_.push_back(std::move(task));
+    }
+    ready_.notify_one();
+    return SubmitResult::accepted;
+  }
+
+  void stop() noexcept {
+    {
+      const std::scoped_lock lock{mutex_};
+      accepting_ = false;
+      tasks_.clear();
+    }
+    for (auto &worker : workers_) {
+      worker.request_stop();
+    }
+    ready_.notify_all();
+    workers_.clear();
+  }
+
+private:
+  void run(const std::stop_token stop_token) noexcept {
+    while (!stop_token.stop_requested()) {
+      Task task;
+      {
+        std::unique_lock lock{mutex_};
+        ready_.wait(lock, [this, stop_token] {
+          return stop_token.stop_requested() || !tasks_.empty();
+        });
+        if (stop_token.stop_requested()) {
+          return;
+        }
+        task = std::move(tasks_.front());
+        tasks_.pop_front();
+      }
+
+      try {
+        task(stop_token);
+      } catch (...) {
+      }
+    }
+  }
+
+  std::size_t capacity_;
+  std::size_t worker_count_;
+  std::mutex mutex_;
+  std::condition_variable ready_;
+  std::deque<Task> tasks_;
+  std::vector<std::jthread> workers_;
+  bool started_{false};
+  bool accepting_{false};
+};
+
+BoundedExecutor::BoundedExecutor(const std::size_t capacity,
+                                 const std::size_t worker_count)
+    : impl_{std::make_unique<Impl>(capacity, worker_count)} {}
+
+BoundedExecutor::~BoundedExecutor() { stop(); }
+
+void BoundedExecutor::start() { impl_->start(); }
+
+SubmitResult BoundedExecutor::try_submit(Task task) {
+  return impl_->try_submit(std::move(task));
+}
+
+void BoundedExecutor::stop() noexcept { impl_->stop(); }
+
+} // namespace sanguinius
