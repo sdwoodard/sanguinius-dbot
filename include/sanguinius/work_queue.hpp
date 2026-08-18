@@ -13,6 +13,13 @@ enum class SubmitResult {
   stopping,
 };
 
+struct QueueSnapshot {
+  std::size_t capacity{};
+  std::size_t queued{};
+  std::size_t active{};
+  bool accepting{};
+};
+
 class BoundedExecutor {
 public:
   using Task = std::function<void(std::stop_token)>;
@@ -27,6 +34,7 @@ public:
 
   void start();
   [[nodiscard]] SubmitResult try_submit(Task task);
+  [[nodiscard]] QueueSnapshot snapshot() const;
   void stop() noexcept;
 
 private:

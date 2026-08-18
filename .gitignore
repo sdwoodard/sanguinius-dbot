@@ -9,6 +9,7 @@ compile_commands.json
 # Runtime state and logs
 /run/
 /logs/
+/state/
 
 # Local configuration and secrets
 .env

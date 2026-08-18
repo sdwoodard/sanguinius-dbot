@@ -1,11 +1,14 @@
 #pragma once
 
 #include "sanguinius/ai_client.hpp"
+#include "sanguinius/build_info.hpp"
 #include "sanguinius/clock.hpp"
 #include "sanguinius/diagnostics.hpp"
 #include "sanguinius/discord_interfaces.hpp"
+#include "sanguinius/feature_config.hpp"
 #include "sanguinius/id_generator.hpp"
 #include "sanguinius/message_log.hpp"
+#include "sanguinius/server_scope_policy.hpp"
 
 #include <cstddef>
 #include <memory>
@@ -16,6 +19,10 @@ namespace sanguinius {
 struct ApplicationOptions {
   std::string persona;
   std::string command_prefix;
+  ServerScopeConfiguration server_scope;
+  ControlConfiguration controls;
+  FeatureConfiguration features;
+  BuildInfo build;
   std::size_t message_queue_capacity{64};
   std::size_t ai_queue_capacity{64};
   std::size_t ai_worker_count{2};

@@ -19,16 +19,10 @@ if [[ ! -x "${binary}" ]]; then
     exit 1
 fi
 
-if [[ -z "${SANGUINIUS_TOKEN:-}" && -n "${SANGUINIUS_TOKEN_FILE:-}" && ! -r "${SANGUINIUS_TOKEN_FILE}" ]]; then
-    echo "Discord token file is not readable: ${SANGUINIUS_TOKEN_FILE}" >&2
+cd "${project_root}"
+if ! "${binary}" --check-config; then
+    echo "Sanguinius configuration check failed; the bot was not started." >&2
     exit 1
-fi
-if [[ -z "${OPENAI_API_KEY:-}" && ! -r "${SANGUINIUS_OPENAI_API_KEY_FILE}" ]]; then
-    echo "OpenAI API key file is not readable: ${SANGUINIUS_OPENAI_API_KEY_FILE}" >&2
-    exit 1
-fi
-if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-    export OPENAI_API_KEY="$(<"${SANGUINIUS_OPENAI_API_KEY_FILE}")"
 fi
 
 if [[ -f "${pid_file}" ]]; then
@@ -40,7 +34,6 @@ if [[ -f "${pid_file}" ]]; then
 fi
 
 mkdir -p "${project_root}/run" "${project_root}/logs"
-cd "${project_root}"
 nohup "${binary}" >>"${console_log}" 2>&1 &
 bot_pid=$!
 echo "${bot_pid}" >"${pid_file}"

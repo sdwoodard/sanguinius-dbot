@@ -19,6 +19,10 @@ public:
   explicit ApplicationFixture(ApplicationOptions options = ApplicationOptions{
                                   .persona = "test persona",
                                   .command_prefix = "!",
+                                  .server_scope = {10, 20, 30},
+                                  .controls = {},
+                                  .features = {},
+                                  .build = {"test-version", "test-revision"},
                                   .message_queue_capacity = 64,
                                   .ai_queue_capacity = 64,
                                   .ai_worker_count = 2,

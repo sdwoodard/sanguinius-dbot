@@ -1,12 +1,12 @@
 #pragma once
 
+#include "sanguinius/snowflake.hpp"
+
 #include <cstdint>
 #include <optional>
 #include <string>
 
 namespace sanguinius {
-
-using DiscordId = std::uint64_t;
 
 struct MessageReference {
   DiscordId message_id{};
@@ -20,6 +20,7 @@ struct IncomingMessage {
   DiscordId message_id{};
   DiscordId guild_id{};
   DiscordId channel_id{};
+  DiscordId author_user_id{};
   std::string author_username;
   std::string author_display_name;
   std::string content;

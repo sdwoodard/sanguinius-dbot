@@ -33,6 +33,7 @@ public:
   void stop() noexcept;
   [[nodiscard]] bool handles(const IncomingMessage &message) const;
   [[nodiscard]] SubmitResult enqueue(IncomingMessage message);
+  [[nodiscard]] QueueSnapshot queue_snapshot() const;
 
 private:
   void respond(const IncomingMessage &message,

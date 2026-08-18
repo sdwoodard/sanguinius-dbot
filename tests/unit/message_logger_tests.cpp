@@ -70,4 +70,21 @@ TEST_CASE("plaintext message log preserves format and privacy", "[logger]") {
   const auto expected =
       std::filesystem::perms::owner_read | std::filesystem::perms::owner_write;
   REQUIRE((permissions & std::filesystem::perms::mask) == expected);
+
+  const auto secret_path = directory.path() / "LOG_PATH_SECRET_SENTINEL";
+  {
+    std::ofstream blocking_file{secret_path};
+    REQUIRE(blocking_file.good());
+  }
+
+  std::string startup_error;
+  try {
+    sanguinius::MessageLogger invalid_logger{secret_path / "messages.log",
+                                             clock};
+  } catch (const std::exception &error) {
+    startup_error = error.what();
+  }
+  REQUIRE(startup_error == "Unable to initialize the message log configured by "
+                           "SANGUINIUS_LOG_FILE.");
+  REQUIRE_FALSE(contains(startup_error, "LOG_PATH_SECRET_SENTINEL"));
 }

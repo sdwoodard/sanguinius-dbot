@@ -4,6 +4,7 @@
 #include "sanguinius/diagnostics.hpp"
 #include "sanguinius/discord_interfaces.hpp"
 #include "sanguinius/message_log.hpp"
+#include "sanguinius/owner_admin.hpp"
 #include "sanguinius/work_queue.hpp"
 
 #include <cstddef>
@@ -25,7 +26,8 @@ class MessageHandler {
 public:
   MessageHandler(MessageLog &message_log, AiResponder &ai_responder,
                  DiscordTextDelivery &delivery, Diagnostics &diagnostics,
-                 std::string command_prefix, std::size_t queue_capacity = 64);
+                 OwnerAdminService &owner_admin, std::string command_prefix,
+                 std::size_t queue_capacity = 64);
   ~MessageHandler();
 
   MessageHandler(const MessageHandler &) = delete;
@@ -36,11 +38,14 @@ public:
   void start();
   void stop() noexcept;
   [[nodiscard]] SubmitResult enqueue(IncomingMessage message);
+  [[nodiscard]] QueueSnapshot queue_snapshot() const;
 
 private:
   void process(const IncomingMessage &message) const;
   void send_help(const IncomingMessage &message) const;
   void send_repo(const IncomingMessage &message) const;
+  void send_health(const IncomingMessage &message,
+                   const HealthSnapshot &snapshot) const;
   void send_overload(const IncomingMessage &message) const noexcept;
   [[nodiscard]] bool actionable(const IncomingMessage &message) const;
 
@@ -48,6 +53,7 @@ private:
   AiResponder &ai_responder_;
   DiscordTextDelivery &delivery_;
   Diagnostics &diagnostics_;
+  OwnerAdminService &owner_admin_;
   std::string command_prefix_;
   BoundedExecutor worker_;
 };

@@ -15,11 +15,15 @@
 namespace sanguinius {
 namespace {
 
-constexpr auto discord_request_timeout = std::chrono::seconds{10};
 constexpr auto cancellation_poll_interval = std::chrono::milliseconds{25};
 
+constexpr std::uint32_t gateway_intents =
+    dpp::i_guilds | dpp::i_guild_messages | dpp::i_message_content;
+static_assert((gateway_intents & dpp::i_direct_messages) == 0U);
+static_assert((gateway_intents & dpp::i_guild_voice_states) == 0U);
+
 [[nodiscard]] DiscordId id(const dpp::snowflake value) {
-  return static_cast<DiscordId>(value);
+  return DiscordId{static_cast<std::uint64_t>(value)};
 }
 
 [[nodiscard]] ConversationEntry
@@ -40,6 +44,7 @@ conversation_entry(const dpp::message &message) {
       .message_id = id(message.id),
       .guild_id = id(message.guild_id),
       .channel_id = id(message.channel_id),
+      .author_user_id = id(message.author.id),
       .author_username = message.author.username,
       .author_display_name = message.author.global_name,
       .content = message.content,
@@ -76,9 +81,9 @@ conversation_entry(const dpp::message &message) {
 template <typename Value>
 Value wait_for_discord(std::future<Value> &future,
                        const std::stop_token stop_token,
+                       const std::chrono::seconds request_timeout,
                        const std::string_view timeout_message) {
-  const auto deadline =
-      std::chrono::steady_clock::now() + discord_request_timeout;
+  const auto deadline = std::chrono::steady_clock::now() + request_timeout;
   while (future.wait_for(cancellation_poll_interval) !=
          std::future_status::ready) {
     if (stop_token.stop_requested()) {
@@ -98,9 +103,10 @@ Value wait_for_discord(std::future<Value> &future,
 
 class DppDiscordAdapter::Impl {
 public:
-  Impl(std::string token, Diagnostics &diagnostics)
-      : bot_{std::move(token), dpp::i_default_intents | dpp::i_message_content},
-        diagnostics_{diagnostics} {}
+  Impl(std::string token, const std::chrono::seconds request_timeout,
+       Diagnostics &diagnostics)
+      : bot_{std::move(token), gateway_intents}, diagnostics_{diagnostics},
+        request_timeout_{request_timeout} {}
 
   void start(MessageCallback message_callback) {
     if (started_.exchange(true)) {
@@ -184,6 +190,7 @@ public:
 
   dpp::cluster bot_;
   Diagnostics &diagnostics_;
+  std::chrono::seconds request_timeout_;
   MessageCallback message_callback_;
   std::atomic<bool> started_{false};
   std::atomic<bool> accepting_{false};
@@ -194,8 +201,10 @@ public:
 };
 
 DppDiscordAdapter::DppDiscordAdapter(std::string token,
+                                     const std::chrono::seconds request_timeout,
                                      Diagnostics &diagnostics)
-    : impl_{std::make_unique<Impl>(std::move(token), diagnostics)} {}
+    : impl_{std::make_unique<Impl>(std::move(token), request_timeout,
+                                   diagnostics)} {}
 
 DppDiscordAdapter::~DppDiscordAdapter() { shutdown(); }
 
@@ -208,11 +217,11 @@ void DppDiscordAdapter::stop_accepting() noexcept { impl_->stop_accepting(); }
 void DppDiscordAdapter::shutdown() noexcept { impl_->shutdown(); }
 
 void DppDiscordAdapter::show_typing(const DiscordId channel_id) {
-  impl_->bot_.channel_typing(dpp::snowflake{channel_id});
+  impl_->bot_.channel_typing(dpp::snowflake{channel_id.value()});
 }
 
 void DppDiscordAdapter::reply(const ReplyRequest &request) {
-  dpp::message reply{dpp::snowflake{request.target.channel_id},
+  dpp::message reply{dpp::snowflake{request.target.channel_id.value()},
                      request.content};
   if (request.embed.has_value()) {
     dpp::embed embed;
@@ -222,9 +231,9 @@ void DppDiscordAdapter::reply(const ReplyRequest &request) {
         .set_description(request.embed->description);
     reply.add_embed(embed);
   }
-  reply.set_reference(dpp::snowflake{request.target.message_id},
-                      dpp::snowflake{request.target.guild_id},
-                      dpp::snowflake{request.target.channel_id});
+  reply.set_reference(dpp::snowflake{request.target.message_id.value()},
+                      dpp::snowflake{request.target.guild_id.value()},
+                      dpp::snowflake{request.target.channel_id.value()});
   if (request.suppress_mentions) {
     reply.set_allowed_mentions(false, false, false, false);
   }
@@ -238,8 +247,9 @@ DppDiscordAdapter::recent_messages(const IncomingMessage &message,
   auto result = std::make_shared<std::promise<dpp::message_map>>();
   auto future = result->get_future();
   impl_->bot_.messages_get(
-      dpp::snowflake{message.channel_id}, 0, dpp::snowflake{message.message_id},
-      0, limit, [result](const dpp::confirmation_callback_t &confirmation) {
+      dpp::snowflake{message.channel_id.value()}, 0,
+      dpp::snowflake{message.message_id.value()}, 0, limit,
+      [result](const dpp::confirmation_callback_t &confirmation) {
         try {
           if (confirmation.is_error()) {
             throw std::runtime_error{confirmation.get_error().human_readable};
@@ -253,8 +263,9 @@ DppDiscordAdapter::recent_messages(const IncomingMessage &message,
         }
       });
 
-  auto message_map = wait_for_discord(
-      future, stop_token, "Timed out retrieving recent Discord messages.");
+  auto message_map =
+      wait_for_discord(future, stop_token, impl_->request_timeout_,
+                       "Timed out retrieving recent Discord messages.");
   std::vector<ConversationEntry> messages;
   messages.reserve(message_map.size());
   for (auto &[message_id, recent] : message_map) {
@@ -273,7 +284,7 @@ ConversationEntry DppDiscordAdapter::message(const DiscordId message_id,
   auto result = std::make_shared<std::promise<dpp::message>>();
   auto future = result->get_future();
   impl_->bot_.message_get(
-      dpp::snowflake{message_id}, dpp::snowflake{channel_id},
+      dpp::snowflake{message_id.value()}, dpp::snowflake{channel_id.value()},
       [result](const dpp::confirmation_callback_t &confirmation) {
         try {
           if (confirmation.is_error()) {
@@ -288,8 +299,9 @@ ConversationEntry DppDiscordAdapter::message(const DiscordId message_id,
         }
       });
 
-  const auto fetched = wait_for_discord(
-      future, stop_token, "Timed out retrieving the replied-to message.");
+  const auto fetched =
+      wait_for_discord(future, stop_token, impl_->request_timeout_,
+                       "Timed out retrieving the replied-to message.");
   return conversation_entry(fetched);
 }
 

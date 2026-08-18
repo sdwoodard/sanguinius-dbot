@@ -28,6 +28,12 @@ constexpr std::string_view overload_message{
                           message.channel_id};
 }
 
+[[nodiscard]] ServerRequestContext
+server_context(const IncomingMessage &message) {
+  return ServerRequestContext{message.guild_id, message.channel_id,
+                              message.author_user_id};
+}
+
 } // namespace
 
 Command parse_command(const std::string_view content,
@@ -54,10 +60,11 @@ MessageHandler::MessageHandler(MessageLog &message_log,
                                AiResponder &ai_responder,
                                DiscordTextDelivery &delivery,
                                Diagnostics &diagnostics,
+                               OwnerAdminService &owner_admin,
                                std::string command_prefix,
                                const std::size_t queue_capacity)
     : message_log_{message_log}, ai_responder_{ai_responder},
-      delivery_{delivery}, diagnostics_{diagnostics},
+      delivery_{delivery}, diagnostics_{diagnostics}, owner_admin_{owner_admin},
       command_prefix_{std::move(command_prefix)}, worker_{queue_capacity, 1} {}
 
 MessageHandler::~MessageHandler() { stop(); }
@@ -93,6 +100,10 @@ SubmitResult MessageHandler::enqueue(IncomingMessage message) {
   return result;
 }
 
+QueueSnapshot MessageHandler::queue_snapshot() const {
+  return worker_.snapshot();
+}
+
 void MessageHandler::process(const IncomingMessage &message) const {
   try {
     message_log_.append({message.author_username, message.content});
@@ -102,6 +113,25 @@ void MessageHandler::process(const IncomingMessage &message) const {
   }
 
   if (message.author_is_bot) {
+    return;
+  }
+
+  if (const auto operation =
+          parse_admin_operation(message.content, command_prefix_);
+      operation.has_value()) {
+    const auto result =
+        owner_admin_.handle(AdminRequest{server_context(message), *operation},
+                            worker_.snapshot(), ai_responder_.queue_snapshot());
+    if (result.authorization.allowed() && result.health.has_value()) {
+      send_health(message, *result.health);
+    } else {
+      diagnostics_.emit(
+          {DiagnosticSeverity::info, "admin.request_rejected",
+           std::string{"Owner admin request was not handled: status="} +
+               admin_status_name(result.authorization.status) + " scope=" +
+               scope_rejection_name(result.authorization.rejection) + ".",
+           message.correlation_id});
+    }
     return;
   }
 
@@ -149,6 +179,16 @@ void MessageHandler::send_repo(const IncomingMessage &message) const {
   });
 }
 
+void MessageHandler::send_health(const IncomingMessage &message,
+                                 const HealthSnapshot &snapshot) const {
+  delivery_.reply({
+      .target = target(message),
+      .content = render_health(snapshot),
+      .embed = std::nullopt,
+      .suppress_mentions = true,
+  });
+}
+
 void MessageHandler::send_overload(
     const IncomingMessage &message) const noexcept {
   try {
@@ -165,9 +205,14 @@ void MessageHandler::send_overload(
 }
 
 bool MessageHandler::actionable(const IncomingMessage &message) const {
-  return !message.author_is_bot &&
-         (ai_responder_.handles(message) ||
-          parse_command(message.content, command_prefix_) != Command::none);
+  if (message.author_is_bot) {
+    return false;
+  }
+  if (parse_admin_operation(message.content, command_prefix_).has_value()) {
+    return owner_admin_.authorize(server_context(message)).allowed();
+  }
+  return ai_responder_.handles(message) ||
+         parse_command(message.content, command_prefix_) != Command::none;
 }
 
 } // namespace sanguinius

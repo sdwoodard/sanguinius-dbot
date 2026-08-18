@@ -1,9 +1,11 @@
 # Sanguinius
 
 Sanguinius is a Discord bot built with modern C++ and [D++](https://dpp.dev/).
-It supports two prefix commands, answers messages that begin with a bot mention
-through the OpenAI Responses API, and writes every visible message-create event
-to an append-only text log.
+It supports two public prefix commands, answers messages that begin with a bot
+mention through the OpenAI Responses API, and writes every visible guild
+message-create event to an append-only text log. Typed configuration fixes the
+bot's future feature boundary to one guild, one primary text channel, and one
+owner.
 
 ## Commands
 
@@ -14,6 +16,12 @@ to an append-only text log.
 
 Command names are case-insensitive. Messages written by bots are logged but are
 not treated as commands.
+
+When owner administration is explicitly enabled, the temporary
+`!sang-admin health` command provides a public but strictly redacted health
+snapshot in the configured primary channel. It is not listed by `!help`, is
+silent for other users or channels, and will move to an ephemeral interaction
+in a later milestone.
 
 To talk to the AI persona, mention the bot at the start of a message:
 
@@ -57,9 +65,11 @@ Catch2 is a development-only dependency. CMake requires it only when
 the runtime host.
 
 The Discord application must have the **Message Content Intent** enabled in the
-Developer Portal. The bot also needs permission to view channels, read message
-history, and send messages wherever it is expected to operate. It can only log
-messages Discord delivers to it.
+Developer Portal. The gateway requests only guild, guild-message, and message
+content intents; direct-message and voice-state intents are deliberately not
+requested. The bot also needs permission to view channels, read message
+history, and send messages wherever it is expected to operate. Voice-state
+intent and permissions remain deferred to the Vox milestone.
 
 ## Configure
 
@@ -73,6 +83,17 @@ export SANGUINIUS_TOKEN_FILE="$HOME/.config/sanguinius/bot.token"
 
 The start script uses `$HOME/.config/sanguinius/bot.token` automatically when
 neither variable is set. The file should be readable only by its owner.
+
+The following canonical decimal Discord IDs are required. Values must be
+nonzero, contain digits only, have no leading zero, and fit losslessly in an
+unsigned 64-bit snowflake. Keep real IDs in local or production configuration,
+not in Git:
+
+```bash
+export SANGUINIUS_GUILD_ID='replace-locally'
+export SANGUINIUS_PRIMARY_CHANNEL_ID='replace-locally'
+export SANGUINIUS_OWNER_USER_ID='replace-locally'
+```
 
 ### OpenAI API key and billing
 
@@ -91,10 +112,11 @@ unset sanguinius_openai_key
 chmod 600 "$HOME/.config/sanguinius/openai.key"
 ```
 
-Do not use a ChatGPT browser/session token. The start script reads
-`$HOME/.config/sanguinius/openai.key` by default and exports its contents as
-`OPENAI_API_KEY` to the bot process. You may instead provide the key directly
-for the current process:
+Do not use a ChatGPT browser/session token. By default, the start script sets
+`SANGUINIUS_OPENAI_API_KEY_FILE` to
+`$HOME/.config/sanguinius/openai.key`; typed configuration reads the file
+directly without exporting its contents as `OPENAI_API_KEY`. You may instead
+provide the key directly for the current process:
 
 ```bash
 export OPENAI_API_KEY='your-api-key'
@@ -114,6 +136,35 @@ Optional settings are:
 | `SANGUINIUS_OPENAI_API_KEY_FILE` | Set by start script | OpenAI API key file. |
 | `SANGUINIUS_OPENAI_MODEL` | `gpt-5.4-nano` | Responses API model. |
 | `SANGUINIUS_PERSONA_FILE` | `config/persona.txt` | Plaintext persona instructions. |
+| `SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS` | `10` | Discord REST timeout, from 1 through 300 seconds. |
+| `SANGUINIUS_DATABASE_FILE` | `state/sanguinius.sqlite3` | Reserved database path; Milestone 2 does not open or create it. |
+| `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Enable the owner-only transitional health command. |
+| `SANGUINIUS_TEST_MODE` | `false` | Expose test-mode state to later owner controls. |
+| `SANGUINIUS_CHRONICLE_ENABLED` | `false` | Configured Chronicle mode; no Chronicle behavior exists yet. |
+| `SANGUINIUS_TAROT_ENABLED` | `false` | Configured Tarot mode; no Tarot behavior exists yet. |
+| `SANGUINIUS_APPEARANCES_MODE` | `off` | Configured `off`, `dry_run`, or `live` intent; no appearance service exists yet. |
+| `SANGUINIUS_VOX_ENABLED` | `false` | Configured Vox mode; no voice connection exists yet. |
+| `SANGUINIUS_VOICE_INPUT_ENABLED` | `false` | Reserved privacy gate; voice input remains unavailable. |
+
+Boolean variables accept only the exact lowercase values `true` and `false`.
+Every explicitly supplied variable must have a nonempty value; omit an
+optional variable to select its default. Empty values do not silently fall
+back to the command prefix, model, persona, path, or credential defaults.
+The sample [configuration environment](config/sanguinius.env.example) contains
+all fields without real IDs or credentials.
+
+Validate the complete configuration without starting D++, connecting to
+Discord, or constructing the OpenAI client:
+
+```bash
+./build/release/sanguinius --check-config
+```
+
+The report shows version, revision, configured/default origin for every
+defaultable setting, and feature modes without printing tokens, API keys,
+Discord IDs, paths, or persona content. Configuration and message-log startup
+failures likewise identify fields rather than configured paths. The start
+script runs this check before creating the background process.
 
 Do not commit tokens or environment files. A token exposed in source control
 must be regenerated in the Discord Developer Portal.
@@ -149,9 +200,10 @@ and stop the bot cleanly:
 ./scripts/stop_bot.bash
 ```
 
-`start_bot.bash` expects the release binary and the two default credential files
-described above, unless their environment overrides are set. Console output
-goes to `logs/console.log`.
+`start_bot.bash` expects the release binary, the two default credential files,
+and the three required scope IDs described above, unless their environment
+overrides are set. It runs the offline configuration check before starting.
+Console output goes to `logs/console.log`.
 
 Discord gateway callbacks translate each message into project-owned values and
 place it on a bounded 64-item application queue. A single worker preserves
@@ -174,6 +226,12 @@ Discord message intake, then discards queued application work, cancels queued
 and in-flight AI work, joins every worker, and finally shuts down D++. Pending
 work cancelled solely because of shutdown does not emit a misleading failure
 reply.
+
+The application enforces owner health requests through one reusable server
+scope policy: configured guild, then primary channel, then owner identity.
+Rejected requests generate no Discord response. Existing `!help`, `!repo`, and
+leading-mention behavior deliberately retains its triggering-channel behavior
+during the staged interaction migration.
 
 ## Architecture
 

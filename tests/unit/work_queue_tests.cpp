@@ -64,6 +64,10 @@ TEST_CASE("bounded executor validates its configuration", "[queue]") {
 TEST_CASE("bounded executor reports deterministic saturation", "[queue]") {
   StopAwareGate gate;
   sanguinius::BoundedExecutor executor{1, 1};
+  REQUIRE(executor.snapshot().capacity == 1);
+  REQUIRE(executor.snapshot().queued == 0);
+  REQUIRE(executor.snapshot().active == 0);
+  REQUIRE_FALSE(executor.snapshot().accepting);
   executor.start();
 
   REQUIRE(executor.try_submit([&gate](const std::stop_token stop_token) {
@@ -74,9 +78,18 @@ TEST_CASE("bounded executor reports deterministic saturation", "[queue]") {
           sanguinius::SubmitResult::accepted);
   REQUIRE(executor.try_submit([](std::stop_token) {}) ==
           sanguinius::SubmitResult::full);
+  const auto under_load = executor.snapshot();
+  REQUIRE(under_load.capacity == 1);
+  REQUIRE(under_load.queued == 1);
+  REQUIRE(under_load.active == 1);
+  REQUIRE(under_load.accepting);
 
   gate.release();
   executor.stop();
+  const auto stopped = executor.snapshot();
+  REQUIRE(stopped.queued == 0);
+  REQUIRE(stopped.active == 0);
+  REQUIRE_FALSE(stopped.accepting);
   REQUIRE(executor.try_submit([](std::stop_token) {}) ==
           sanguinius::SubmitResult::stopping);
 }

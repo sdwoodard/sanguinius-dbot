@@ -1,7 +1,9 @@
 #include "sanguinius/application.hpp"
 
 #include "sanguinius/ai_responder.hpp"
+#include "sanguinius/health.hpp"
 #include "sanguinius/message_handler.hpp"
+#include "sanguinius/owner_admin.hpp"
 
 #include <mutex>
 #include <stdexcept>
@@ -47,8 +49,13 @@ public:
     ai_responder_ = std::make_unique<AiResponder>(
         *ai_client_, *discord_, *discord_, *diagnostics_, options_.persona,
         options_.ai_queue_capacity, options_.ai_worker_count);
+    scope_policy_ = std::make_unique<ServerScopePolicy>(options_.server_scope);
+    health_service_ = std::make_unique<HealthService>(
+        options_.build, options_.controls, options_.features);
+    owner_admin_ = std::make_unique<OwnerAdminService>(
+        options_.controls, *scope_policy_, *health_service_);
     message_handler_ = std::make_unique<MessageHandler>(
-        *message_log_, *ai_responder_, *discord_, *diagnostics_,
+        *message_log_, *ai_responder_, *discord_, *diagnostics_, *owner_admin_,
         options_.command_prefix, options_.message_queue_capacity);
   }
 
@@ -130,6 +137,9 @@ private:
   std::unique_ptr<AiClient> ai_client_;
   std::unique_ptr<DiscordRuntime> discord_;
   std::unique_ptr<AiResponder> ai_responder_;
+  std::unique_ptr<ServerScopePolicy> scope_policy_;
+  std::unique_ptr<HealthService> health_service_;
+  std::unique_ptr<OwnerAdminService> owner_admin_;
   std::unique_ptr<MessageHandler> message_handler_;
   std::mutex state_mutex_;
   ApplicationState state_{ApplicationState::created};

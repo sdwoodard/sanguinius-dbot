@@ -3,6 +3,7 @@
 #include "sanguinius/diagnostics.hpp"
 #include "sanguinius/discord_interfaces.hpp"
 
+#include <chrono>
 #include <memory>
 #include <string>
 
@@ -10,7 +11,8 @@ namespace sanguinius {
 
 class DppDiscordAdapter final : public DiscordRuntime {
 public:
-  DppDiscordAdapter(std::string token, Diagnostics &diagnostics);
+  DppDiscordAdapter(std::string token, std::chrono::seconds request_timeout,
+                    Diagnostics &diagnostics);
   ~DppDiscordAdapter() override;
 
   DppDiscordAdapter(const DppDiscordAdapter &) = delete;

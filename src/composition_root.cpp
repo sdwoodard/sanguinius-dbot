@@ -15,16 +15,20 @@ std::unique_ptr<Application> make_application(const Config &config) {
   auto id_generator = std::make_unique<ProcessIdGenerator>();
   auto diagnostics = std::make_unique<ConsoleDiagnostics>();
   auto message_log =
-      std::make_unique<MessageLogger>(config.message_log, *clock);
-  auto ai_client = std::make_unique<OpenAiClient>(config.openai_api_key,
-                                                  config.openai_model);
-  auto discord =
-      std::make_unique<DppDiscordAdapter>(config.token, *diagnostics);
+      std::make_unique<MessageLogger>(config.paths.message_log, *clock);
+  auto ai_client =
+      std::make_unique<OpenAiClient>(config.ai.api_key, config.ai.model);
+  auto discord = std::make_unique<DppDiscordAdapter>(
+      config.discord.token, config.discord.request_timeout, *diagnostics);
 
   return std::make_unique<Application>(
       ApplicationOptions{
-          .persona = config.persona,
+          .persona = config.ai.persona,
           .command_prefix = config.command_prefix,
+          .server_scope = config.discord.server_scope,
+          .controls = config.controls,
+          .features = config.features,
+          .build = current_build_info(),
           .message_queue_capacity = 64,
           .ai_queue_capacity = 64,
           .ai_worker_count = 2,

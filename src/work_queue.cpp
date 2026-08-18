@@ -60,6 +60,16 @@ public:
     return SubmitResult::accepted;
   }
 
+  [[nodiscard]] QueueSnapshot snapshot() const {
+    const std::scoped_lock lock{mutex_};
+    return QueueSnapshot{
+        .capacity = capacity_,
+        .queued = tasks_.size(),
+        .active = active_,
+        .accepting = accepting_,
+    };
+  }
+
   void stop() noexcept {
     {
       const std::scoped_lock lock{mutex_};
@@ -87,23 +97,29 @@ private:
         }
         task = std::move(tasks_.front());
         tasks_.pop_front();
+        ++active_;
       }
 
       try {
         task(stop_token);
       } catch (...) {
       }
+      {
+        const std::scoped_lock lock{mutex_};
+        --active_;
+      }
     }
   }
 
   std::size_t capacity_;
   std::size_t worker_count_;
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::condition_variable ready_;
   std::deque<Task> tasks_;
   std::vector<std::jthread> workers_;
   bool started_{false};
   bool accepting_{false};
+  std::size_t active_{};
 };
 
 BoundedExecutor::BoundedExecutor(const std::size_t capacity,
@@ -117,6 +133,8 @@ void BoundedExecutor::start() { impl_->start(); }
 SubmitResult BoundedExecutor::try_submit(Task task) {
   return impl_->try_submit(std::move(task));
 }
+
+QueueSnapshot BoundedExecutor::snapshot() const { return impl_->snapshot(); }
 
 void BoundedExecutor::stop() noexcept { impl_->stop(); }
 

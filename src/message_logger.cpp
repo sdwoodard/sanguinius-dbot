@@ -9,19 +9,25 @@ namespace sanguinius {
 MessageLogger::MessageLogger(const std::filesystem::path &path,
                              const Clock &clock)
     : clock_{clock} {
-  if (path.has_parent_path()) {
-    std::filesystem::create_directories(path.parent_path());
-  }
+  try {
+    if (path.has_parent_path()) {
+      std::filesystem::create_directories(path.parent_path());
+    }
 
-  stream_.open(path, std::ios::app);
-  if (!stream_) {
-    throw std::runtime_error{"Unable to open message log: " + path.string()};
-  }
+    stream_.open(path, std::ios::app);
+    if (!stream_) {
+      throw std::runtime_error{"message log open failed"};
+    }
 
-  std::filesystem::permissions(path,
-                               std::filesystem::perms::owner_read |
-                                   std::filesystem::perms::owner_write,
-                               std::filesystem::perm_options::replace);
+    std::filesystem::permissions(path,
+                                 std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace);
+  } catch (...) {
+    throw std::runtime_error{
+        "Unable to initialize the message log configured by "
+        "SANGUINIUS_LOG_FILE."};
+  }
 }
 
 void MessageLogger::append(const LoggedMessage &message) {

@@ -60,7 +60,7 @@ std::optional<std::string> prompt_after_bot_mention(std::string_view content,
   }
   content.remove_prefix(first);
 
-  const auto bot_id_text = std::to_string(bot_id);
+  const auto bot_id_text = bot_id.str();
   const std::string mention = "<@" + bot_id_text + '>';
   const std::string nickname_mention = "<@!" + bot_id_text + '>';
   std::size_t mention_size = 0;
@@ -124,6 +124,10 @@ SubmitResult AiResponder::enqueue(IncomingMessage message) {
       }
     }
   });
+}
+
+QueueSnapshot AiResponder::queue_snapshot() const {
+  return workers_.snapshot();
 }
 
 void AiResponder::respond(const IncomingMessage &message,
