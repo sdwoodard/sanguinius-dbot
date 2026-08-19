@@ -43,6 +43,7 @@ public:
   SchedulerService &operator=(const SchedulerService &) = delete;
 
   void start();
+  void add_handler(std::string type, JobHandlerRegistry::Handler handler);
   void stop() noexcept;
   void wake() noexcept;
   void run_one_cycle();

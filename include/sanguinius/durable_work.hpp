@@ -97,9 +97,26 @@ struct MemoryExpiryJobPayload {
   std::size_t expected_revision{};
 };
 
+struct SessionSummaryJobPayload {
+  std::string session_id;
+  std::string draft_id;
+  std::size_t expected_session_revision{};
+  std::size_t expected_draft_revision{};
+};
+
+struct SessionContextPurgeJobPayload {
+  std::string session_id;
+};
+
+struct AnniversaryScanJobPayload {
+  std::string local_date;
+  bool test_run{};
+};
+
 using DurablePayload =
     std::variant<std::monostate, NoticeOutboxPayload, PublicOutboxPayload,
-                 MemoryExpiryJobPayload>;
+                 MemoryExpiryJobPayload, SessionSummaryJobPayload,
+                 SessionContextPurgeJobPayload, AnniversaryScanJobPayload>;
 
 struct ClaimedScheduledJob {
   std::string job_id;
@@ -211,6 +228,12 @@ public:
                       const OutboxEnqueue &outbox, std::int64_t now_ms) = 0;
   [[nodiscard]] virtual WorkMutationStatus
   release_job(const ClaimedScheduledJob &job, std::int64_t now_ms) = 0;
+  [[nodiscard]] virtual WorkMutationStatus
+  defer_job(const ClaimedScheduledJob &job, std::int64_t now_ms,
+            std::int64_t retry_at_ms, std::string error_code) = 0;
+  [[nodiscard]] virtual WorkMutationStatus
+  extend_job_lease(const ClaimedScheduledJob &job, std::int64_t now_ms,
+                   std::int64_t lease_until_ms) = 0;
   [[nodiscard]] virtual WorkMutationStatus
   fail_job(const ClaimedScheduledJob &job, std::int64_t now_ms,
            std::int64_t retry_at_ms, std::string error_code,

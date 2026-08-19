@@ -48,6 +48,7 @@ enum class RelationshipSourceKind {
   tarot_resolved,
   tarot_honored,
   appearance_positive_feedback,
+  session_completed,
   title_awarded,
 };
 
@@ -106,6 +107,9 @@ struct PreparedPromptContext {
   std::optional<std::string> attempt_id;
   std::string relationship_style;
   std::vector<RankedMemory> memories;
+  std::optional<std::string> featured_title;
+  std::optional<std::string> latest_session_summary;
+  bool session_open{};
 };
 
 struct PreparePromptContextRequest {
@@ -155,6 +159,9 @@ struct RelationshipProfile {
   std::vector<std::string> recent_reasons;
   std::size_t shared_canon_count{};
   std::vector<std::string> visible_canon_titles;
+  std::optional<std::string> featured_title;
+  std::optional<std::string> latest_session_summary;
+  bool session_open{};
 };
 
 struct SetMemoryCallbacksRequest {

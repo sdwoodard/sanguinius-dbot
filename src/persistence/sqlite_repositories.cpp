@@ -404,7 +404,8 @@ std::optional<UserPreferences> SqliteCoreIdentityRepository::load_preferences(
   auto statement = context_->connection().prepare(
       "SELECT chronicle_opt_in, memory_callback_opt_in, "
       "appearance_callback_opt_in, voice_input_opt_in, "
-      "public_tarot_results_opt_in, quiet_until_ms, updated_at_ms "
+      "public_tarot_results_opt_in, anniversary_reminders_enabled, "
+      "quiet_until_ms, updated_at_ms "
       "FROM user_preference WHERE user_id = ?");
   statement.bind(1, user_id.str());
   if (!statement.step()) {
@@ -416,11 +417,12 @@ std::optional<UserPreferences> SqliteCoreIdentityRepository::load_preferences(
       .appearance_callback_opt_in = statement.column_int64(2) != 0,
       .voice_input_opt_in = statement.column_int64(3) != 0,
       .public_tarot_results_opt_in = statement.column_int64(4) != 0,
+      .anniversary_reminders_enabled = statement.column_int64(5) != 0,
       .quiet_until_ms =
-          statement.column_is_null(5)
+          statement.column_is_null(6)
               ? std::nullopt
-              : std::optional<std::int64_t>{statement.column_int64(5)},
-      .updated_at_ms = statement.column_int64(6),
+              : std::optional<std::int64_t>{statement.column_int64(6)},
+      .updated_at_ms = statement.column_int64(7),
   };
   if (statement.step()) {
     throw DatabaseError{DatabaseErrorCategory::schema, SQLITE_SCHEMA,

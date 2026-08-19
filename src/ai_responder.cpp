@@ -65,23 +65,22 @@ std::optional<std::string> prompt_after_bot_mention(std::string_view content,
 }
 
 AiResponder::AiResponder(const AiClient &client,
+                         AiWorkService &work,
                          DiscordConversation &conversation,
                          DiscordTextDelivery &delivery,
                          Diagnostics &diagnostics, std::string persona,
-                         const std::size_t queue_capacity,
-                         const std::size_t worker_count,
                          RelationshipService *relationships,
                          const FeatureConfiguration features)
     : client_{client}, conversation_{conversation}, delivery_{delivery},
       diagnostics_{diagnostics}, compiler_{std::move(persona)},
       relationships_{relationships}, features_{features},
-      workers_{queue_capacity, worker_count} {}
+      work_{work} {}
 
 AiResponder::~AiResponder() { stop(); }
 
-void AiResponder::start() { workers_.start(); }
+void AiResponder::start() {}
 
-void AiResponder::stop() noexcept { workers_.stop(); }
+void AiResponder::stop() noexcept {}
 
 bool AiResponder::handles(const IncomingMessage &message) const {
   return !message.author_is_bot && message.bot_user_id != 0 &&
@@ -90,7 +89,7 @@ bool AiResponder::handles(const IncomingMessage &message) const {
 }
 
 SubmitResult AiResponder::enqueue(IncomingMessage message) {
-  return workers_.try_submit([this, message = std::move(message)](
+  return work_.submit([this, message = std::move(message)](
                                  const std::stop_token stop_token) {
     try {
       respond(message, stop_token);
@@ -114,7 +113,7 @@ SubmitResult AiResponder::enqueue(IncomingMessage message) {
 }
 
 QueueSnapshot AiResponder::queue_snapshot() const {
-  return workers_.snapshot();
+  return work_.snapshot();
 }
 
 void AiResponder::respond(const IncomingMessage &message,

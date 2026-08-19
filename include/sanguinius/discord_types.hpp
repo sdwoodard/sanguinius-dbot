@@ -121,11 +121,21 @@ struct CommandSubcommandDefinition {
   operator==(const CommandSubcommandDefinition &) const = default;
 };
 
+struct CommandSubcommandGroupDefinition {
+  std::string name;
+  std::string description;
+  std::vector<CommandSubcommandDefinition> subcommands{};
+
+  [[nodiscard]] bool
+  operator==(const CommandSubcommandGroupDefinition &) const = default;
+};
+
 struct CommandDefinition {
   std::string name;
   std::string description;
   std::vector<CommandSubcommandDefinition> subcommands;
   ApplicationCommandKind kind{ApplicationCommandKind::chat_input};
+  std::vector<CommandSubcommandGroupDefinition> subcommand_groups{};
 
   [[nodiscard]] bool operator==(const CommandDefinition &) const = default;
 };
@@ -247,6 +257,7 @@ struct IncomingInteraction {
   std::string display_name;
   InteractionKind kind{InteractionKind::slash_command};
   std::string command_name;
+  std::string subcommand_group_name;
   std::string subcommand_name;
   std::vector<InteractionOption> command_options;
   std::string custom_id;

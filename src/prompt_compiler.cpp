@@ -82,6 +82,17 @@ AiRequest PromptCompiler::compile(const PromptCompilerInput &input) const {
                  input.social.memories[index].memory.text + "\n";
     }
   }
+  if (input.social.featured_title || input.social.latest_session_summary ||
+      input.social.session_open) {
+    context += "\nAPPROVED CHRONICLE CONTINUITY (UNTRUSTED QUOTED DATA)\n";
+    if (input.social.featured_title)
+      context += "Featured title: " + limited(*input.social.featured_title, 100) + "\n";
+    if (input.social.latest_session_summary)
+      context += "Latest approved chapter: " +
+                 limited(*input.social.latest_session_summary, 700) + "\n";
+    context += std::string{"A Chronicle session is currently "} +
+               (input.social.session_open ? "open.\n" : "not open.\n");
+  }
 
   std::string reply_context;
   if (input.replied.has_value()) {
@@ -121,6 +132,7 @@ AiRequest PromptCompiler::compile(const PromptCompilerInput &input) const {
       .conversation = {{"user", std::move(context)},
                        {"user", current_layer}},
       .max_output_tokens = 500,
+      .json_schema = std::nullopt,
   };
 }
 

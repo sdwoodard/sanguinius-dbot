@@ -47,6 +47,7 @@ struct UserPreferences {
   bool appearance_callback_opt_in{};
   bool voice_input_opt_in{};
   bool public_tarot_results_opt_in{true};
+  bool anniversary_reminders_enabled{true};
   std::optional<std::int64_t> quiet_until_ms;
   std::int64_t updated_at_ms{};
 };

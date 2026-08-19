@@ -98,6 +98,7 @@ TEST_CASE("bounded executor cancels active work and discards pending work",
           "[queue][shutdown]") {
   StopAwareGate gate;
   std::atomic<int> pending_runs{0};
+  std::atomic<int> pending_cancellations{0};
   sanguinius::BoundedExecutor executor{1, 1};
   executor.start();
 
@@ -105,13 +106,42 @@ TEST_CASE("bounded executor cancels active work and discards pending work",
     gate.wait(stop_token);
   }) == sanguinius::SubmitResult::accepted);
   REQUIRE(gate.wait_until_entered());
-  REQUIRE(executor.try_submit([&pending_runs](std::stop_token) {
-    ++pending_runs;
-  }) == sanguinius::SubmitResult::accepted);
+  REQUIRE(executor.try_submit(
+              [&pending_runs](std::stop_token) { ++pending_runs; },
+              [&pending_cancellations] { ++pending_cancellations; }) ==
+          sanguinius::SubmitResult::accepted);
 
   executor.stop();
   REQUIRE(gate.cancelled());
   REQUIRE(pending_runs.load() == 0);
+  REQUIRE(pending_cancellations.load() == 1);
+}
+
+TEST_CASE("priority work overtakes queued ordinary work", "[queue][priority]") {
+  StopAwareGate gate;
+  std::atomic<int> sequence{0};
+  std::atomic<int> priority_order{0};
+  std::atomic<int> ordinary_order{0};
+  auto completion = std::make_shared<std::promise<void>>();
+  auto completed = completion->get_future();
+  sanguinius::BoundedExecutor executor{2, 1};
+  executor.start();
+  REQUIRE(executor.try_submit([&gate](const std::stop_token stop_token) {
+    gate.wait(stop_token);
+  }) == sanguinius::SubmitResult::accepted);
+  REQUIRE(gate.wait_until_entered());
+  REQUIRE(executor.try_submit([&](std::stop_token) {
+    ordinary_order = ++sequence;
+    completion->set_value();
+  }) == sanguinius::SubmitResult::accepted);
+  REQUIRE(executor.try_submit_front([&](std::stop_token) {
+    priority_order = ++sequence;
+  }) == sanguinius::SubmitResult::accepted);
+  gate.release();
+  REQUIRE(completed.wait_for(2s) == std::future_status::ready);
+  REQUIRE(priority_order.load() == 1);
+  REQUIRE(ordinary_order.load() == 2);
+  executor.stop();
 }
 
 TEST_CASE("bounded executor contains task exceptions", "[queue]") {

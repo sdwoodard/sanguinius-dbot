@@ -62,10 +62,12 @@ MessageHandler::MessageHandler(MessageLog &message_log,
                                Diagnostics &diagnostics,
                                OwnerAdminService &owner_admin,
                                std::string command_prefix,
-                               const std::size_t queue_capacity)
+                               const std::size_t queue_capacity,
+                               std::function<void(const IncomingMessage &)> observer)
     : message_log_{message_log}, ai_responder_{ai_responder},
       delivery_{delivery}, diagnostics_{diagnostics}, owner_admin_{owner_admin},
-      command_prefix_{std::move(command_prefix)}, worker_{queue_capacity, 1} {}
+      command_prefix_{std::move(command_prefix)}, observer_{std::move(observer)},
+      worker_{queue_capacity, 1} {}
 
 MessageHandler::~MessageHandler() { stop(); }
 
@@ -114,6 +116,15 @@ void MessageHandler::process(const IncomingMessage &message) const {
 
   if (message.author_is_bot) {
     return;
+  }
+  if (observer_) {
+    try {
+      observer_(message);
+    } catch (const std::exception &error) {
+      diagnostics_.emit({DiagnosticSeverity::error,
+                         "chronicle.session_context", error.what(),
+                         message.correlation_id});
+    }
   }
 
   if (const auto operation =

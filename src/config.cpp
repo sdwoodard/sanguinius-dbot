@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -316,6 +317,17 @@ Config Config::from_source(const ConfigSource &source) {
   config.features.voice_input_enabled =
       optional_boolean(source, "SANGUINIUS_VOICE_INPUT_ENABLED", false);
 
+  if (const auto timezone = optional_nonempty(source, "SANGUINIUS_TIMEZONE")) {
+    config.timezone = *timezone;
+    config.origins.timezone = ConfigurationOrigin::configured;
+  }
+  try {
+    static_cast<void>(std::chrono::locate_zone(config.timezone));
+  } catch (...) {
+    throw std::runtime_error{
+        "SANGUINIUS_TIMEZONE must name an installed IANA time zone."};
+  }
+
   return config;
 }
 
@@ -351,6 +363,8 @@ std::string redacted_config_summary(const Config &config,
          << configuration_origin_name(config.origins.openai_model) << '\n'
          << "persona_file="
          << configuration_origin_name(config.origins.persona_file) << '\n'
+         << "timezone="
+         << configuration_origin_name(config.origins.timezone) << '\n'
          << "discord_request_timeout="
          << configuration_origin_name(config.origins.discord_request_timeout)
          << '\n'

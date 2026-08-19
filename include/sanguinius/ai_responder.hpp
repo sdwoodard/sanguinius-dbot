@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sanguinius/ai_client.hpp"
+#include "sanguinius/ai_work_service.hpp"
 #include "sanguinius/diagnostics.hpp"
 #include "sanguinius/discord_interfaces.hpp"
 #include "sanguinius/feature_config.hpp"
@@ -20,10 +21,10 @@ prompt_after_bot_mention(std::string_view content, DiscordId bot_id);
 
 class AiResponder {
 public:
-  AiResponder(const AiClient &client, DiscordConversation &conversation,
+  AiResponder(const AiClient &client, AiWorkService &work,
+              DiscordConversation &conversation,
               DiscordTextDelivery &delivery, Diagnostics &diagnostics,
-              std::string persona, std::size_t queue_capacity = 64,
-              std::size_t worker_count = 2,
+              std::string persona,
               RelationshipService *relationships = nullptr,
               FeatureConfiguration features = {});
   ~AiResponder();
@@ -53,7 +54,7 @@ private:
   PromptCompiler compiler_;
   RelationshipService *relationships_{};
   FeatureConfiguration features_;
-  BoundedExecutor workers_;
+  AiWorkService &work_;
 };
 
 } // namespace sanguinius

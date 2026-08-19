@@ -23,6 +23,7 @@ struct QueueSnapshot {
 class BoundedExecutor {
 public:
   using Task = std::function<void(std::stop_token)>;
+  using Cancellation = std::function<void()>;
 
   BoundedExecutor(std::size_t capacity, std::size_t worker_count);
   ~BoundedExecutor();
@@ -33,7 +34,10 @@ public:
   BoundedExecutor &operator=(BoundedExecutor &&) = delete;
 
   void start();
-  [[nodiscard]] SubmitResult try_submit(Task task);
+  [[nodiscard]] SubmitResult try_submit(Task task,
+                                        Cancellation cancellation = {});
+  [[nodiscard]] SubmitResult try_submit_front(Task task,
+                                              Cancellation cancellation = {});
   [[nodiscard]] QueueSnapshot snapshot() const;
   void stop() noexcept;
 

@@ -89,6 +89,14 @@ public:
     return true;
   }
 
+  void seed_job(ScheduledJobEnqueue job, DurablePayload payload,
+                std::string correlation_id = "seeded-job") {
+    const std::scoped_lock lock{mutex_};
+    jobs_.push_back({std::move(job), std::move(payload),
+                     std::move(correlation_id), {}});
+    changed_.notify_all();
+  }
+
   [[nodiscard]] std::optional<ClaimedScheduledJob>
   claim_due_job(const std::int64_t now_ms, const std::int64_t lease_until_ms,
                 std::string lease_owner, std::string lease_token) override {
@@ -193,6 +201,46 @@ public:
     if (row->attempts > 0) {
       --row->attempts;
     }
+    return WorkMutationStatus::applied;
+  }
+
+  [[nodiscard]] WorkMutationStatus defer_job(
+      const ClaimedScheduledJob &job, const std::int64_t now_ms,
+      const std::int64_t retry_at_ms, std::string error_code) override {
+    if (retry_at_ms <= now_ms) {
+      throw std::invalid_argument{"A deferred job must move into the future."};
+    }
+    const std::scoped_lock lock{mutex_};
+    auto *row = find_job(job.job_id);
+    if (row == nullptr)
+      return WorkMutationStatus::not_found;
+    if (!current_claim(*row, job.lease_token))
+      return WorkMutationStatus::stale_claim;
+    row->state = ScheduledJobState::pending;
+    row->enqueue.due_at_ms = retry_at_ms;
+    row->error = std::move(error_code);
+    row->lease_owner.clear();
+    row->lease_token.clear();
+    row->lease_until_ms = 0;
+    if (row->attempts > 0)
+      --row->attempts;
+    changed_.notify_all();
+    return WorkMutationStatus::applied;
+  }
+
+  [[nodiscard]] WorkMutationStatus extend_job_lease(
+      const ClaimedScheduledJob &job, const std::int64_t now_ms,
+      const std::int64_t lease_until_ms) override {
+    if (lease_until_ms <= now_ms) {
+      throw std::invalid_argument{"A renewed job lease must remain in the future."};
+    }
+    const std::scoped_lock lock{mutex_};
+    auto *row = find_job(job.job_id);
+    if (row == nullptr)
+      return WorkMutationStatus::not_found;
+    if (!current_claim(*row, job.lease_token))
+      return WorkMutationStatus::stale_claim;
+    row->lease_until_ms = std::max(row->lease_until_ms, lease_until_ms);
     return WorkMutationStatus::applied;
   }
 
@@ -524,6 +572,17 @@ public:
     std::unique_lock lock{mutex_};
     return changed_.wait_for(lock, timeout, [this, error] {
       return std::ranges::any_of(outbox_, [error](const OutboxRow &row) {
+        return row.error == error;
+      });
+    });
+  }
+
+  [[nodiscard]] bool
+  wait_for_job_error(const std::string_view error,
+                     const std::chrono::milliseconds timeout) const {
+    std::unique_lock lock{mutex_};
+    return changed_.wait_for(lock, timeout, [this, error] {
+      return std::ranges::any_of(jobs_, [error](const JobRow &row) {
         return row.error == error;
       });
     });

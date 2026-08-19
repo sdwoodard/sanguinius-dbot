@@ -402,6 +402,7 @@ incoming_interaction(const dpp::interaction_create_t &event,
       .display_name = std::move(display_name),
       .kind = kind,
       .command_name = {},
+      .subcommand_group_name = {},
       .subcommand_name = {},
       .command_options = {},
       .custom_id = {},
@@ -517,6 +518,32 @@ make_discord_commands(const CommandCatalog &catalog,
         translated.add_option(translated_option);
       }
       command.add_option(translated);
+    }
+    for (const auto &group : definition.subcommand_groups) {
+      dpp::command_option translated_group{
+          dpp::co_sub_command_group, group.name, group.description};
+      for (const auto &subcommand : group.subcommands) {
+        dpp::command_option translated{dpp::co_sub_command, subcommand.name,
+                                       subcommand.description};
+        for (const auto &option : subcommand.options) {
+          dpp::command_option translated_option{
+              option.kind == CommandOptionKind::user ? dpp::co_user
+                                                     : dpp::co_string,
+              option.name, option.description, option.required};
+          if (option.kind == CommandOptionKind::string) {
+            translated_option.set_min_length(
+                static_cast<std::int64_t>(option.minimum_length));
+            translated_option.set_max_length(
+                static_cast<std::int64_t>(option.maximum_length));
+          }
+          for (const auto &choice : option.choices)
+            translated_option.add_choice(
+                dpp::command_option_choice{choice.name, choice.value});
+          translated.add_option(translated_option);
+        }
+        translated_group.add_option(translated);
+      }
+      command.add_option(translated_group);
     }
     result.push_back(std::move(command));
   }
@@ -645,6 +672,47 @@ dpp_adapter_detail::context_message_snapshot(const dpp::message &message) {
 std::vector<dpp::slashcommand> dpp_adapter_detail::translate_command_catalog(
     const CommandCatalog &catalog, const dpp::snowflake application_id) {
   return make_discord_commands(catalog, application_id);
+}
+
+void dpp_adapter_detail::translate_slash_command(
+    const dpp::command_interaction &command, IncomingInteraction &interaction) {
+  const auto valid_name = [](const std::string_view name) {
+    return !name.empty() && name.size() <= maximum_interaction_name_size;
+  };
+  if (!valid_name(command.name))
+    throw std::invalid_argument{"Discord command name exceeds safe bounds."};
+  interaction.command_name = command.name;
+  if (command.options.empty())
+    return;
+
+  const auto &outer = command.options.front();
+  if (command.options.size() == 1 && outer.type == dpp::co_sub_command) {
+    if (!valid_name(outer.name))
+      throw std::invalid_argument{"Discord subcommand name is invalid."};
+    interaction.subcommand_name = outer.name;
+    append_command_options(outer.options, interaction.command_options);
+    return;
+  }
+  if (command.options.size() == 1 &&
+      outer.type == dpp::co_sub_command_group) {
+    if (!valid_name(outer.name) || outer.options.size() != 1 ||
+        outer.options.front().type != dpp::co_sub_command ||
+        !valid_name(outer.options.front().name)) {
+      throw std::invalid_argument{"Discord subcommand group is malformed."};
+    }
+    interaction.subcommand_group_name = outer.name;
+    interaction.subcommand_name = outer.options.front().name;
+    append_command_options(outer.options.front().options,
+                           interaction.command_options);
+    return;
+  }
+  if (std::ranges::any_of(command.options, [](const auto &option) {
+        return option.type == dpp::co_sub_command ||
+               option.type == dpp::co_sub_command_group;
+      })) {
+    throw std::invalid_argument{"Discord command nesting is malformed."};
+  }
+  append_command_options(command.options, interaction.command_options);
 }
 
 std::string dpp_adapter_detail::durable_public_message_json(
@@ -864,21 +932,8 @@ public:
               auto interaction = incoming_interaction(
                   event, InteractionKind::slash_command, callbacks);
               const auto command = event.command.get_command_interaction();
-              if (command.name.empty() ||
-                  command.name.size() > maximum_interaction_name_size) {
-                throw std::invalid_argument{
-                    "Discord command name exceeds safe bounds."};
-              }
-              interaction.command_name = command.name;
-              if (command.options.size() == 1 &&
-                  command.options.front().type == dpp::co_sub_command) {
-                interaction.subcommand_name = command.options.front().name;
-                append_command_options(command.options.front().options,
-                                       interaction.command_options);
-              } else if (!command.options.empty()) {
-                append_command_options(command.options,
-                                       interaction.command_options);
-              }
+              dpp_adapter_detail::translate_slash_command(command,
+                                                          interaction);
               interaction_callback_(std::move(interaction));
             } catch (const std::exception &) {
               reject_interaction(event, "Slash-command translation failed.");

@@ -13,6 +13,22 @@
 namespace sanguinius {
 namespace {
 
+inline constexpr std::size_t maximum_relationship_profile_bytes = 1'900;
+
+[[nodiscard]] std::string bounded_profile(std::string value) {
+  if (value.size() <= maximum_relationship_profile_bytes)
+    return value;
+  constexpr std::string_view marker{"\n[additional Chronicle details omitted]"};
+  auto end = maximum_relationship_profile_bytes - marker.size();
+  while (end > 0 &&
+         (static_cast<unsigned char>(value[end]) & 0xC0U) == 0x80U) {
+    --end;
+  }
+  value.resize(end);
+  value += marker;
+  return value;
+}
+
 [[nodiscard]] std::int64_t unix_milliseconds(const Clock &clock) {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              clock.now().time_since_epoch())
@@ -117,6 +133,7 @@ namespace {
   if (reason == "appearance.positive_feedback")
     return "A well-timed appearance earned a smile.";
   if (reason == "title.awarded") return "A title marked a notable deed.";
+  if (reason == "session.completed") return "A shared Chronicle session was completed.";
   return "A deliberate shared interaction was recorded.";
 }
 
@@ -158,8 +175,11 @@ RelationshipDelta relationship_policy(const RelationshipSourceKind kind,
   case RelationshipSourceKind::tarot_resolved:
   case RelationshipSourceKind::tarot_honored:
   case RelationshipSourceKind::appearance_positive_feedback:
-  case RelationshipSourceKind::title_awarded:
     return {};
+  case RelationshipSourceKind::session_completed:
+    return {.familiarity = 1};
+  case RelationshipSourceKind::title_awarded:
+    return {.esteem = 1};
   }
   return {};
 }
@@ -385,9 +405,11 @@ RelationshipService::profile(const IncomingInteraction &interaction) {
   if (public_view) {
     output << "**Public Chronicle profile — <@" << target.str() << ">**\n"
            << "Shared canon entries: " << data.shared_canon_count;
+    if (data.featured_title) output << "\nFeatured title: **" << *data.featured_title << "**";
+    if (data.latest_session_summary) output << "\nLatest chapter: " << *data.latest_session_summary;
     for (const auto &title : data.visible_canon_titles) output << "\n- " << title;
     if (data.visible_canon_titles.empty()) output << "\nNo shared canon headings yet.";
-    return text_message(output.str());
+    return text_message(bounded_profile(output.str()));
   }
   output << "**Your Chronicle profile**\n"
          << "Bond: " << dimension_phrase("familiarity", qualitative_band(data.dimensions.familiarity))
@@ -396,6 +418,9 @@ RelationshipService::profile(const IncomingInteraction &interaction) {
          << "\nSteadfastness: " << dimension_phrase("reliability", qualitative_band(data.dimensions.reliability))
          << "\nNarrative caution: " << dimension_phrase("wariness", qualitative_band(data.dimensions.wariness))
          << "\nMemory callbacks: " << (data.memory_callbacks ? "enabled" : "disabled");
+  if (data.featured_title) output << "\nFeatured title: **" << *data.featured_title << "**";
+  if (data.latest_session_summary) output << "\nLatest chapter: " << *data.latest_session_summary;
+  output << "\nChronicle session: " << (data.session_open ? "open" : "closed");
   if (!data.recent_reasons.empty()) {
     output << "\nRecent continuity:";
     for (const auto &reason : data.recent_reasons) output << "\n- " << safe_reason(reason);
@@ -404,7 +429,7 @@ RelationshipService::profile(const IncomingInteraction &interaction) {
     output << "\nVisible Chronicle headings:";
     for (const auto &title : data.visible_canon_titles) output << "\n- " << title;
   }
-  return text_message(output.str());
+  return text_message(bounded_profile(output.str()));
 }
 
 InteractionMessage RelationshipService::set_memory_callbacks(

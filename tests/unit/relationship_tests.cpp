@@ -2,6 +2,10 @@
 #include "sanguinius/prompt_compiler.hpp"
 #include "sanguinius/relationships.hpp"
 
+#include "support/fake_clock.hpp"
+#include "support/fake_id_generator.hpp"
+#include "support/fake_relationship_repository.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -38,7 +42,7 @@ TEST_CASE("relationship policies are bounded deterministic and future hooks dorm
            sanguinius::RelationshipDelta{}));
   REQUIRE((sanguinius::relationship_policy(
                RelationshipSourceKind::title_awarded) ==
-           sanguinius::RelationshipDelta{}));
+           sanguinius::RelationshipDelta{.esteem = 1}));
 
   const auto bounded = sanguinius::apply_relationship_delta(
       {.familiarity = 100, .esteem = 0, .mirth = 99,
@@ -74,6 +78,38 @@ TEST_CASE("qualitative relationship bands cover every fixed threshold edge",
   REQUIRE_FALSE(contains(hint, "100"));
   REQUIRE_FALSE(contains(hint, "reliability"));
   REQUIRE_FALSE(contains(hint, "wariness"));
+}
+
+TEST_CASE("Chronicle profile continuity stays within Discord content bounds",
+          "[relationship][profile][chronicle][bounds]") {
+  sanguinius::test::FakeRelationshipRepository repository;
+  repository.profile_result = {
+      .found = true, .is_bot = false, .chronicle_opt_in = true,
+      .memory_callbacks = true, .user_id = 31, .display_name = "Member",
+      .dimensions = {},
+      .recent_reasons = {"chronicle.canon", "title.awarded",
+                         "session.completed"},
+      .shared_canon_count = 3,
+      .visible_canon_titles = {std::string(100, 'A'), std::string(100, 'B'),
+                               std::string(100, 'C')},
+      .featured_title = std::string(100, 'T'),
+      .latest_session_summary = std::string(1'103, 'S'),
+      .session_open = true,
+  };
+  sanguinius::test::FakeClock clock;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::RelationshipService service{
+      repository, clock, ids, sanguinius::ServerScopeConfiguration{10, 20, 30},
+      "00000000-0000-4000-8000-000000000001"};
+  sanguinius::IncomingInteraction interaction;
+  interaction.correlation_id = "profile";
+  interaction.interaction_id = 100;
+  interaction.guild_id = 10;
+  interaction.channel_id = 20;
+  interaction.user_id = 31;
+  const auto profile = service.profile(interaction);
+  REQUIRE(profile.content.size() <= 1'900);
+  REQUIRE(contains(profile.content, "[additional Chronicle details omitted]"));
 }
 
 TEST_CASE("memory ranking requires relevance and is deterministic",
@@ -279,7 +315,10 @@ TEST_CASE("prompt compiler isolates hostile context from trusted instructions",
                                           .created_at_ms = 1,
                                           .revision = 2},
                                .score = 100,
-                               .tag_matches = 1}}},
+                               .tag_matches = 1}},
+                 .featured_title = std::nullopt,
+                 .latest_session_summary = std::nullopt,
+                 .session_open = false},
       .features = {.chronicle_enabled = true},
   });
   REQUIRE(request.instructions.starts_with("Immutable persona"));

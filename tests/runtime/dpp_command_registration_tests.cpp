@@ -70,7 +70,7 @@ TEST_CASE("DPP translates Chronicle context commands and typed options",
                                         return command.name == "chronicle";
                                       });
   REQUIRE(chronicle != translated.end());
-  REQUIRE(chronicle->options.size() == 6);
+  REQUIRE(chronicle->options.size() == 9);
   const auto timeline =
       std::find_if(chronicle->options.begin(), chronicle->options.end(),
                    [](const dpp::command_option &option) {
@@ -88,6 +88,65 @@ TEST_CASE("DPP translates Chronicle context commands and typed options",
   REQUIRE(profile != chronicle->options.end());
   REQUIRE(profile->options.size() == 1);
   REQUIRE(profile->options[0].type == dpp::co_user);
+  const auto session =
+      std::find_if(chronicle->options.begin(), chronicle->options.end(),
+                   [](const dpp::command_option &option) {
+                     return option.name == "session";
+                   });
+  REQUIRE(session != chronicle->options.end());
+  REQUIRE(session->type == dpp::co_sub_command_group);
+  REQUIRE(session->options.size() == 6);
+  REQUIRE(session->options[0].type == dpp::co_sub_command);
+  const auto title =
+      std::find_if(chronicle->options.begin(), chronicle->options.end(),
+                   [](const dpp::command_option &option) {
+                     return option.name == "title";
+                   });
+  REQUIRE(title != chronicle->options.end());
+  const auto title_list =
+      std::find_if(title->options.begin(), title->options.end(),
+                   [](const dpp::command_option &option) {
+                     return option.name == "list";
+                   });
+  REQUIRE(title_list != title->options.end());
+  REQUIRE(title_list->options.size() == 2);
+  REQUIRE(title_list->options[1].name == "page");
+  REQUIRE(title_list->options[1].type == dpp::co_string);
+}
+
+TEST_CASE("DPP translates nested incoming commands and rejects malformed groups",
+          "[discord][commands][chronicle][incoming]") {
+  dpp::command_interaction command;
+  command.name = "chronicle";
+  dpp::command_data_option reference;
+  reference.name = "reference";
+  reference.type = dpp::co_string;
+  reference.value = std::string{"00000000-0000-4000-8000-000000000101"};
+  dpp::command_data_option close;
+  close.name = "close";
+  close.type = dpp::co_sub_command;
+  close.options.push_back(reference);
+  dpp::command_data_option session;
+  session.name = "session";
+  session.type = dpp::co_sub_command_group;
+  session.options.push_back(close);
+  command.options.push_back(session);
+
+  sanguinius::IncomingInteraction translated;
+  sanguinius::dpp_adapter_detail::translate_slash_command(command, translated);
+  REQUIRE(translated.command_name == "chronicle");
+  REQUIRE(translated.subcommand_group_name == "session");
+  REQUIRE(translated.subcommand_name == "close");
+  REQUIRE(translated.command_options.size() == 1);
+  REQUIRE(translated.command_options.front().name == "reference");
+  REQUIRE(std::get<std::string>(translated.command_options.front().value) ==
+          "00000000-0000-4000-8000-000000000101");
+
+  command.options.front().options.push_back(close);
+  REQUIRE_THROWS_AS(
+      sanguinius::dpp_adapter_detail::translate_slash_command(command,
+                                                               translated),
+      std::invalid_argument);
 }
 
 TEST_CASE("DPP context snapshots retain only bounded Chronicle metadata",

@@ -56,6 +56,7 @@ sanguinius_embed_migrations(
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0003_durable_work.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0004_chronicle.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0005_relationships.sql"
+    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0006_chronicle_sessions.sql"
 )
 
 function(sanguinius_enable_warnings target)
@@ -74,10 +75,12 @@ endfunction()
 
 add_library(sanguinius_core STATIC
     src/ai_responder.cpp
+    src/ai_work_service.cpp
     src/application.cpp
     src/build_info.cpp
     src/callback_fence.cpp
     src/chronicle.cpp
+    src/chronicle_sessions.cpp
     src/clock.cpp
     src/command_registry.cpp
     src/config.cpp
@@ -116,6 +119,8 @@ sanguinius_enable_warnings(sanguinius_core)
 target_link_libraries(sanguinius_core
     PUBLIC
         Threads::Threads
+    PRIVATE
+        nlohmann_json::nlohmann_json
 )
 
 add_library(sanguinius_persistence STATIC
@@ -126,6 +131,7 @@ add_library(sanguinius_persistence STATIC
     src/persistence/migrator.cpp
     src/persistence/sqlite.cpp
     src/persistence/sqlite_chronicle_repository.cpp
+    src/persistence/sqlite_chronicle_session_repository.cpp
     src/persistence/sqlite_durable_work_repository.cpp
     src/persistence/sqlite_relationship_repository.cpp
     src/persistence/sqlite_repositories.cpp
@@ -192,6 +198,7 @@ if(BUILD_TESTING)
 
     add_sanguinius_test(sanguinius_unit_tests
         tests/unit/chronicle_tests.cpp
+        tests/unit/chronicle_session_tests.cpp
         tests/unit/config_tests.cpp
         tests/unit/command_parse_tests.cpp
         tests/unit/durable_work_service_tests.cpp
@@ -214,6 +221,7 @@ if(BUILD_TESTING)
     add_executable(sanguinius_persistence_tests
         tests/integration/backup_tests.cpp
         tests/integration/chronicle_repository_tests.cpp
+        tests/integration/chronicle_session_repository_tests.cpp
         tests/integration/database_cli_tests.cpp
         tests/integration/durable_work_tests.cpp
         tests/integration/migration_tests.cpp
@@ -269,6 +277,7 @@ if(BUILD_TESTING)
         --unset=SANGUINIUS_APPEARANCES_MODE
         --unset=SANGUINIUS_VOX_ENABLED
         --unset=SANGUINIUS_VOICE_INPUT_ENABLED
+        --unset=SANGUINIUS_TIMEZONE
         --unset=SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS
     )
 

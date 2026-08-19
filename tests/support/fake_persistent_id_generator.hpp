@@ -10,9 +10,9 @@
 
 namespace sanguinius::test {
 
-class FakePersistentIdGenerator final : public PersistentIdGenerator {
+class ExhaustingFakePersistentIdGenerator final : public PersistentIdGenerator {
 public:
-  explicit FakePersistentIdGenerator(std::vector<std::string> ids)
+  explicit ExhaustingFakePersistentIdGenerator(std::vector<std::string> ids)
       : ids_{std::move(ids)} {}
 
   [[nodiscard]] std::string next_id() override {

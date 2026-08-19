@@ -43,6 +43,8 @@ enum class ChronicleEntryType {
   prediction,
   incident,
   custom,
+  session_summary,
+  title_award,
 };
 
 enum class ChronicleVisibility {
@@ -135,7 +137,7 @@ struct ChronicleEntry {
   DiscordSnowflake source_author_user_id;
   DiscordSnowflake source_guild_id;
   DiscordSnowflake source_channel_id;
-  DiscordSnowflake source_message_id;
+  std::optional<DiscordSnowflake> source_message_id;
   std::string source_text;
   bool source_text_truncated{};
   std::int64_t occurred_at_ms{};

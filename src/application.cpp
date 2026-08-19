@@ -1,6 +1,8 @@
 #include "sanguinius/application.hpp"
 
 #include "sanguinius/ai_responder.hpp"
+#include "sanguinius/ai_work_service.hpp"
+#include "sanguinius/chronicle_sessions.hpp"
 #include "sanguinius/command_registry.hpp"
 #include "sanguinius/durable_work_controls.hpp"
 #include "sanguinius/health.hpp"
@@ -18,6 +20,8 @@
 
 namespace sanguinius {
 namespace {
+
+constexpr std::int64_t disabled_feature_job_delay_ms = 60'000;
 
 enum class ApplicationState {
   created,
@@ -61,6 +65,8 @@ public:
         pending_notices_{std::move(dependencies.pending_notices)},
         durable_work_{std::move(dependencies.durable_work)},
         chronicle_repository_{std::move(dependencies.chronicle)},
+        chronicle_session_repository_{
+            std::move(dependencies.chronicle_sessions)},
         relationship_repository_{std::move(dependencies.relationships)},
         ai_client_{std::move(dependencies.ai_client)},
         discord_{std::move(dependencies.discord)} {
@@ -79,10 +85,13 @@ public:
         *durable_work_, *clock_, *persistent_id_generator_, *diagnostics_,
         *discord_, *discord_, options_.server_scope, options_.instance_id, 32,
         options_.durable_delivery_receipt_wait);
-    if (options_.features.chronicle_enabled && !chronicle_repository_) {
+    if (options_.features.chronicle_enabled &&
+        (!chronicle_repository_ || !chronicle_session_repository_)) {
       throw std::invalid_argument{
           "Chronicle persistence is required when the feature is enabled."};
     }
+    ai_work_ = std::make_unique<AiWorkService>(options_.ai_queue_capacity,
+                                               options_.ai_worker_count);
     if (options_.features.chronicle_enabled && !relationship_repository_) {
       throw std::invalid_argument{
           "Relationship persistence is required when the Chronicle is enabled."};
@@ -93,8 +102,8 @@ public:
           options_.server_scope, options_.instance_id);
     }
     ai_responder_ = std::make_unique<AiResponder>(
-        *ai_client_, *discord_, *discord_, *diagnostics_, options_.persona,
-        options_.ai_queue_capacity, options_.ai_worker_count,
+        *ai_client_, *ai_work_, *discord_, *discord_, *diagnostics_,
+        options_.persona,
         options_.features.chronicle_enabled ? relationship_service_.get()
                                             : nullptr,
         options_.features);
@@ -124,6 +133,14 @@ public:
             }
           });
     }
+    if (options_.features.chronicle_enabled && chronicle_session_repository_) {
+      chronicle_session_service_ = std::make_unique<ChronicleSessionService>(
+          *chronicle_session_repository_, *clock_, *persistent_id_generator_,
+          options_.server_scope, options_.controls,
+          [this] { if (scheduler_) scheduler_->wake(); },
+          [this] { outbox_->wake(); }, options_.timezone, ai_client_.get(),
+          ai_work_.get(), durable_work_.get(), diagnostics_.get());
+    }
     scheduler_ = std::make_unique<SchedulerService>(
         *durable_work_, *clock_, *persistent_id_generator_, *diagnostics_,
         options_.instance_id, [this] { outbox_->wake(); }, 32,
@@ -136,6 +153,50 @@ public:
                 }
               }}
             : JobHandlerRegistry::Handler{});
+    scheduler_->add_handler(
+        std::string{session_summary_job_type},
+        [this](const ClaimedScheduledJob &job) {
+          if (!chronicle_session_service_) {
+            const auto current = unix_milliseconds(*clock_);
+            static_cast<void>(durable_work_->defer_job(
+                job, current, current + disabled_feature_job_delay_ms,
+                "feature_disabled"));
+            return;
+          }
+          if (chronicle_session_service_->submit_summary_job(job) !=
+              SubmitResult::accepted)
+            throw std::runtime_error{"The shared AI queue is unavailable."};
+        });
+    scheduler_->add_handler(
+        std::string{session_context_purge_job_type},
+        [this](const ClaimedScheduledJob &job) {
+          if (!chronicle_session_repository_) {
+            const auto current = unix_milliseconds(*clock_);
+            static_cast<void>(durable_work_->defer_job(
+                job, current, current + disabled_feature_job_delay_ms,
+                "repository_unavailable"));
+            return;
+          }
+          const auto result = chronicle_session_repository_->purge_context_job(
+              job, unix_milliseconds(*clock_));
+          if (result == WorkMutationStatus::invalid_state)
+            throw std::invalid_argument{"Invalid context-purge payload."};
+        });
+    scheduler_->add_handler(
+        std::string{anniversary_scan_job_type},
+        [this](const ClaimedScheduledJob &job) {
+          if (!chronicle_session_service_) {
+            const auto current = unix_milliseconds(*clock_);
+            static_cast<void>(durable_work_->defer_job(
+                job, current, current + disabled_feature_job_delay_ms,
+                "feature_disabled"));
+            return;
+          }
+          const auto result =
+              chronicle_session_service_->handle_anniversary_job(job);
+          if (result.status == WorkMutationStatus::invalid_state)
+            throw std::invalid_argument{"Invalid anniversary payload."};
+        });
     durable_controls_ = std::make_unique<DurableWorkControlService>(
         *durable_work_, *clock_, *persistent_id_generator_,
         options_.server_scope, [this] { scheduler_->wake(); },
@@ -164,10 +225,14 @@ public:
         options_.controls, *scope_policy_, *health_service_);
     message_handler_ = std::make_unique<MessageHandler>(
         *message_log_, *ai_responder_, *discord_, *diagnostics_, *owner_admin_,
-        options_.command_prefix, options_.message_queue_capacity);
+        options_.command_prefix, options_.message_queue_capacity,
+        [this](const IncomingMessage &message) {
+          if (chronicle_session_service_)
+            chronicle_session_service_->observe_message(message);
+        });
     interaction_handler_ = std::make_unique<InteractionHandler>(
         *identities_, *notice_service_, *clock_, *durable_controls_,
-        chronicle_service_.get(),
+        chronicle_service_.get(), chronicle_session_service_.get(),
         *health_service_, *diagnostics_, options_.features,
         [this] { return message_handler_->queue_snapshot(); },
         [this] { return ai_responder_->queue_snapshot(); },
@@ -205,12 +270,15 @@ public:
         }
       }
       static_cast<void>(notice_service_->recover_incomplete_deliveries());
+      if (chronicle_session_service_)
+        chronicle_session_service_->ensure_anniversary_schedule();
       outbox_->start();
       outbox_started_ = true;
+      ai_work_->start();
+      ai_started_ = true;
+      ai_responder_->start();
       scheduler_->start();
       scheduler_started_ = true;
-      ai_responder_->start();
-      ai_started_ = true;
       message_handler_->start();
       message_handler_started_ = true;
       interaction_handler_->start();
@@ -304,6 +372,7 @@ private:
     }
     if (ai_started_) {
       ai_responder_->stop();
+      ai_work_->stop();
       ai_started_ = false;
     }
     discord_->shutdown();
@@ -341,10 +410,12 @@ private:
   std::unique_ptr<PendingNoticeRepository> pending_notices_;
   std::unique_ptr<DurableWorkRepository> durable_work_;
   std::unique_ptr<ChronicleRepository> chronicle_repository_;
+  std::unique_ptr<ChronicleSessionRepository> chronicle_session_repository_;
   std::unique_ptr<RelationshipRepository> relationship_repository_;
   std::unique_ptr<AiClient> ai_client_;
   std::unique_ptr<DiscordRuntime> discord_;
   std::unique_ptr<AiResponder> ai_responder_;
+  std::unique_ptr<AiWorkService> ai_work_;
   std::unique_ptr<ServerScopePolicy> scope_policy_;
   std::unique_ptr<HealthService> health_service_;
   std::unique_ptr<OwnerAdminService> owner_admin_;
@@ -352,6 +423,7 @@ private:
   std::unique_ptr<PendingNoticeService> notice_service_;
   std::unique_ptr<OutboxService> outbox_;
   std::unique_ptr<ChronicleService> chronicle_service_;
+  std::unique_ptr<ChronicleSessionService> chronicle_session_service_;
   std::unique_ptr<RelationshipService> relationship_service_;
   std::unique_ptr<SchedulerService> scheduler_;
   std::unique_ptr<DurableWorkControlService> durable_controls_;

@@ -8,6 +8,7 @@
 #include "sanguinius/work_queue.hpp"
 
 #include <cstddef>
+#include <functional>
 #include <string>
 #include <string_view>
 
@@ -27,7 +28,8 @@ public:
   MessageHandler(MessageLog &message_log, AiResponder &ai_responder,
                  DiscordTextDelivery &delivery, Diagnostics &diagnostics,
                  OwnerAdminService &owner_admin, std::string command_prefix,
-                 std::size_t queue_capacity = 64);
+                 std::size_t queue_capacity = 64,
+                 std::function<void(const IncomingMessage &)> observer = {});
   ~MessageHandler();
 
   MessageHandler(const MessageHandler &) = delete;
@@ -55,6 +57,7 @@ private:
   Diagnostics &diagnostics_;
   OwnerAdminService &owner_admin_;
   std::string command_prefix_;
+  std::function<void(const IncomingMessage &)> observer_;
   BoundedExecutor worker_;
 };
 

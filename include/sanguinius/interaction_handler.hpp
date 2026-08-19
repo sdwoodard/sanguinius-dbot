@@ -2,6 +2,7 @@
 
 #include "sanguinius/callback_fence.hpp"
 #include "sanguinius/chronicle.hpp"
+#include "sanguinius/chronicle_sessions.hpp"
 #include "sanguinius/clock.hpp"
 #include "sanguinius/diagnostics.hpp"
 #include "sanguinius/discord_interfaces.hpp"
@@ -33,12 +34,29 @@ enum class InteractionOperation {
   chronicle_canonize,
   chronicle_memory_preview,
   chronicle_recall,
+  chronicle_search_component,
   chronicle_timeline,
   chronicle_forget,
   chronicle_profile,
   chronicle_callbacks,
   chronicle_edit,
   chronicle_component,
+  chronicle_session_start,
+  chronicle_session_status,
+  chronicle_session_close,
+  chronicle_summary_edit,
+  chronicle_summary_approve,
+  chronicle_summary_reject,
+  chronicle_summary_component,
+  chronicle_title_propose,
+  chronicle_title_list,
+  chronicle_title_approve,
+  chronicle_title_reject,
+  chronicle_title_feature,
+  chronicle_title_revoke,
+  chronicle_anniversaries_on,
+  chronicle_anniversaries_off,
+  test_anniversary,
 };
 
 struct RoutedInteraction {
@@ -52,6 +70,7 @@ public:
                      PendingNoticeService &notices, const Clock &clock,
                      DurableWorkControlService &durable_controls,
                      ChronicleService *chronicle,
+                     ChronicleSessionService *chronicle_sessions,
                      HealthService &health_service, Diagnostics &diagnostics,
                      FeatureConfiguration features,
                      std::function<QueueSnapshot()> message_queue,
@@ -82,6 +101,7 @@ private:
   const Clock &clock_;
   DurableWorkControlService &durable_controls_;
   ChronicleService *chronicle_{};
+  ChronicleSessionService *chronicle_sessions_{};
   RelationshipService *relationships_{};
   HealthService &health_service_;
   Diagnostics &diagnostics_;

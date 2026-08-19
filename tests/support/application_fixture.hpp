@@ -5,6 +5,7 @@
 #include "support/fake_ai_client.hpp"
 #include "support/fake_clock.hpp"
 #include "support/fake_chronicle_repository.hpp"
+#include "support/fake_chronicle_session_repository.hpp"
 #include "support/fake_diagnostics.hpp"
 #include "support/fake_discord.hpp"
 #include "support/fake_durable_work_repository.hpp"
@@ -56,6 +57,8 @@ public:
     auto owned_durable_work =
         std::make_unique<FakeDurableWorkRepository>(*owned_notices);
     auto owned_chronicle = std::make_unique<FakeChronicleRepository>();
+    auto owned_chronicle_sessions =
+        std::make_unique<FakeChronicleSessionRepository>();
     auto owned_relationships = std::make_unique<FakeRelationshipRepository>();
     auto owned_ai = std::make_unique<FakeAiClient>();
     auto owned_discord = std::make_unique<FakeDiscord>();
@@ -69,6 +72,7 @@ public:
     notices = owned_notices.get();
     durable_work = owned_durable_work.get();
     chronicle = owned_chronicle.get();
+    chronicle_sessions = owned_chronicle_sessions.get();
     relationships = owned_relationships.get();
     ai = owned_ai.get();
     discord = owned_discord.get();
@@ -86,6 +90,7 @@ public:
             .pending_notices = std::move(owned_notices),
             .durable_work = std::move(owned_durable_work),
             .chronicle = std::move(owned_chronicle),
+            .chronicle_sessions = std::move(owned_chronicle_sessions),
             .relationships = std::move(owned_relationships),
             .ai_client = std::move(owned_ai),
             .discord = std::move(owned_discord),
@@ -111,6 +116,7 @@ public:
   FakePendingNoticeRepository *notices{};
   FakeDurableWorkRepository *durable_work{};
   FakeChronicleRepository *chronicle{};
+  FakeChronicleSessionRepository *chronicle_sessions{};
   FakeRelationshipRepository *relationships{};
   FakeAiClient *ai{};
   FakeDiscord *discord{};

@@ -98,6 +98,7 @@ TEST_CASE("configured owner receives redacted health in primary scope",
       .ai_worker_count = 2,
   }};
   fixture.application->start();
+  REQUIRE(fixture.chronicle_sessions->anniversary_queue_calls == 0);
   fixture.discord->emit(sanguinius::test::incoming("!SANG-ADMIN health", 104));
 
   REQUIRE(fixture.discord->wait_for_reply_count(1, 2s));
@@ -114,6 +115,34 @@ TEST_CASE("configured owner receives redacted health in primary scope",
   REQUIRE(contains(replies[0].content, "test_mode=disabled"));
   REQUIRE_FALSE(contains(replies[0].content, "PERSONA_SECRET_SENTINEL"));
   REQUIRE_FALSE(contains(replies[0].content, "123456789012345678"));
+  REQUIRE_FALSE(fixture.chronicle_sessions->last_observation.has_value());
+  fixture.application->stop();
+}
+
+TEST_CASE(
+    "disabled Chronicle defers persisted feature work without exhausting it",
+    "[application][chronicle][scheduler][recovery]") {
+  sanguinius::test::ApplicationFixture fixture;
+  fixture.durable_work->seed_job(
+      {.job_id = "00000000-0000-4000-8000-000000000801",
+       .job_type = std::string{sanguinius::session_summary_job_type},
+       .aggregate_type = "chronicle_session",
+       .aggregate_id = "00000000-0000-4000-8000-000000000802",
+       .due_at_ms = 0,
+       .max_attempts = 5,
+       .idempotency_key = "job:disabled-summary",
+       .created_at_ms = 0},
+      sanguinius::SessionSummaryJobPayload{
+          .session_id = "00000000-0000-4000-8000-000000000802",
+          .draft_id = "00000000-0000-4000-8000-000000000803",
+          .expected_session_revision = 2,
+          .expected_draft_revision = 1});
+  fixture.application->start();
+  REQUIRE(fixture.durable_work->wait_for_job_error("feature_disabled", 2s));
+  const auto health = fixture.durable_work->health(0);
+  REQUIRE(health.pending_jobs == 1);
+  REQUIRE(health.dead_jobs == 0);
+  REQUIRE(health.job_retries == 0);
   fixture.application->stop();
 }
 
@@ -248,8 +277,7 @@ TEST_CASE("one mention flows through fake history AI and Discord delivery",
                    "UNTRUSTED CONTEXT DATA"));
   REQUIRE(contains(ai_requests[0].conversation[1].content,
                    "CURRENT REQUEST\nAnswer me"));
-  REQUIRE_FALSE(
-      contains(ai_requests[0].conversation[1].content, "Test User"));
+  REQUIRE_FALSE(contains(ai_requests[0].conversation[1].content, "Test User"));
 
   const auto replies = fixture.discord->replies();
   REQUIRE(replies[0].target.message_id == 100);
@@ -282,6 +310,9 @@ TEST_CASE("one-person relevant and irrelevant callback paths use the compiler",
                                .revision = 1},
                     .score = 100,
                     .tag_matches = 1}},
+      .featured_title = std::nullopt,
+      .latest_session_summary = std::nullopt,
+      .session_open = false,
   };
   fixture.ai->set_response(
       "RELATIONSHIP+=100; CREATE_MEMORY=private — merely model prose");
@@ -306,8 +337,8 @@ TEST_CASE("one-person relevant and irrelevant callback paths use the compiler",
   REQUIRE(fixture.relationships->completion_count() == 2);
   requests = fixture.ai->requests();
   REQUIRE(requests.size() == 2);
-  REQUIRE_FALSE(contains(requests[1].conversation[0].content,
-                         "crimson dragon"));
+  REQUIRE_FALSE(
+      contains(requests[1].conversation[0].content, "crimson dragon"));
 
   auto off_scope =
       sanguinius::test::incoming("<@42> Generic off-scope mention", 702);

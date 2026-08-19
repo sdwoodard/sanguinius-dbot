@@ -61,6 +61,7 @@ struct ConfigurationOrigins {
   ConfigurationOrigin command_prefix{ConfigurationOrigin::default_value};
   ConfigurationOrigin openai_model{ConfigurationOrigin::default_value};
   ConfigurationOrigin persona_file{ConfigurationOrigin::default_value};
+  ConfigurationOrigin timezone{ConfigurationOrigin::default_value};
 };
 
 struct Config {
@@ -71,6 +72,7 @@ struct Config {
   FeatureConfiguration features;
   ConfigurationOrigins origins;
   std::string command_prefix{"!"};
+  std::string timezone{"America/New_York"};
 
   [[nodiscard]] static Config from_environment();
   [[nodiscard]] static Config from_source(const ConfigSource &source);

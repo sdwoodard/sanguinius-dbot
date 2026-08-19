@@ -2,6 +2,7 @@
 
 #include "sqlite_durable_work_writes.hpp"
 
+#include "sanguinius/chronicle_sessions.hpp"
 #include "sanguinius/persistence/transaction.hpp"
 #include "sanguinius/persistent_id.hpp"
 
@@ -309,6 +310,83 @@ void add_trace(Json &value, const std::string_view correlation_id,
   return result;
 }
 
+[[nodiscard]] Json encode_session_summary(
+    const SessionSummaryJobPayload &payload,
+    const std::string_view correlation_id = {},
+    const std::optional<std::string> &causation_event_id = std::nullopt) {
+  Json result{{"payload_version", 1},
+              {"session_id", payload.session_id},
+              {"draft_id", payload.draft_id},
+              {"expected_session_revision", payload.expected_session_revision},
+              {"expected_draft_revision", payload.expected_draft_revision}};
+  add_trace(result, correlation_id, causation_event_id);
+  return result;
+}
+
+[[nodiscard]] SessionSummaryJobPayload
+decode_session_summary(const Json &value) {
+  if (!value.is_object() || value.at("payload_version").get<int>() != 1)
+    throw std::runtime_error{"Unsupported session-summary payload."};
+  SessionSummaryJobPayload result{
+      .session_id = value.at("session_id").get<std::string>(),
+      .draft_id = value.at("draft_id").get<std::string>(),
+      .expected_session_revision =
+          value.at("expected_session_revision").get<std::size_t>(),
+      .expected_draft_revision =
+          value.at("expected_draft_revision").get<std::size_t>(),
+  };
+  if (!valid_uuid_v4(result.session_id) || !valid_uuid_v4(result.draft_id) ||
+      result.expected_session_revision == 0 ||
+      result.expected_draft_revision == 0)
+    throw std::runtime_error{"Invalid session-summary payload."};
+  return result;
+}
+
+[[nodiscard]] Json encode_session_context_purge(
+    const SessionContextPurgeJobPayload &payload,
+    const std::string_view correlation_id = {},
+    const std::optional<std::string> &causation_event_id = std::nullopt) {
+  Json result{{"payload_version", 1}, {"session_id", payload.session_id}};
+  add_trace(result, correlation_id, causation_event_id);
+  return result;
+}
+
+[[nodiscard]] SessionContextPurgeJobPayload
+decode_session_context_purge(const Json &value) {
+  if (!value.is_object() || value.at("payload_version").get<int>() != 1)
+    throw std::runtime_error{"Unsupported session-context purge payload."};
+  SessionContextPurgeJobPayload result{
+      .session_id = value.at("session_id").get<std::string>(),
+  };
+  if (!valid_uuid_v4(result.session_id))
+    throw std::runtime_error{"Invalid session-context purge payload."};
+  return result;
+}
+
+[[nodiscard]] Json encode_anniversary_scan(
+    const AnniversaryScanJobPayload &payload,
+    const std::string_view correlation_id = {},
+    const std::optional<std::string> &causation_event_id = std::nullopt) {
+  Json result{{"payload_version", 1},
+              {"local_date", payload.local_date},
+              {"test_run", payload.test_run}};
+  add_trace(result, correlation_id, causation_event_id);
+  return result;
+}
+
+[[nodiscard]] AnniversaryScanJobPayload
+decode_anniversary_scan(const Json &value) {
+  if (!value.is_object() || value.at("payload_version").get<int>() != 1)
+    throw std::runtime_error{"Unsupported anniversary-scan payload."};
+  AnniversaryScanJobPayload result{
+      .local_date = value.at("local_date").get<std::string>(),
+      .test_run = value.at("test_run").get<bool>(),
+  };
+  if (result.local_date.size() != 10)
+    throw std::runtime_error{"Invalid anniversary-scan payload."};
+  return result;
+}
+
 [[nodiscard]] DurablePayload decode_payload(const std::string_view kind,
                                             const std::string &payload) {
   try {
@@ -324,6 +402,12 @@ void add_trace(Json &value, const std::string_view correlation_id,
     if (kind == "chronicle.memory-expire.v1") {
       return decode_memory_expiry(value);
     }
+    if (kind == session_summary_job_type)
+      return decode_session_summary(value);
+    if (kind == session_context_purge_job_type)
+      return decode_session_context_purge(value);
+    if (kind == anniversary_scan_job_type)
+      return decode_anniversary_scan(value);
   } catch (const std::exception &) {
     return std::monostate{};
   }
@@ -882,11 +966,43 @@ encode_public_payload(const PublicOutboxPayload &payload,
   return encode_message(payload, correlation_id, causation_event_id).dump();
 }
 
+std::string
+encode_notice_payload(const NoticeOutboxPayload &payload,
+                      const std::string_view correlation_id,
+                      const std::optional<std::string> &causation_event_id) {
+  return encode_notice(payload, correlation_id, causation_event_id).dump();
+}
+
 std::string encode_memory_expiry_payload(
     const MemoryExpiryJobPayload &payload,
     const std::string_view correlation_id,
     const std::optional<std::string> &causation_event_id) {
   return encode_memory_expiry(payload, correlation_id, causation_event_id)
+      .dump();
+}
+
+std::string encode_session_summary_payload(
+    const SessionSummaryJobPayload &payload,
+    const std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id) {
+  return encode_session_summary(payload, correlation_id, causation_event_id)
+      .dump();
+}
+
+std::string encode_session_context_purge_payload(
+    const SessionContextPurgeJobPayload &payload,
+    const std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id) {
+  return encode_session_context_purge(payload, correlation_id,
+                                      causation_event_id)
+      .dump();
+}
+
+std::string encode_anniversary_scan_payload(
+    const AnniversaryScanJobPayload &payload,
+    const std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id) {
+  return encode_anniversary_scan(payload, correlation_id, causation_event_id)
       .dump();
 }
 
@@ -1151,6 +1267,58 @@ SqliteDurableWorkRepository::release_job(const ClaimedScheduledJob &job,
   if (context_->connection().changes() == 0) {
     return stale_job_status(context_->connection(), job.job_id);
   }
+  return WorkMutationStatus::applied;
+}
+
+WorkMutationStatus SqliteDurableWorkRepository::defer_job(
+    const ClaimedScheduledJob &job, const std::int64_t now_ms,
+    const std::int64_t retry_at_ms, std::string error_code) {
+  require_timestamp(now_ms);
+  require_timestamp(retry_at_ms);
+  require_type(error_code, 96);
+  if (retry_at_ms <= now_ms)
+    throw std::invalid_argument{"A deferred job must move into the future."};
+  const std::scoped_lock lock{context_->mutex()};
+  auto update = context_->connection().prepare(
+      "UPDATE scheduled_job SET state='pending',due_at_ms=?,"
+      "attempt_count=max(attempt_count-1,0),lease_owner=NULL,lease_token=NULL,"
+      "lease_until_ms=NULL,updated_at_ms=max(?,updated_at_ms),terminal_at_ms="
+      "NULL,"
+      "last_error_code=? WHERE job_id=? AND state='claimed' AND lease_owner=? "
+      "AND lease_token=?");
+  update.bind(1, retry_at_ms);
+  update.bind(2, now_ms);
+  update.bind(3, error_code);
+  update.bind(4, job.job_id);
+  update.bind(5, job.lease_owner);
+  update.bind(6, job.lease_token);
+  update.execute();
+  if (context_->connection().changes() == 0)
+    return stale_job_status(context_->connection(), job.job_id);
+  return WorkMutationStatus::applied;
+}
+
+WorkMutationStatus SqliteDurableWorkRepository::extend_job_lease(
+    const ClaimedScheduledJob &job, const std::int64_t now_ms,
+    const std::int64_t lease_until_ms) {
+  require_timestamp(now_ms);
+  require_timestamp(lease_until_ms);
+  if (lease_until_ms <= now_ms)
+    throw std::invalid_argument{
+        "A renewed job lease must remain in the future."};
+  const std::scoped_lock lock{context_->mutex()};
+  auto update = context_->connection().prepare(
+      "UPDATE scheduled_job SET lease_until_ms=max(lease_until_ms,?),"
+      "updated_at_ms=max(?,updated_at_ms) WHERE job_id=? AND state='claimed' "
+      "AND lease_owner=? AND lease_token=?");
+  update.bind(1, lease_until_ms);
+  update.bind(2, now_ms);
+  update.bind(3, job.job_id);
+  update.bind(4, job.lease_owner);
+  update.bind(5, job.lease_token);
+  update.execute();
+  if (context_->connection().changes() == 0)
+    return stale_job_status(context_->connection(), job.job_id);
   return WorkMutationStatus::applied;
 }
 

@@ -15,7 +15,7 @@ bot's feature boundary to one guild, one primary text channel, and one owner.
 | `!help` | List the supported commands. |
 | `!repo` | Link to this source repository. |
 
-The configured guild receives command catalog version 4. Chronicle commands
+The configured guild receives command catalog version 5. Chronicle commands
 are registered only when `SANGUINIUS_CHRONICLE_ENABLED=true`; owner commands
 remain separately gated:
 
@@ -26,17 +26,22 @@ remain separately gated:
 | `/sanguinius privacy` | Ephemeral identity/preference, voice-input, no-DM, and raw-voice-retention summary. |
 | **Canonize in the Chronicle** | Message context action that privately previews a bounded proposal, then requests sealed participant approval before canon. |
 | `/chronicle remember` | Opens a modal and ephemeral confirm/cancel preview for an explicit memory, with up to five optional lowercase topic tags. Unconfirmed drafts are memory-only and disappear on restart. |
-| `/chronicle recall [query]` | Ephemerally returns up to five canon entries or explicit memories visible to the invoker. |
-| `/chronicle timeline [period]` | Publicly lists up to five shared canon entries for `7d`, `30d`, or `all`. |
+| `/chronicle recall [query] [participant] [type] [from] [to]` | Ephemerally searches visible canon with literal FTS5 terms and relational filters; explicit-memory matching remains privacy-checked. Results use invoker-bound five-item pages. |
+| `/chronicle timeline [period]` | Publicly starts a shared-canon timeline for `7d`, `30d`, or `all`; later invoker-bound pages are ephemeral. |
 | `/chronicle forget [reference]` | With a unique reference, retracts directly without components; otherwise ephemerally lists controllable records with short-lived controls. |
 | `/chronicle profile [user]` | Shows qualitative relationship continuity ephemerally for self. Another member's profile is public and contains only shared canon counts/headings. |
 | `/chronicle callbacks <on\|off>` | Ephemerally enables or disables relevant confirmed-memory callbacks. Enabling requires Chronicle opt-in; disabling is always allowed. |
+| `/chronicle session start\|status\|close` | Opens, inspects, or closes one restart-safe guild session. Only the opener or owner can close it. |
+| `/chronicle session edit\|approve\|reject` | Owner-only slash fallbacks for revision-fenced chapter draft review controls. Approval alone creates shared canon and a public card. |
+| `/chronicle title propose\|list\|approve\|reject\|feature\|revoke` | Curates persistent title grants. Lists show five retained grants per page with the full mutation reference. Only the owner activates/rejects; recipients control their featured title and may revoke it. |
+| `/chronicle anniversaries on\|off` | Controls Chronicle anniversary eligibility for the invoking opted-in member. |
 | `/sang-admin health` | Ephemeral owner-only health; registered only when admin commands are enabled. |
 | `/sang-admin work-recent` | Ephemeral owner-only inspection of the ten most recent redacted event/job/outbox summaries. |
 | `/sang-admin work-dead` | Ephemeral owner-only inspection of the ten most recent dead jobs and failed/dead outbox rows. |
 | `/sang-admin test-notice` | Owner-only, test-mode-gated durable queueing of a fixed, self-targeted 24-hour notice. |
 | `/sang-admin test-schedule-notice` | Owner-only, test-mode-gated scheduling of the same self-targeted notice for 60 seconds later. |
 | `/sang-admin test-public-retry` | Owner-only, test-mode-gated neutral card whose first attempt fails before Discord submission and then retries once. |
+| `/sang-admin test-anniversary` | Owner-only, test-mode-gated exactly-once anniversary delivery using the newest eligible owner-test entry. |
 
 Command names are case-insensitive. Messages written by bots are logged but are
 not treated as commands.
@@ -65,6 +70,19 @@ use only confirmed, ordinary, shared memories whose sole user subject is the
 requester. Relevant successful uses have a rolling seven-day per-memory
 cooldown; failed or cancelled model calls do not consume it.
 
+Open Chronicle sessions keep at most 20 opted-in primary-channel excerpts,
+500 UTF-8 bytes each and 12 KiB total, solely as transient summary context.
+The first retained excerpt creates durable expiry work; while a session remains
+open, it removes each excerpt no later than 24 hours after observation and
+reschedules itself for the next retained excerpt. Closing moves the same
+cleanup boundary to 24 hours after close.
+Closing freezes canon associations and always creates a deterministic fallback
+draft. Structured model output may replace only the pending draft and propose
+titles; deterministic validation and explicit owner approval control canon,
+title activation, public delivery, and relationship effects. Transient context
+is purged on approval/rejection or by persisted cleanup even when Chronicle
+command access is disabled.
+
 To talk to the AI persona, mention the bot at the start of a message:
 
 ```text
@@ -92,6 +110,8 @@ AI work run outside D++ gateway callbacks.
 - libcurl
 - nlohmann-json
 - SQLite 3.51.3 or newer, or the fixed 3.50.7/3.44.6 backport
+- SQLite must include FTS5, and the C++ standard library must provide the IANA
+  time-zone database used by `std::chrono`.
 - Catch2 v3 when building tests
 
 On CachyOS/Arch Linux, install the dependencies supplied by the distribution:
@@ -185,6 +205,7 @@ Optional settings are:
 | `SANGUINIUS_OPENAI_MODEL` | `gpt-5.4-nano` | Responses API model. |
 | `SANGUINIUS_PERSONA_FILE` | `config/persona.txt` | Plaintext persona instructions. |
 | `SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS` | `10` | Discord REST timeout, from 1 through 300 seconds. |
+| `SANGUINIUS_TIMEZONE` | `America/New_York` | IANA time zone used for the daily 10:00 Chronicle anniversary scan. |
 | `SANGUINIUS_DATABASE_FILE` | `state/sanguinius.sqlite3` | SQLite state file. Production should use an absolute path outside release directories. |
 | `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Register owner slash controls and enable the transitional prefix health command. |
 | `SANGUINIUS_TEST_MODE` | `false` | Enable auditable, self-targeted durable-work test controls. |
@@ -273,6 +294,12 @@ audits. It stores no compiled prompts, Discord context, memory-text copies, or
 model output. Startup abandons prior-process reservations, catches up eligible
 historical canon sources, and fails closed if projection verification detects
 drift.
+Migration `0006_chronicle_sessions` rebuilds Chronicle entry constraints for
+approved session summaries and title awards, adds session/draft/title/search
+and anniversary state, FTS5 synchronization triggers, transient context caps,
+and the anniversary preference. It is forward-only; rollback restores a
+verified schema-v5 backup and the accepted Milestone 7 artifact rather than
+running reverse SQL.
 The readable SQL for each ordered migration is
 embedded independently with its SHA-256
 checksum. Applied history must be ordered, contiguous, and byte-for-byte
@@ -365,6 +392,11 @@ loss before submission releases the claim without consuming an attempt. Once a
 public Discord request is submitted, its fenced lease is extended through the
 receipt-wait deadline plus a reconciliation margin so another worker cannot
 reclaim an attempt whose callback is still legitimately in flight.
+Delegated Chronicle summaries move to the front of the shared AI queue, extend
+their fenced claim for the bounded delegation window, and release queued claims
+without consuming an attempt during shutdown. When Chronicle is disabled,
+persisted summary and anniversary work is deferred without consuming attempts;
+privacy cleanup work continues to run.
 Unknown or malformed versioned handler types are retained and dead-lettered
 with safe error categories; Milestone 5 registers only the owner test notice,
 pending-notice, public Discord, and synthetic retry handlers.

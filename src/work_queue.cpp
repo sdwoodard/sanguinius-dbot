@@ -45,7 +45,8 @@ public:
     }
   }
 
-  [[nodiscard]] SubmitResult try_submit(Task task) {
+  [[nodiscard]] SubmitResult try_submit(Task task, Cancellation cancellation,
+                                        const bool priority) {
     {
       const std::scoped_lock lock{mutex_};
       if (!accepting_) {
@@ -54,7 +55,12 @@ public:
       if (tasks_.size() >= capacity_) {
         return SubmitResult::full;
       }
-      tasks_.push_back(std::move(task));
+      PendingTask pending{.task = std::move(task),
+                          .cancellation = std::move(cancellation)};
+      if (priority)
+        tasks_.push_front(std::move(pending));
+      else
+        tasks_.push_back(std::move(pending));
     }
     ready_.notify_one();
     return SubmitResult::accepted;
@@ -71,10 +77,19 @@ public:
   }
 
   void stop() noexcept {
+    std::deque<PendingTask> pending;
     {
       const std::scoped_lock lock{mutex_};
       accepting_ = false;
-      tasks_.clear();
+      pending.swap(tasks_);
+    }
+    for (auto &task : pending) {
+      if (!task.cancellation)
+        continue;
+      try {
+        task.cancellation();
+      } catch (...) {
+      }
     }
     for (auto &worker : workers_) {
       worker.request_stop();
@@ -95,7 +110,7 @@ private:
         if (stop_token.stop_requested()) {
           return;
         }
-        task = std::move(tasks_.front());
+        task = std::move(tasks_.front().task);
         tasks_.pop_front();
         ++active_;
       }
@@ -115,7 +130,12 @@ private:
   std::size_t worker_count_;
   mutable std::mutex mutex_;
   std::condition_variable ready_;
-  std::deque<Task> tasks_;
+  struct PendingTask {
+    Task task;
+    Cancellation cancellation;
+  };
+
+  std::deque<PendingTask> tasks_;
   std::vector<std::jthread> workers_;
   bool started_{false};
   bool accepting_{false};
@@ -130,8 +150,13 @@ BoundedExecutor::~BoundedExecutor() { stop(); }
 
 void BoundedExecutor::start() { impl_->start(); }
 
-SubmitResult BoundedExecutor::try_submit(Task task) {
-  return impl_->try_submit(std::move(task));
+SubmitResult BoundedExecutor::try_submit(Task task, Cancellation cancellation) {
+  return impl_->try_submit(std::move(task), std::move(cancellation), false);
+}
+
+SubmitResult BoundedExecutor::try_submit_front(Task task,
+                                               Cancellation cancellation) {
+  return impl_->try_submit(std::move(task), std::move(cancellation), true);
 }
 
 QueueSnapshot BoundedExecutor::snapshot() const { return impl_->snapshot(); }

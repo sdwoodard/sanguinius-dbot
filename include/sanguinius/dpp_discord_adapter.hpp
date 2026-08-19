@@ -28,6 +28,8 @@ context_message_snapshot(const dpp::message &message);
 [[nodiscard]] std::vector<dpp::slashcommand>
 translate_command_catalog(const CommandCatalog &catalog,
                           dpp::snowflake application_id);
+void translate_slash_command(const dpp::command_interaction &command,
+                             IncomingInteraction &interaction);
 
 } // namespace dpp_adapter_detail
 

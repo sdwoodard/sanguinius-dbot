@@ -11,7 +11,7 @@ namespace sanguinius {
 namespace {
 
 constexpr auto poll_interval = std::chrono::seconds{1};
-constexpr std::int64_t lease_duration_ms = 60'000;
+constexpr std::int64_t lease_duration_ms = 120'000;
 constexpr std::size_t maximum_cycle_submissions = 16;
 
 [[nodiscard]] std::int64_t now_ms(const Clock &clock) {
@@ -75,7 +75,6 @@ SchedulerService::SchedulerService(DurableWorkRepository &repository,
     handlers_.add(std::string{memory_expiry_job_type},
                   std::move(chronicle_expiry_handler));
   }
-  handlers_.freeze();
 }
 
 SchedulerService::~SchedulerService() { stop(); }
@@ -84,10 +83,18 @@ void SchedulerService::start() {
   if (started_) {
     throw std::logic_error{"Scheduler may only be started once."};
   }
+  handlers_.freeze();
   workers_.start();
   started_ = true;
   poller_ = std::jthread{
       [this](const std::stop_token stop_token) { poll(stop_token); }};
+}
+
+void SchedulerService::add_handler(std::string type,
+                                   JobHandlerRegistry::Handler handler) {
+  if (started_)
+    throw std::logic_error{"Scheduler handlers must be registered before start."};
+  handlers_.add(std::move(type), std::move(handler));
 }
 
 void SchedulerService::stop() noexcept {

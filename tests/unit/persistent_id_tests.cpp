@@ -29,7 +29,7 @@ TEST_CASE("persistent ID validation rejects malformed variants", "[id]") {
 }
 
 TEST_CASE("persistent ID generation is injectable and deterministic", "[id]") {
-  sanguinius::test::FakePersistentIdGenerator generator{
+  sanguinius::test::ExhaustingFakePersistentIdGenerator generator{
       {"00000000-0000-4000-8000-000000000001",
        "00000000-0000-4000-8000-000000000002"}};
   REQUIRE(generator.next_id() == "00000000-0000-4000-8000-000000000001");

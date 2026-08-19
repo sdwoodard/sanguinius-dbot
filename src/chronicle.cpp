@@ -251,6 +251,10 @@ const char *chronicle_entry_type_name(const ChronicleEntryType type) noexcept {
     return "incident";
   case ChronicleEntryType::custom:
     return "custom";
+  case ChronicleEntryType::session_summary:
+    return "session_summary";
+  case ChronicleEntryType::title_award:
+    return "title_award";
   }
   return "custom";
 }
@@ -369,6 +373,10 @@ parse_chronicle_entry_type(const std::string_view value) noexcept {
     return ChronicleEntryType::incident;
   if (value == "custom")
     return ChronicleEntryType::custom;
+  if (value == "session_summary")
+    return ChronicleEntryType::session_summary;
+  if (value == "title_award")
+    return ChronicleEntryType::title_award;
   return std::nullopt;
 }
 
@@ -1340,10 +1348,14 @@ std::string render_chronicle_provenance(const ChronicleEntry &entry,
   }
 
   std::string rendered =
-      "Source author: `" + entry.source_author_user_id.str() +
-      "`\nSource message: guild `" + entry.source_guild_id.str() +
-      "`, channel `" + entry.source_channel_id.str() + "`, message `" +
-      entry.source_message_id.str() + "`\n";
+      "Source author: `" + entry.source_author_user_id.str() + "`\n";
+  if (entry.source_message_id) {
+    rendered += "Source message: guild `" + entry.source_guild_id.str() +
+                "`, channel `" + entry.source_channel_id.str() +
+                "`, message `" + entry.source_message_id->str() + "`\n";
+  } else {
+    rendered += "Source: approved Chronicle system record.\n";
+  }
   if (!entry.attachments.empty()) {
     rendered +=
         "Attachments (" + std::to_string(entry.attachments.size()) + "):\n";

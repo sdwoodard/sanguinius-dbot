@@ -210,7 +210,10 @@ void ensure_user(SqliteConnection &connection, const ContextUserSnapshot &user,
       .source_author_user_id = DiscordSnowflake::parse(row.column_text(7)),
       .source_guild_id = DiscordSnowflake::parse(row.column_text(8)),
       .source_channel_id = DiscordSnowflake::parse(row.column_text(9)),
-      .source_message_id = DiscordSnowflake::parse(row.column_text(10)),
+      .source_message_id = row.column_is_null(10)
+                               ? std::nullopt
+                               : std::optional{DiscordSnowflake::parse(
+                                     row.column_text(10))},
       .source_text = row.column_text(11),
       .source_text_truncated = row.column_int64(12) != 0,
       .occurred_at_ms = row.column_int64(13),
@@ -2171,6 +2174,10 @@ SqliteChronicleRepository::retract_entry(const RetractItemRequest &request) {
     transaction.commit();
     return {.code = ChronicleResultCode::not_found};
   }
+  if (entry->type == ChronicleEntryType::title_award) {
+    transaction.commit();
+    return {.code = ChronicleResultCode::invalid_state, .entry = entry};
+  }
   if (event_replayed(connection, request.interaction_idempotency_key,
                      "chronicle.entry_retracted.v1", entry->entry_id,
                      request.actor_user_id, request.guild_id,
@@ -2535,6 +2542,7 @@ std::vector<ManageableChronicleItem> SqliteChronicleRepository::manageable(
     return result;
   auto entries = connection.prepare(
       "SELECT e.entry_id,e.revision,e.title FROM chronicle_entry e WHERE "
+      "e.entry_type<>'title_award' AND "
       "(e.status IN ('proposed','canon') OR "
       "(e.status='retracted' AND ?<>'' AND e.entry_id LIKE ?||'%')) AND "
       "(e.created_by_user_id=? OR "

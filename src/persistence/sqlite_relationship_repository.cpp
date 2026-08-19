@@ -1,6 +1,7 @@
 #include "sanguinius/persistence/sqlite_relationship_repository.hpp"
 
 #include "sqlite_durable_work_writes.hpp"
+#include "sqlite_relationship_writes.hpp"
 
 #include "sanguinius/persistence/transaction.hpp"
 
@@ -34,6 +35,98 @@ struct ProjectionBuild {
   std::size_t chain_errors{};
 };
 
+struct RevisionIdentity {
+  std::string id;
+  std::size_t revision{};
+
+  [[nodiscard]] bool operator==(const RevisionIdentity &) const = default;
+};
+
+struct ChroniclePromptSnapshot {
+  std::optional<RevisionIdentity> featured_title;
+  std::optional<RevisionIdentity> latest_summary;
+  std::optional<RevisionIdentity> open_session;
+
+  [[nodiscard]] bool
+  operator==(const ChroniclePromptSnapshot &) const = default;
+};
+
+struct ChroniclePromptSelection {
+  ChroniclePromptSnapshot snapshot;
+  std::optional<std::string> featured_title_text;
+  std::optional<std::string> latest_summary_text;
+};
+
+[[nodiscard]] ChroniclePromptSelection
+load_chronicle_prompt_selection(SqliteConnection &connection,
+                                const DiscordSnowflake requester,
+                                const DiscordSnowflake guild) {
+  ChroniclePromptSelection result;
+  auto title = connection.prepare(
+      "SELECT g.grant_id,g.revision,d.title FROM chronicle_title_grant g JOIN "
+      "chronicle_title_definition d ON d.definition_id=g.definition_id "
+      "WHERE g.recipient_user_id=? AND g.state='active' AND g.featured=1");
+  title.bind(1, requester.str());
+  if (title.step()) {
+    result.snapshot.featured_title = RevisionIdentity{
+        .id = title.column_text(0),
+        .revision = static_cast<std::size_t>(title.column_int64(1))};
+    result.featured_title_text = title.column_text(2);
+  }
+
+  auto summary = connection.prepare(
+      "SELECT e.entry_id,e.revision,e.title || ' — ' || e.body FROM "
+      "chronicle_entry e WHERE e.entry_type='session_summary' AND "
+      "e.status='canon' AND e.visibility='shared' AND EXISTS (SELECT 1 FROM "
+      "chronicle_participant p WHERE p.entry_id=e.entry_id AND p.user_id=?) "
+      "ORDER BY e.occurred_at_ms DESC,e.entry_id DESC LIMIT 1");
+  summary.bind(1, requester.str());
+  if (summary.step()) {
+    result.snapshot.latest_summary = RevisionIdentity{
+        .id = summary.column_text(0),
+        .revision = static_cast<std::size_t>(summary.column_int64(1))};
+    result.latest_summary_text = summary.column_text(2);
+  }
+
+  auto session = connection.prepare(
+      "SELECT session_id,revision FROM chronicle_session WHERE guild_id=? "
+      "AND state='open'");
+  session.bind(1, guild.str());
+  if (session.step()) {
+    result.snapshot.open_session = RevisionIdentity{
+        .id = session.column_text(0),
+        .revision = static_cast<std::size_t>(session.column_int64(1))};
+  }
+  return result;
+}
+
+void bind_revision_identity(SqliteStatement &statement,
+                            const std::size_t id_index,
+                            const std::size_t revision_index,
+                            const std::optional<RevisionIdentity> &identity) {
+  if (!identity) {
+    statement.bind_null(id_index);
+    statement.bind_null(revision_index);
+    return;
+  }
+  statement.bind(id_index, identity->id);
+  statement.bind(revision_index, static_cast<std::int64_t>(identity->revision));
+}
+
+[[nodiscard]] std::optional<RevisionIdentity>
+read_revision_identity(SqliteStatement &statement, const int id_index,
+                       const int revision_index) {
+  const bool id_is_null = statement.column_is_null(id_index);
+  const bool revision_is_null = statement.column_is_null(revision_index);
+  if (id_is_null != revision_is_null)
+    throw std::runtime_error{"Invalid prompt Chronicle snapshot."};
+  if (id_is_null)
+    return std::nullopt;
+  return RevisionIdentity{.id = statement.column_text(id_index),
+                          .revision = static_cast<std::size_t>(
+                              statement.column_int64(revision_index))};
+}
+
 void require_id(const std::string_view value) {
   if (!valid_uuid_v4(std::string{value})) {
     throw std::invalid_argument{"Invalid relationship identifier."};
@@ -62,7 +155,8 @@ void require_context(const DiscordSnowflake guild,
 
 void ensure_user(SqliteConnection &connection,
                  const PreparePromptContextRequest &request) {
-  const auto cache = [](const std::string &value) -> std::optional<std::string> {
+  const auto cache =
+      [](const std::string &value) -> std::optional<std::string> {
     return value.empty() || value.size() > 128 ? std::nullopt
                                                : std::optional{value};
   };
@@ -74,12 +168,20 @@ void ensure_user(SqliteConnection &connection,
       "VALUES (?,?,?,0,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
       "display_name_cache=COALESCE(excluded.display_name_cache,"
       "discord_user.display_name_cache),"
-      "username_cache=COALESCE(excluded.username_cache,discord_user.username_cache),"
-      "last_seen_at_ms=max(discord_user.last_seen_at_ms,excluded.last_seen_at_ms),"
+      "username_cache=COALESCE(excluded.username_cache,discord_user.username_"
+      "cache),"
+      "last_seen_at_ms=max(discord_user.last_seen_at_ms,excluded.last_seen_at_"
+      "ms),"
       "updated_at_ms=max(discord_user.updated_at_ms,excluded.updated_at_ms)");
   user.bind(1, request.requester_user_id.str());
-  if (display) user.bind(2, *display); else user.bind_null(2);
-  if (username) user.bind(3, *username); else user.bind_null(3);
+  if (display)
+    user.bind(2, *display);
+  else
+    user.bind_null(2);
+  if (username)
+    user.bind(3, *username);
+  else
+    user.bind_null(3);
   user.bind(4, request.now_ms);
   user.bind(5, request.now_ms);
   user.bind(6, request.now_ms);
@@ -100,7 +202,8 @@ void ensure_user(SqliteConnection &connection,
       "last_interaction_at_ms,projection_version,updated_at_ms "
       "FROM relationship_state WHERE subject_user_id=?");
   query.bind(1, user.str());
-  if (!query.step()) return {};
+  if (!query.step())
+    return {};
   ProjectionRow result{
       .dimensions = {.familiarity = static_cast<int>(query.column_int64(0)),
                      .esteem = static_cast<int>(query.column_int64(1)),
@@ -112,11 +215,12 @@ void ensure_user(SqliteConnection &connection,
       .version = static_cast<std::size_t>(query.column_int64(7)),
       .updated_at_ms = query.column_int64(8),
   };
-  if (query.step()) throw std::runtime_error{"Duplicate relationship projection."};
+  if (query.step())
+    throw std::runtime_error{"Duplicate relationship projection."};
   return result;
 }
 
-[[nodiscard]] bool insert_relationship_event(
+[[nodiscard]] bool insert_relationship_event_impl(
     SqliteConnection &connection, const std::string &relationship_event_id,
     const std::string &source_event_id, const std::string_view event_type,
     const std::string_view reason_code, const DiscordSnowflake subject,
@@ -127,7 +231,8 @@ void ensure_user(SqliteConnection &connection,
       "subject_user_id=?");
   replay.bind(1, source_event_id);
   replay.bind(2, subject.str());
-  if (replay.step()) return false;
+  if (replay.step())
+    return false;
 
   const auto current = load_state(connection, subject);
   const auto next = apply_relationship_delta(current.dimensions, requested);
@@ -149,14 +254,13 @@ void ensure_user(SqliteConnection &connection,
   insert.bind(index++, event_type);
   insert.bind(index++, reason_code);
   insert.bind(index++, static_cast<std::int64_t>(version));
-  for (const int value : {delta.familiarity, delta.esteem, delta.mirth,
-                          delta.reliability, delta.wariness,
-                          current.dimensions.familiarity,
-                          current.dimensions.esteem, current.dimensions.mirth,
-                          current.dimensions.reliability,
-                          current.dimensions.wariness, next.familiarity,
-                          next.esteem, next.mirth, next.reliability,
-                          next.wariness}) {
+  for (const int value :
+       {delta.familiarity, delta.esteem, delta.mirth, delta.reliability,
+        delta.wariness, current.dimensions.familiarity,
+        current.dimensions.esteem, current.dimensions.mirth,
+        current.dimensions.reliability, current.dimensions.wariness,
+        next.familiarity, next.esteem, next.mirth, next.reliability,
+        next.wariness}) {
     insert.bind(index++, static_cast<std::int64_t>(value));
   }
   insert.bind(index++, occurred_at_ms);
@@ -167,13 +271,16 @@ void ensure_user(SqliteConnection &connection,
       "INSERT INTO relationship_state (subject_user_id,familiarity,esteem,"
       "mirth,reliability,wariness,interaction_count,last_interaction_at_ms,"
       "projection_version,updated_at_ms) VALUES (?,?,?,?,?,?,1,?,?,?) "
-      "ON CONFLICT(subject_user_id) DO UPDATE SET familiarity=excluded.familiarity,"
-      "esteem=excluded.esteem,mirth=excluded.mirth,reliability=excluded.reliability,"
+      "ON CONFLICT(subject_user_id) DO UPDATE SET "
+      "familiarity=excluded.familiarity,"
+      "esteem=excluded.esteem,mirth=excluded.mirth,reliability=excluded."
+      "reliability,"
       "wariness=excluded.wariness,interaction_count=relationship_state."
       "interaction_count+1,last_interaction_at_ms=max(relationship_state."
       "last_interaction_at_ms,excluded.last_interaction_at_ms),"
       "projection_version=excluded.projection_version,"
-      "updated_at_ms=max(relationship_state.updated_at_ms,excluded.updated_at_ms)");
+      "updated_at_ms=max(relationship_state.updated_at_ms,excluded.updated_at_"
+      "ms)");
   projection.bind(1, subject.str());
   projection.bind(2, static_cast<std::int64_t>(next.familiarity));
   projection.bind(3, static_cast<std::int64_t>(next.esteem));
@@ -234,14 +341,16 @@ void ensure_user(SqliteConnection &connection,
   return result;
 }
 
-[[nodiscard]] ProjectionCheckResult compare_projection(
-    SqliteConnection &connection, const ProjectionBuild &expected) {
+[[nodiscard]] ProjectionCheckResult
+compare_projection(SqliteConnection &connection,
+                   const ProjectionBuild &expected) {
   std::size_t mismatches = expected.chain_errors;
   std::size_t count = 0;
   std::set<std::string> seen;
   auto rows = connection.prepare(
       "SELECT subject_user_id,familiarity,esteem,mirth,reliability,wariness,"
-      "interaction_count,last_interaction_at_ms,projection_version,updated_at_ms "
+      "interaction_count,last_interaction_at_ms,projection_version,updated_at_"
+      "ms "
       "FROM relationship_state");
   while (rows.step()) {
     ++count;
@@ -263,11 +372,13 @@ void ensure_user(SqliteConnection &connection,
         .version = static_cast<std::size_t>(rows.column_int64(8)),
         .updated_at_ms = rows.column_int64(9),
     };
-    if (actual != found->second) ++mismatches;
+    if (actual != found->second)
+      ++mismatches;
   }
   for (const auto &[user, row] : expected.rows) {
     static_cast<void>(row);
-    if (!seen.contains(user)) ++mismatches;
+    if (!seen.contains(user))
+      ++mismatches;
   }
   return {.valid = mismatches == 0,
           .event_count = expected.event_count,
@@ -277,10 +388,22 @@ void ensure_user(SqliteConnection &connection,
 
 } // namespace
 
+bool detail::insert_relationship_event_uncommitted(
+    SqliteConnection &connection, const std::string &relationship_event_id,
+    const std::string &source_event_id, const std::string_view event_type,
+    const std::string_view reason_code, const DiscordSnowflake subject,
+    const RelationshipDelta requested, const std::int64_t occurred_at_ms,
+    const std::int64_t created_at_ms) {
+  return insert_relationship_event_impl(
+      connection, relationship_event_id, source_event_id, event_type,
+      reason_code, subject, requested, occurred_at_ms, created_at_ms);
+}
+
 SqliteRelationshipRepository::SqliteRelationshipRepository(
     std::shared_ptr<SqliteRepositoryContext> context)
     : context_{std::move(context)} {
-  if (!context_) throw std::invalid_argument{"SQLite context is required."};
+  if (!context_)
+    throw std::invalid_argument{"SQLite context is required."};
 }
 
 PreparedPromptContext SqliteRelationshipRepository::prepare_prompt_context(
@@ -309,7 +432,10 @@ PreparedPromptContext SqliteRelationshipRepository::prepare_prompt_context(
     return {.status = PromptPreparationStatus::duplicate,
             .attempt_id = std::nullopt,
             .relationship_style = {},
-            .memories = {}};
+            .memories = {},
+            .featured_title = std::nullopt,
+            .latest_session_summary = std::nullopt,
+            .session_open = false};
   }
 
   auto preferences = connection.prepare(
@@ -317,7 +443,8 @@ PreparedPromptContext SqliteRelationshipRepository::prepare_prompt_context(
       "FROM user_preference WHERE user_id=?");
   preferences.bind(1, request.requester_user_id.str());
   if (!preferences.step()) {
-    throw std::runtime_error{"User preference missing after identity creation."};
+    throw std::runtime_error{
+        "User preference missing after identity creation."};
   }
   const bool chronicle_opt_in = preferences.column_int64(0) != 0;
   const bool callbacks = chronicle_opt_in && preferences.column_int64(1) != 0;
@@ -333,10 +460,12 @@ PreparedPromptContext SqliteRelationshipRepository::prepare_prompt_context(
         "AND m.sensitivity='ordinary' "
         "AND (m.expires_at_ms IS NULL OR m.expires_at_ms>?) "
         "AND (m.last_used_at_ms IS NULL OR m.last_used_at_ms<=?) "
-        "AND EXISTS (SELECT 1 FROM memory_subject s WHERE s.memory_id=m.memory_id "
+        "AND EXISTS (SELECT 1 FROM memory_subject s WHERE "
+        "s.memory_id=m.memory_id "
         "AND s.subject_type='user' AND s.subject_id=?) "
         "AND NOT EXISTS (SELECT 1 FROM memory_subject s WHERE "
-        "s.memory_id=m.memory_id AND s.subject_type='user' AND s.subject_id<>?) "
+        "s.memory_id=m.memory_id AND s.subject_type='user' AND "
+        "s.subject_id<>?) "
         "AND NOT EXISTS (SELECT 1 FROM ai_prompt_attempt_memory am JOIN "
         "ai_prompt_attempt a ON a.attempt_id=am.attempt_id WHERE "
         "am.memory_id=m.memory_id AND a.state='prepared') "
@@ -347,23 +476,36 @@ PreparedPromptContext SqliteRelationshipRepository::prepare_prompt_context(
     query.bind(4, request.requester_user_id.str());
     query.bind(5, static_cast<std::int64_t>(maximum_prompt_memory_candidates));
     while (query.step()) {
-      MemoryCandidate candidate{.memory_id = query.column_text(0),
-                                .text = query.column_text(1),
-                                .tags = {},
-                                .created_at_ms = query.column_int64(2),
-                                .revision = static_cast<std::size_t>(
-                                    query.column_int64(3))};
+      MemoryCandidate candidate{
+          .memory_id = query.column_text(0),
+          .text = query.column_text(1),
+          .tags = {},
+          .created_at_ms = query.column_int64(2),
+          .revision = static_cast<std::size_t>(query.column_int64(3))};
       auto tags = connection.prepare(
           "SELECT subject_id FROM memory_subject WHERE memory_id=? AND "
           "subject_type='topic' ORDER BY subject_id");
       tags.bind(1, candidate.memory_id);
-      while (tags.step()) candidate.tags.push_back(tags.column_text(0));
+      while (tags.step())
+        candidate.tags.push_back(tags.column_text(0));
       candidates.push_back(std::move(candidate));
     }
   }
-  auto selected = rank_prompt_memories(std::move(candidates),
-                                       request.current_request,
-                                       request.replied_text, request.now_ms);
+  auto selected =
+      rank_prompt_memories(std::move(candidates), request.current_request,
+                           request.replied_text, request.now_ms);
+  std::optional<std::string> featured_title;
+  std::optional<std::string> latest_summary;
+  bool session_open = false;
+  ChroniclePromptSnapshot chronicle_snapshot;
+  if (chronicle_opt_in) {
+    auto selection = load_chronicle_prompt_selection(
+        connection, request.requester_user_id, request.guild_id);
+    chronicle_snapshot = std::move(selection.snapshot);
+    featured_title = std::move(selection.featured_title_text);
+    latest_summary = std::move(selection.latest_summary_text);
+    session_open = chronicle_snapshot.open_session.has_value();
+  }
   auto attempt = connection.prepare(
       "INSERT INTO ai_prompt_attempt (attempt_id,application_instance_id,"
       "requester_user_id,guild_id,channel_id,source_message_id,state,"
@@ -379,14 +521,25 @@ PreparedPromptContext SqliteRelationshipRepository::prepare_prompt_context(
   attempt.bind(8, preference_updated_at_ms);
   attempt.bind(9, request.now_ms);
   attempt.execute();
+  if (chronicle_opt_in) {
+    auto snapshot = connection.prepare(
+        "INSERT INTO ai_prompt_attempt_chronicle_context(attempt_id,"
+        "featured_title_grant_id,featured_title_revision,"
+        "latest_summary_entry_id,latest_summary_revision,open_session_id,"
+        "open_session_revision) VALUES (?,?,?,?,?,?,?)");
+    snapshot.bind(1, request.attempt_id);
+    bind_revision_identity(snapshot, 2, 3, chronicle_snapshot.featured_title);
+    bind_revision_identity(snapshot, 4, 5, chronicle_snapshot.latest_summary);
+    bind_revision_identity(snapshot, 6, 7, chronicle_snapshot.open_session);
+    snapshot.execute();
+  }
   for (std::size_t index = 0; index < selected.size(); ++index) {
     auto memory = connection.prepare(
         "INSERT INTO ai_prompt_attempt_memory (attempt_id,memory_id,"
         "memory_revision,rank_position,selected_at_ms) VALUES (?,?,?,?,?)");
     memory.bind(1, request.attempt_id);
     memory.bind(2, selected[index].memory.memory_id);
-    memory.bind(3,
-                static_cast<std::int64_t>(selected[index].memory.revision));
+    memory.bind(3, static_cast<std::int64_t>(selected[index].memory.revision));
     memory.bind(4, static_cast<std::int64_t>(index));
     memory.bind(5, request.now_ms);
     memory.execute();
@@ -397,7 +550,10 @@ PreparedPromptContext SqliteRelationshipRepository::prepare_prompt_context(
           .relationship_style = chronicle_opt_in
                                     ? relationship_style_hint(state.dimensions)
                                     : std::string{},
-          .memories = std::move(selected)};
+          .memories = std::move(selected),
+          .featured_title = std::move(featured_title),
+          .latest_session_summary = std::move(latest_summary),
+          .session_open = session_open};
 }
 
 PromptFinalizationStatus SqliteRelationshipRepository::complete_prompt_attempt(
@@ -405,7 +561,8 @@ PromptFinalizationStatus SqliteRelationshipRepository::complete_prompt_attempt(
   require_id(request.attempt_id);
   require_id(request.source_event_id);
   require_id(request.relationship_event_id);
-  if (request.now_ms < 0) throw std::invalid_argument{"Invalid completion time."};
+  if (request.now_ms < 0)
+    throw std::invalid_argument{"Invalid completion time."};
   const std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
   Transaction transaction{connection, TransactionMode::immediate};
@@ -415,7 +572,8 @@ PromptFinalizationStatus SqliteRelationshipRepository::complete_prompt_attempt(
       "FROM ai_prompt_attempt "
       "WHERE attempt_id=?");
   attempt.bind(1, request.attempt_id);
-  if (!attempt.step()) return PromptFinalizationStatus::not_found;
+  if (!attempt.step())
+    return PromptFinalizationStatus::not_found;
   const auto requester = DiscordSnowflake::parse(attempt.column_text(0));
   const auto guild = DiscordSnowflake::parse(attempt.column_text(1));
   const auto channel = DiscordSnowflake::parse(attempt.column_text(2));
@@ -437,7 +595,8 @@ PromptFinalizationStatus SqliteRelationshipRepository::complete_prompt_attempt(
   auto memory_count_query = connection.prepare(
       "SELECT count(*) FROM ai_prompt_attempt_memory WHERE attempt_id=?");
   memory_count_query.bind(1, request.attempt_id);
-  if (!memory_count_query.step()) throw std::runtime_error{"Memory count failed."};
+  if (!memory_count_query.step())
+    throw std::runtime_error{"Memory count failed."};
   const auto memory_count = memory_count_query.column_int64(0);
   auto preference = connection.prepare(
       "SELECT chronicle_opt_in,memory_callback_opt_in,updated_at_ms FROM "
@@ -447,9 +606,27 @@ PromptFinalizationStatus SqliteRelationshipRepository::complete_prompt_attempt(
   const bool chronicle_opt_in =
       has_preference && preference.column_int64(0) != 0;
   bool valid = true;
-  if (memory_count > 0) {
+  bool chronicle_context_included = false;
+  auto chronicle_context = connection.prepare(
+      "SELECT featured_title_grant_id,featured_title_revision,"
+      "latest_summary_entry_id,latest_summary_revision,open_session_id,"
+      "open_session_revision FROM ai_prompt_attempt_chronicle_context "
+      "WHERE attempt_id=?");
+  chronicle_context.bind(1, request.attempt_id);
+  if (chronicle_context.step()) {
+    chronicle_context_included = true;
+    const ChroniclePromptSnapshot stored{
+        .featured_title = read_revision_identity(chronicle_context, 0, 1),
+        .latest_summary = read_revision_identity(chronicle_context, 2, 3),
+        .open_session = read_revision_identity(chronicle_context, 4, 5),
+    };
     valid = chronicle_opt_in &&
-            preference.column_int64(1) != 0 &&
+            preference.column_int64(2) == preference_snapshot &&
+            load_chronicle_prompt_selection(connection, requester, guild)
+                    .snapshot == stored;
+  }
+  if (memory_count > 0) {
+    valid = valid && chronicle_opt_in && preference.column_int64(1) != 0 &&
             preference.column_int64(2) == preference_snapshot;
     auto memories = connection.prepare(
         "SELECT count(*) FROM ai_prompt_attempt_memory am JOIN memory m ON "
@@ -465,7 +642,8 @@ PromptFinalizationStatus SqliteRelationshipRepository::complete_prompt_attempt(
     memories.bind(2, completed_at_ms);
     memories.bind(3, requester.str());
     memories.bind(4, requester.str());
-    if (!memories.step() || memories.column_int64(0) != memory_count) valid = false;
+    if (!memories.step() || memories.column_int64(0) != memory_count)
+      valid = false;
   }
   if (!valid) {
     auto invalidate = connection.prepare(
@@ -504,16 +682,15 @@ PromptFinalizationStatus SqliteRelationshipRepository::complete_prompt_attempt(
       .correlation_id = correlation_id,
       .causation_id = std::nullopt,
       .idempotency_key = "event:ai:direct:" + message.str(),
-      .payload_json = Json{{"status", "succeeded"},
-                           {"memory_count", memory_count}}
-                          .dump(),
+      .payload_json =
+          Json{{"status", "succeeded"}, {"memory_count", memory_count}}.dump(),
   };
   if (!detail::insert_event_uncommitted(connection, event)) {
     throw DatabaseError{DatabaseErrorCategory::constraint, SQLITE_CONSTRAINT,
                         SQLITE_CONSTRAINT,
                         "AI success event idempotency conflict."};
   }
-  if (chronicle_opt_in) {
+  if (chronicle_context_included && chronicle_opt_in) {
     auto recent = connection.prepare(
         "SELECT 1 FROM relationship_event WHERE subject_user_id=? AND "
         "reason_code='ai.direct' AND delta_familiarity>0 AND occurred_at_ms>? "
@@ -521,7 +698,7 @@ PromptFinalizationStatus SqliteRelationshipRepository::complete_prompt_attempt(
     recent.bind(1, requester.str());
     recent.bind(2, completed_at_ms - relationship_direct_cooldown_ms);
     const bool cooldown = recent.step();
-    static_cast<void>(insert_relationship_event(
+    static_cast<void>(detail::insert_relationship_event_uncommitted(
         connection, request.relationship_event_id, request.source_event_id,
         "ai.direct_interaction_succeeded.v1",
         cooldown ? "ai.direct_cooldown" : "ai.direct", requester,
@@ -572,7 +749,8 @@ PromptFinalizationStatus SqliteRelationshipRepository::fail_prompt_attempt(
 std::size_t SqliteRelationshipRepository::recover_prompt_attempts(
     const std::string_view instance_id, const std::int64_t now_ms) {
   require_id(instance_id);
-  if (now_ms < 0) throw std::invalid_argument{"Invalid recovery time."};
+  if (now_ms < 0)
+    throw std::invalid_argument{"Invalid recovery time."};
   const std::scoped_lock lock{context_->mutex()};
   Transaction transaction{context_->connection(), TransactionMode::immediate};
   auto update = context_->connection().prepare(
@@ -583,22 +761,27 @@ std::size_t SqliteRelationshipRepository::recover_prompt_attempts(
   update.bind(1, now_ms);
   update.bind(2, instance_id);
   update.execute();
-  const auto changed = static_cast<std::size_t>(context_->connection().changes());
+  const auto changed =
+      static_cast<std::size_t>(context_->connection().changes());
   transaction.commit();
   return changed;
 }
 
 std::size_t SqliteRelationshipRepository::synchronize_chronicle_sources(
     PersistentIdGenerator &ids, const std::int64_t now_ms) {
-  if (now_ms < 0) throw std::invalid_argument{"Invalid synchronization time."};
+  if (now_ms < 0)
+    throw std::invalid_argument{"Invalid synchronization time."};
   const std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
   Transaction transaction{connection, TransactionMode::immediate};
   auto sources = connection.prepare(
       "SELECT e.event_id,e.event_type,e.occurred_at_ms,p.user_id FROM "
-      "event_journal e JOIN chronicle_participant p ON p.entry_id=e.aggregate_id "
+      "event_journal e JOIN chronicle_entry ce ON ce.entry_id=e.aggregate_id "
+      "JOIN chronicle_participant p ON p.entry_id=e.aggregate_id "
       "JOIN discord_user u ON u.user_id=p.user_id JOIN user_preference pref ON "
-      "pref.user_id=p.user_id WHERE e.event_type='chronicle.entry_canonized.v1' "
+      "pref.user_id=p.user_id WHERE "
+      "e.event_type='chronicle.entry_canonized.v1' "
+      "AND ce.entry_type NOT IN ('session_summary','title_award') "
       "AND p.role IN ('source_author','subject') AND u.is_bot=0 "
       "AND pref.chronicle_opt_in=1 AND "
       "COALESCE(json_extract(e.payload_json,'$.test'),0)=0 AND NOT EXISTS "
@@ -611,13 +794,51 @@ std::size_t SqliteRelationshipRepository::synchronize_chronicle_sources(
     const auto event_type = sources.column_text(1);
     const auto occurred_at_ms = sources.column_int64(2);
     const auto user = DiscordSnowflake::parse(sources.column_text(3));
-    if (insert_relationship_event(
-            connection, ids.next_id(), event_id, event_type,
-            "chronicle.canon", user,
-            relationship_policy(RelationshipSourceKind::chronicle_canon),
+    if (detail::insert_relationship_event_uncommitted(
+            connection, ids.next_id(), event_id, event_type, "chronicle.canon",
+            user, relationship_policy(RelationshipSourceKind::chronicle_canon),
             occurred_at_ms, now_ms)) {
       ++count;
     }
+  }
+  auto sessions = connection.prepare(
+      "SELECT e.event_id,e.event_type,e.occurred_at_ms,p.user_id FROM "
+      "event_journal e JOIN chronicle_session_participant p ON "
+      "p.session_id=e.aggregate_id JOIN discord_user u ON u.user_id=p.user_id "
+      "JOIN user_preference pref ON pref.user_id=p.user_id WHERE "
+      "e.event_type='chronicle.session_completed.v1' AND u.is_bot=0 AND "
+      "pref.chronicle_opt_in=1 AND NOT EXISTS (SELECT 1 FROM "
+      "relationship_event r "
+      "WHERE r.source_event_id=e.event_id AND r.subject_user_id=p.user_id) "
+      "ORDER BY e.occurred_at_ms,e.event_id,p.user_id");
+  while (sessions.step()) {
+    if (detail::insert_relationship_event_uncommitted(
+            connection, ids.next_id(), sessions.column_text(0),
+            sessions.column_text(1), "session.completed",
+            DiscordSnowflake::parse(sessions.column_text(3)),
+            relationship_policy(RelationshipSourceKind::session_completed),
+            sessions.column_int64(2), now_ms))
+      ++count;
+  }
+  auto titles = connection.prepare(
+      "SELECT e.event_id,e.event_type,e.occurred_at_ms,"
+      "json_extract(e.payload_json,'$.recipient_user_id') FROM event_journal e "
+      "JOIN discord_user u ON u.user_id=json_extract(e.payload_json,"
+      "'$.recipient_user_id') JOIN user_preference pref ON "
+      "pref.user_id=u.user_id "
+      "WHERE e.event_type='chronicle.title_awarded.v1' AND u.is_bot=0 AND "
+      "pref.chronicle_opt_in=1 AND NOT EXISTS (SELECT 1 FROM "
+      "relationship_event r "
+      "WHERE r.source_event_id=e.event_id AND r.subject_user_id=u.user_id) "
+      "ORDER BY e.occurred_at_ms,e.event_id,u.user_id");
+  while (titles.step()) {
+    if (detail::insert_relationship_event_uncommitted(
+            connection, ids.next_id(), titles.column_text(0),
+            titles.column_text(1), "title.awarded",
+            DiscordSnowflake::parse(titles.column_text(3)),
+            relationship_policy(RelationshipSourceKind::title_awarded),
+            titles.column_int64(2), now_ms))
+      ++count;
   }
   transaction.commit();
   return count;
@@ -637,7 +858,8 @@ RelationshipProfile SqliteRelationshipRepository::profile(
       "chronicle_opt_in,memory_callback_opt_in FROM discord_user u JOIN "
       "user_preference p ON p.user_id=u.user_id WHERE u.user_id=?");
   user.bind(1, target.str());
-  if (!user.step()) return {};
+  if (!user.step())
+    return {};
   RelationshipProfile result{
       .found = true,
       .is_bot = user.column_int64(1) != 0,
@@ -649,6 +871,9 @@ RelationshipProfile SqliteRelationshipRepository::profile(
       .recent_reasons = {},
       .shared_canon_count = 0,
       .visible_canon_titles = {},
+      .featured_title = std::nullopt,
+      .latest_session_summary = std::nullopt,
+      .session_open = false,
   };
   auto count = connection.prepare(
       "SELECT count(DISTINCT e.entry_id) FROM chronicle_entry e JOIN "
@@ -656,25 +881,51 @@ RelationshipProfile SqliteRelationshipRepository::profile(
       "AND e.visibility='shared' AND p.user_id=? AND "
       "p.role IN ('source_author','subject')");
   count.bind(1, target.str());
-  if (count.step()) result.shared_canon_count =
-      static_cast<std::size_t>(count.column_int64(0));
+  if (count.step())
+    result.shared_canon_count = static_cast<std::size_t>(count.column_int64(0));
   auto titles = connection.prepare(
-      "SELECT DISTINCT e.title,e.occurred_at_ms,e.entry_id FROM chronicle_entry e "
+      "SELECT DISTINCT e.title,e.occurred_at_ms,e.entry_id FROM "
+      "chronicle_entry e "
       "JOIN chronicle_participant p ON p.entry_id=e.entry_id WHERE "
-      "e.status='canon' AND p.user_id=? AND p.role IN ('source_author','subject') "
+      "e.status='canon' AND p.user_id=? AND p.role IN "
+      "('source_author','subject') "
       "AND (e.visibility='shared' OR (?=0 AND EXISTS (SELECT 1 FROM "
-      "chronicle_participant vp WHERE vp.entry_id=e.entry_id AND vp.user_id=?))) "
+      "chronicle_participant vp WHERE vp.entry_id=e.entry_id AND "
+      "vp.user_id=?))) "
       "ORDER BY e.occurred_at_ms DESC,e.entry_id DESC LIMIT 3");
   titles.bind(1, target.str());
   titles.bind(2, static_cast<std::int64_t>(public_view));
   titles.bind(3, viewer.str());
-  while (titles.step()) result.visible_canon_titles.push_back(titles.column_text(0));
+  while (titles.step())
+    result.visible_canon_titles.push_back(titles.column_text(0));
+  if (result.chronicle_opt_in) {
+    auto featured = connection.prepare(
+        "SELECT d.title FROM chronicle_title_grant g JOIN "
+        "chronicle_title_definition d ON d.definition_id=g.definition_id "
+        "WHERE g.recipient_user_id=? AND g.state='active' AND g.featured=1");
+    featured.bind(1, target.str());
+    if (featured.step())
+      result.featured_title = featured.column_text(0);
+    auto latest_summary = connection.prepare(
+        "SELECT e.title || ' — ' || e.body FROM chronicle_entry e JOIN "
+        "chronicle_participant p ON p.entry_id=e.entry_id WHERE "
+        "e.entry_type='session_summary' AND e.status='canon' AND "
+        "e.visibility='shared' AND p.user_id=? ORDER BY e.occurred_at_ms DESC,"
+        "e.entry_id DESC LIMIT 1");
+    latest_summary.bind(1, target.str());
+    if (latest_summary.step())
+      result.latest_session_summary = latest_summary.column_text(0);
+    auto open_session = connection.prepare(
+        "SELECT 1 FROM chronicle_session WHERE state='open' LIMIT 1");
+    result.session_open = open_session.step();
+  }
   if (!public_view) {
     auto reasons = connection.prepare(
         "SELECT reason_code FROM relationship_event WHERE subject_user_id=? "
         "ORDER BY subject_version DESC LIMIT 3");
     reasons.bind(1, target.str());
-    while (reasons.step()) result.recent_reasons.push_back(reasons.column_text(0));
+    while (reasons.step())
+      result.recent_reasons.push_back(reasons.column_text(0));
   }
   return result;
 }
@@ -695,10 +946,10 @@ PreferenceChangeStatus SqliteRelationshipRepository::set_memory_callbacks(
       "FROM event_journal WHERE idempotency_key=?");
   replay.bind(1, request.idempotency_key);
   if (replay.step()) {
-    const bool matches = replay.column_text(0) ==
-                             "chronicle.memory_callbacks_changed.v1" &&
-                         replay.column_text(1) == request.user_id.str() &&
-                         (replay.column_int64(2) != 0) == request.enabled;
+    const bool matches =
+        replay.column_text(0) == "chronicle.memory_callbacks_changed.v1" &&
+        replay.column_text(1) == request.user_id.str() &&
+        (replay.column_int64(2) != 0) == request.enabled;
     if (!matches) {
       throw DatabaseError{DatabaseErrorCategory::constraint, SQLITE_CONSTRAINT,
                           SQLITE_CONSTRAINT,
@@ -711,7 +962,8 @@ PreferenceChangeStatus SqliteRelationshipRepository::set_memory_callbacks(
       "SELECT chronicle_opt_in,memory_callback_opt_in FROM user_preference "
       "WHERE user_id=?");
   preference.bind(1, request.user_id.str());
-  if (!preference.step()) throw std::runtime_error{"User preference missing."};
+  if (!preference.step())
+    throw std::runtime_error{"User preference missing."};
   if (request.enabled && preference.column_int64(0) == 0) {
     transaction.commit();
     return PreferenceChangeStatus::chronicle_opted_out;

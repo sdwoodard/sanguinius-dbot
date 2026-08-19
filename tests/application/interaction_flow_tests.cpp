@@ -108,7 +108,7 @@ TEST_CASE(
     "[application][interaction][chronicle]") {
   sanguinius::test::ApplicationFixture fixture{chronicle_options()};
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 4);
+  REQUIRE(fixture.discord->command_catalog().version == 5);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 4);
 
   auto remember =
@@ -285,6 +285,17 @@ TEST_CASE(
   test_entry.tags = {"owner-test"};
   fixture.chronicle->recall_results.entries = {test_entry};
   fixture.chronicle->timeline_results = {test_entry};
+  fixture.chronicle_sessions->search_result = {
+      .cursor_id = "00000000-0000-4000-8000-000000000902",
+      .page = 0,
+      .total = 1,
+      .items = {{.item_id = test_entry.entry_id,
+                 .title = "[TEST DATA] " + test_entry.title,
+                 .excerpt = test_entry.body,
+                 .occurred_at_ms = test_entry.occurred_at_ms}},
+      .navigation_token_id = std::nullopt,
+      .presentation = "recall",
+  };
 
   auto recall = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   fixture.discord->emit(slash(recall, "chronicle", "recall", 193));
@@ -399,6 +410,9 @@ TEST_CASE("Chronicle profiles and callback preferences preserve visibility",
       .recent_reasons = {"ai.direct"},
       .shared_canon_count = 2,
       .visible_canon_titles = {"A safe shared heading"},
+      .featured_title = std::nullopt,
+      .latest_session_summary = std::nullopt,
+      .session_open = false,
   };
   fixture.application->start();
 
@@ -506,6 +520,18 @@ TEST_CASE("interaction router rejects unauthorized and malformed routes",
   REQUIRE(contains(admin_disabled->replies()[0].first.content, "disabled"));
   REQUIRE(disabled.identities->user_count() == 0);
   disabled.application->stop();
+
+  sanguinius::test::ApplicationFixture chronicle_disabled{admin_options()};
+  chronicle_disabled.application->start();
+  auto anniversary_disabled =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  chronicle_disabled.discord->emit(
+      slash(anniversary_disabled, "sang-admin", "test-anniversary", 214));
+  REQUIRE(anniversary_disabled->replies().size() == 1);
+  REQUIRE(contains(anniversary_disabled->replies()[0].first.content,
+                   "Chronicle is currently unavailable"));
+  REQUIRE(chronicle_disabled.chronicle_sessions->anniversary_queue_calls == 0);
+  chronicle_disabled.application->stop();
 
   auto no_test_mode = admin_options();
   no_test_mode.controls.test_mode = false;

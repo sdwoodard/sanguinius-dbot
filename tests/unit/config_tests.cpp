@@ -102,6 +102,7 @@ TEST_CASE("typed configuration loads safe defaults and full snowflakes",
   REQUIRE(config.paths.message_log == "logs/messages.log");
   REQUIRE(config.paths.database_file == "state/sanguinius.sqlite3");
   REQUIRE(config.command_prefix == "!");
+  REQUIRE(config.timezone == "America/New_York");
   REQUIRE(config.origins.discord_request_timeout ==
           sanguinius::ConfigurationOrigin::default_value);
   REQUIRE(config.origins.message_log ==
@@ -113,6 +114,8 @@ TEST_CASE("typed configuration loads safe defaults and full snowflakes",
   REQUIRE(config.origins.openai_model ==
           sanguinius::ConfigurationOrigin::default_value);
   REQUIRE(config.origins.persona_file ==
+          sanguinius::ConfigurationOrigin::default_value);
+  REQUIRE(config.origins.timezone ==
           sanguinius::ConfigurationOrigin::default_value);
   REQUIRE_FALSE(config.controls.admin_commands_enabled);
   REQUIRE_FALSE(config.controls.test_mode);
@@ -162,6 +165,7 @@ TEST_CASE("typed configuration parses strict controls features and duration",
   source.values["SANGUINIUS_COMMAND_PREFIX"] = "?";
   source.values["SANGUINIUS_OPENAI_MODEL"] = "configured-model";
   source.values["SANGUINIUS_PERSONA_FILE"] = "configured-persona";
+  source.values["SANGUINIUS_TIMEZONE"] = "UTC";
   source.files["configured-persona"] = "configured persona";
 
   const auto config = sanguinius::Config::from_source(source);
@@ -179,6 +183,7 @@ TEST_CASE("typed configuration parses strict controls features and duration",
   REQUIRE(config.command_prefix == "?");
   REQUIRE(config.ai.model == "configured-model");
   REQUIRE(config.ai.persona_file == "configured-persona");
+  REQUIRE(config.timezone == "UTC");
   REQUIRE(config.origins.discord_request_timeout ==
           sanguinius::ConfigurationOrigin::configured);
   REQUIRE(config.origins.message_log ==
@@ -190,6 +195,8 @@ TEST_CASE("typed configuration parses strict controls features and duration",
   REQUIRE(config.origins.openai_model ==
           sanguinius::ConfigurationOrigin::configured);
   REQUIRE(config.origins.persona_file ==
+          sanguinius::ConfigurationOrigin::configured);
+  REQUIRE(config.origins.timezone ==
           sanguinius::ConfigurationOrigin::configured);
   REQUIRE(source.read_paths.size() == 1);
 }
@@ -250,7 +257,7 @@ TEST_CASE("configuration rejects noncanonical booleans and durations",
       "OPENAI_API_KEY",           "SANGUINIUS_OPENAI_API_KEY_FILE",
       "SANGUINIUS_LOG_FILE",      "SANGUINIUS_COMMAND_PREFIX",
       "SANGUINIUS_OPENAI_MODEL",  "SANGUINIUS_PERSONA_FILE",
-      "SANGUINIUS_DATABASE_FILE",
+      "SANGUINIUS_DATABASE_FILE", "SANGUINIUS_TIMEZONE",
   };
   for (const auto variable : nonempty_variables) {
     FakeConfigSource source;
@@ -273,6 +280,13 @@ TEST_CASE("configuration validates appearance mode database and persona",
   bad_mode.values["SANGUINIUS_APPEARANCES_MODE"] = "DRY_RUN_SENTINEL";
   const auto mode_error = config_error(bad_mode);
   REQUIRE_FALSE(contains(mode_error, "DRY_RUN_SENTINEL"));
+
+  FakeConfigSource invalid_timezone;
+  invalid_timezone.values["SANGUINIUS_TIMEZONE"] =
+      "INVALID_TIMEZONE_SENTINEL";
+  const auto timezone_error = config_error(invalid_timezone);
+  REQUIRE(contains(timezone_error, "SANGUINIUS_TIMEZONE"));
+  REQUIRE_FALSE(contains(timezone_error, "INVALID_TIMEZONE_SENTINEL"));
 
   FakeConfigSource empty_database;
   empty_database.values["SANGUINIUS_DATABASE_FILE"] = "";
@@ -335,6 +349,7 @@ TEST_CASE("redacted config summary excludes secrets IDs paths and persona",
   REQUIRE(contains(default_summary, "openai_model=default"));
   REQUIRE(contains(default_summary, "persona_file=default"));
   REQUIRE(contains(default_summary, "discord_request_timeout=default"));
+  REQUIRE(contains(default_summary, "timezone=default"));
 
   FakeConfigSource source;
   source.values["SANGUINIUS_DATABASE_FILE"] = "DATABASE_PATH_SENTINEL";
@@ -343,6 +358,7 @@ TEST_CASE("redacted config summary excludes secrets IDs paths and persona",
   source.values["SANGUINIUS_OPENAI_MODEL"] = "MODEL_VALUE_SENTINEL";
   source.values["SANGUINIUS_PERSONA_FILE"] = "PERSONA_PATH_SENTINEL";
   source.values["SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS"] = "42";
+  source.values["SANGUINIUS_TIMEZONE"] = "UTC";
   source.files["PERSONA_PATH_SENTINEL"] = "PERSONA_SECRET_SENTINEL";
   const auto config = sanguinius::Config::from_source(source);
   const auto summary = sanguinius::redacted_config_summary(
@@ -357,6 +373,7 @@ TEST_CASE("redacted config summary excludes secrets IDs paths and persona",
   REQUIRE(contains(summary, "openai_model=configured"));
   REQUIRE(contains(summary, "persona_file=configured"));
   REQUIRE(contains(summary, "discord_request_timeout=configured"));
+  REQUIRE(contains(summary, "timezone=configured"));
   REQUIRE(contains(summary, "test_mode=disabled"));
   constexpr std::string_view forbidden[]{
       "DISCORD_SECRET_SENTINEL", "OPENAI_SECRET_SENTINEL",

@@ -8,6 +8,7 @@
 #include "sanguinius/persistence/database.hpp"
 #include "sanguinius/persistence/migrator.hpp"
 #include "sanguinius/persistence/sqlite_chronicle_repository.hpp"
+#include "sanguinius/persistence/sqlite_chronicle_session_repository.hpp"
 #include "sanguinius/persistence/sqlite_durable_work_repository.hpp"
 #include "sanguinius/persistence/sqlite_repositories.hpp"
 #include "sanguinius/persistence/sqlite_relationship_repository.hpp"
@@ -73,6 +74,9 @@ std::unique_ptr<Application> make_application(const Config &config) {
   auto chronicle =
       std::make_unique<persistence::SqliteChronicleRepository>(
           repository_context);
+  auto chronicle_sessions =
+      std::make_unique<persistence::SqliteChronicleSessionRepository>(
+          repository_context);
   auto relationships =
       std::make_unique<persistence::SqliteRelationshipRepository>(
           repository_context);
@@ -104,6 +108,7 @@ std::unique_ptr<Application> make_application(const Config &config) {
                   .instance_id = instance_id,
               },
           .instance_id = instance_id,
+          .timezone = config.timezone,
           .hostname = local_hostname(),
           .process_id = static_cast<std::int64_t>(::getpid()),
           .message_queue_capacity = 64,
@@ -122,6 +127,7 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .pending_notices = std::move(pending_notices),
           .durable_work = std::move(durable_work),
           .chronicle = std::move(chronicle),
+          .chronicle_sessions = std::move(chronicle_sessions),
           .relationships = std::move(relationships),
           .ai_client = std::move(ai_client),
           .discord = std::move(discord),

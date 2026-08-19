@@ -59,6 +59,10 @@ int cancel_transfer(void *context, curl_off_t, curl_off_t, curl_off_t,
   const auto response = nlohmann::json::parse(body);
   std::string text;
 
+  if (response.value("status", "") == "incomplete") {
+    throw AiIncompleteResponse{};
+  }
+
   if (response.contains("output_text") && response["output_text"].is_string()) {
     return response["output_text"].get<std::string>();
   }
@@ -68,6 +72,9 @@ int cancel_transfer(void *context, curl_off_t, curl_off_t, curl_off_t,
       continue;
     }
     for (const auto &content : item.value("content", nlohmann::json::array())) {
+      if (content.value("type", "") == "refusal") {
+        throw AiRefusal{};
+      }
       if (content.value("type", "") == "output_text") {
         text += content.value("text", "");
       }
@@ -98,13 +105,21 @@ std::string OpenAiClient::generate(const AiRequest &ai_request,
     input.push_back({{"role", role}, {"content", content}});
   }
 
-  const nlohmann::json request = {
+  nlohmann::json request = {
       {"model", model_},
       {"instructions", ai_request.instructions},
       {"input", std::move(input)},
       {"max_output_tokens", ai_request.max_output_tokens},
       {"store", false},
   };
+  if (ai_request.json_schema) {
+    request["text"]["format"] = {
+        {"type", "json_schema"},
+        {"name", ai_request.json_schema->name},
+        {"schema", nlohmann::json::parse(ai_request.json_schema->schema)},
+        {"strict", ai_request.json_schema->strict},
+    };
+  }
   const std::string request_body = request.dump();
   std::string response_body;
   std::array<char, CURL_ERROR_SIZE> error_buffer{};

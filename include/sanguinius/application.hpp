@@ -3,6 +3,7 @@
 #include "sanguinius/ai_client.hpp"
 #include "sanguinius/build_info.hpp"
 #include "sanguinius/chronicle.hpp"
+#include "sanguinius/chronicle_sessions.hpp"
 #include "sanguinius/clock.hpp"
 #include "sanguinius/diagnostics.hpp"
 #include "sanguinius/discord_interfaces.hpp"
@@ -33,6 +34,7 @@ struct ApplicationOptions {
   BuildInfo build;
   PersistenceHealth persistence;
   std::string instance_id;
+  std::string timezone{"America/New_York"};
   std::string hostname;
   std::int64_t process_id{};
   std::size_t message_queue_capacity{64};
@@ -54,6 +56,7 @@ struct ApplicationDependencies {
   std::unique_ptr<PendingNoticeRepository> pending_notices;
   std::unique_ptr<DurableWorkRepository> durable_work;
   std::unique_ptr<ChronicleRepository> chronicle;
+  std::unique_ptr<ChronicleSessionRepository> chronicle_sessions;
   std::unique_ptr<RelationshipRepository> relationships;
   std::unique_ptr<AiClient> ai_client;
   std::unique_ptr<DiscordRuntime> discord;
