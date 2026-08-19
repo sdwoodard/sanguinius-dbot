@@ -33,7 +33,7 @@ using sanguinius::persistence::SchemaState;
 
 } // namespace
 
-TEST_CASE("production migration moves an empty database to version four",
+TEST_CASE("production migration moves an empty database to version five",
           "[migration]") {
   sanguinius::test::TemporaryDatabase temporary;
   sanguinius::test::FakeClock clock{
@@ -44,12 +44,12 @@ TEST_CASE("production migration moves an empty database to version four",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::uninitialized);
   REQUIRE(before.current_version == 0);
-  REQUIRE(before.target_version == 4);
+  REQUIRE(before.target_version == 5);
 
   const auto applied = migrator.apply(database.connection());
   REQUIRE(applied.state == SchemaState::current);
-  REQUIRE(applied.current_version == 4);
-  REQUIRE(count(database.connection(), "schema_migrations") == 4);
+  REQUIRE(applied.current_version == 5);
+  REQUIRE(count(database.connection(), "schema_migrations") == 5);
   REQUIRE(count(database.connection(), "application_instance") == 0);
   REQUIRE(count(database.connection(), "guild_config") == 0);
   REQUIRE(count(database.connection(), "pending_notice") == 0);
@@ -60,6 +60,25 @@ TEST_CASE("production migration moves an empty database to version four",
   REQUIRE(count(database.connection(), "outbox_message") == 0);
   REQUIRE(count(database.connection(), "chronicle_entry") == 0);
   REQUIRE(count(database.connection(), "memory") == 0);
+  REQUIRE(count(database.connection(), "relationship_event") == 0);
+  REQUIRE(count(database.connection(), "relationship_state") == 0);
+  REQUIRE(count(database.connection(), "ai_prompt_attempt") == 0);
+  REQUIRE(count(database.connection(), "ai_prompt_attempt_memory") == 0);
+  auto relationship_indexes = database.connection().prepare(
+      "SELECT count(*) FROM sqlite_schema WHERE type='index' AND name IN ("
+      "'relationship_event_subject_time','relationship_event_source',"
+      "'relationship_event_reason_time','ai_prompt_attempt_prepared',"
+      "'ai_prompt_attempt_memory_cooldown','memory_prompt_candidates')");
+  REQUIRE(relationship_indexes.step());
+  REQUIRE(relationship_indexes.column_int64(0) == 6);
+  auto relationship_triggers = database.connection().prepare(
+      "SELECT count(*) FROM sqlite_schema WHERE type='trigger' AND name IN ("
+      "'relationship_event_no_update','relationship_event_no_delete',"
+      "'ai_prompt_attempt_transition_only','ai_prompt_attempt_no_delete',"
+      "'ai_prompt_attempt_memory_no_update',"
+      "'ai_prompt_attempt_memory_no_delete')");
+  REQUIRE(relationship_triggers.step());
+  REQUIRE(relationship_triggers.column_int64(0) == 6);
   auto chronicle_outbox_index = database.connection().prepare(
       "SELECT count(*) FROM sqlite_schema WHERE type='index' AND "
       "name='outbox_chronicle_aggregate_sequence'");
@@ -85,11 +104,15 @@ TEST_CASE("production migration moves an empty database to version four",
   REQUIRE(history.column_text(0) == "chronicle");
   REQUIRE(history.column_text(1).size() == 64);
   REQUIRE(history.column_int64(2) == 123'000);
+  REQUIRE(history.step());
+  REQUIRE(history.column_text(0) == "relationships");
+  REQUIRE(history.column_text(1).size() == 64);
+  REQUIRE(history.column_int64(2) == 123'000);
 
   clock.set(std::chrono::sys_seconds{std::chrono::seconds{456}});
   const auto repeated = migrator.apply(database.connection());
   REQUIRE(repeated.state == SchemaState::current);
-  REQUIRE(count(database.connection(), "schema_migrations") == 4);
+  REQUIRE(count(database.connection(), "schema_migrations") == 5);
   auto unchanged = database.connection().prepare(
       "SELECT applied_at_ms FROM schema_migrations");
   REQUIRE(unchanged.step());
@@ -123,7 +146,7 @@ TEST_CASE("migration metadata detects checksum gaps and newer schemas",
   database.connection().execute("DELETE FROM schema_migrations");
   database.connection().execute(
       "INSERT INTO schema_migrations VALUES "
-      "(5, 'future', "
+      "(6, 'future', "
       "'0000000000000000000000000000000000000000000000000000000000000000', "
       "0, 'future')");
   REQUIRE(migrator.inspect(database.connection()).state ==
@@ -145,11 +168,11 @@ TEST_CASE("production migration upgrades version one atomically",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::pending);
   REQUIRE(before.current_version == 1);
-  REQUIRE(before.pending_count == 3);
+  REQUIRE(before.pending_count == 4);
 
   const auto applied = migrator.apply(database.connection());
   REQUIRE(applied.state == SchemaState::current);
-  REQUIRE(applied.current_version == 4);
+  REQUIRE(applied.current_version == 5);
   REQUIRE(count(database.connection(), "pending_notice") == 0);
   REQUIRE(count(database.connection(), "interaction_token") == 0);
   REQUIRE(count(database.connection(), "notice_reveal_attempt") == 0);
@@ -170,8 +193,8 @@ TEST_CASE("production migration upgrades version two through Chronicle",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::pending);
   REQUIRE(before.current_version == 2);
-  REQUIRE(before.pending_count == 2);
-  REQUIRE(migrator.apply(database.connection()).current_version == 4);
+  REQUIRE(before.pending_count == 3);
+  REQUIRE(migrator.apply(database.connection()).current_version == 5);
   REQUIRE(count(database.connection(), "event_journal") == 0);
   REQUIRE(count(database.connection(), "scheduled_job") == 0);
   REQUIRE(count(database.connection(), "outbox_message") == 0);
@@ -193,8 +216,8 @@ TEST_CASE("version four imports existing Chronicle consent once",
       "INSERT INTO user_preference (user_id,updated_at_ms) VALUES ('42',1)");
 
   auto migrator = production_migrator(clock);
-  REQUIRE(migrator.inspect(database.connection()).pending_count == 1);
-  REQUIRE(migrator.apply(database.connection()).current_version == 4);
+  REQUIRE(migrator.inspect(database.connection()).pending_count == 2);
+  REQUIRE(migrator.apply(database.connection()).current_version == 5);
   auto imported = database.connection().prepare(
       "SELECT chronicle_opt_in,memory_callback_opt_in FROM user_preference "
       "WHERE user_id='42'");
@@ -212,6 +235,54 @@ TEST_CASE("version four imports existing Chronicle consent once",
   REQUIRE(future.step());
   REQUIRE(future.column_int64(0) == 0);
   REQUIRE(future.column_int64(1) == 0);
+}
+
+TEST_CASE("production migration upgrades version four to relationships atomically",
+          "[migration][relationship][rollback]") {
+  sanguinius::test::TemporaryDatabase temporary;
+  sanguinius::test::FakeClock clock;
+  auto database = Database::open_migration(temporary.path(), 25ms);
+  const auto production = sanguinius::persistence::production_migrations();
+  const Migrator version_four{std::span<const Migration>{production.data(), 4},
+                              {"test-version", "test-revision"}, clock};
+  REQUIRE(version_four.apply(database.connection()).current_version == 4);
+  database.connection().execute("INSERT INTO discord_user VALUES "
+                                "('42','Existing','existing',0,1,1,1,1)");
+  database.connection().execute(
+      "INSERT INTO user_preference (user_id,updated_at_ms) VALUES ('42',1)");
+
+  auto migrator = production_migrator(clock);
+  const auto pending = migrator.inspect(database.connection());
+  REQUIRE(pending.current_version == 4);
+  REQUIRE(pending.pending_count == 1);
+  REQUIRE(migrator.apply(database.connection()).current_version == 5);
+  REQUIRE(count(database.connection(), "relationship_event") == 0);
+  REQUIRE(count(database.connection(), "relationship_state") == 0);
+  REQUIRE(count(database.connection(), "ai_prompt_attempt") == 0);
+  REQUIRE(count(database.connection(), "discord_user") == 1);
+
+  sanguinius::test::TemporaryDatabase rollback_temporary;
+  auto rollback_database =
+      Database::open_migration(rollback_temporary.path(), 25ms);
+  REQUIRE(version_four.apply(rollback_database.connection()).current_version ==
+          4);
+  constexpr std::string_view checksum{
+      "0000000000000000000000000000000000000000000000000000000000000000"};
+  const std::array<Migration, 5> broken{
+      production[0], production[1], production[2], production[3],
+      Migration{5, "relationships", checksum,
+                "CREATE TABLE relationship_partial (id INTEGER) STRICT; "
+                "THIS IS NOT SQL;"}};
+  const Migrator broken_migrator{broken, {"test-version", "test-revision"},
+                                 clock};
+  REQUIRE_THROWS_AS(broken_migrator.apply(rollback_database.connection()),
+                    DatabaseError);
+  auto partial = rollback_database.connection().prepare(
+      "SELECT count(*) FROM sqlite_schema WHERE name='relationship_partial'");
+  REQUIRE(partial.step());
+  REQUIRE(partial.column_int64(0) == 0);
+  REQUIRE(version_four.inspect(rollback_database.connection()).state ==
+          SchemaState::current);
 }
 
 TEST_CASE("unmanaged schema and malformed migration table fail closed",

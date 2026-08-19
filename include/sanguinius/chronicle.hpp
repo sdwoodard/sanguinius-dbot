@@ -279,6 +279,7 @@ struct ChronicleMutationResult {
 
 struct MemoryDraft {
   std::string text;
+  std::vector<std::string> tags{};
   MemoryVisibility visibility{MemoryVisibility::shared};
   MemorySensitivity sensitivity{MemorySensitivity::ordinary};
   std::optional<std::int64_t> expires_at_ms{};
@@ -448,7 +449,8 @@ public:
                    ControlConfiguration controls,
                    std::function<void()> outbox_wakeup,
                    std::function<void()> scheduler_wakeup,
-                   std::size_t draft_capacity = 64);
+                   std::size_t draft_capacity = 64,
+                   std::function<void()> canon_observer = {});
 
   [[nodiscard]] ProposalResult
   canonize_message(const IncomingInteraction &interaction);
@@ -480,6 +482,7 @@ private:
   ControlConfiguration controls_;
   std::function<void()> outbox_wakeup_;
   std::function<void()> scheduler_wakeup_;
+  std::function<void()> canon_observer_;
   VolatileChronicleActions volatile_actions_;
 };
 

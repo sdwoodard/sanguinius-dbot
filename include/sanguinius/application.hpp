@@ -13,6 +13,7 @@
 #include "sanguinius/message_log.hpp"
 #include "sanguinius/persistent_id.hpp"
 #include "sanguinius/repositories.hpp"
+#include "sanguinius/relationships.hpp"
 #include "sanguinius/server_scope_policy.hpp"
 
 #include <chrono>
@@ -53,6 +54,7 @@ struct ApplicationDependencies {
   std::unique_ptr<PendingNoticeRepository> pending_notices;
   std::unique_ptr<DurableWorkRepository> durable_work;
   std::unique_ptr<ChronicleRepository> chronicle;
+  std::unique_ptr<RelationshipRepository> relationships;
   std::unique_ptr<AiClient> ai_client;
   std::unique_ptr<DiscordRuntime> discord;
 };

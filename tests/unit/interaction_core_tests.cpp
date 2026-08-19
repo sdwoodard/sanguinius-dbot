@@ -22,10 +22,10 @@ namespace {
 
 } // namespace
 
-TEST_CASE("command catalog version three is deterministic and feature gated",
+TEST_CASE("command catalog version four is deterministic and feature gated",
           "[interaction][commands]") {
   const auto public_catalog = sanguinius::command_catalog(false);
-  REQUIRE(public_catalog.version == 3);
+  REQUIRE(public_catalog.version == 4);
   REQUIRE(public_catalog.commands.size() == 1);
   REQUIRE(public_catalog.commands[0].name == "sanguinius");
   REQUIRE(public_catalog.commands[0].subcommands.size() == 3);
@@ -43,7 +43,7 @@ TEST_CASE("command catalog version three is deterministic and feature gated",
   const auto chronicle_catalog = sanguinius::command_catalog(false, true);
   REQUIRE(chronicle_catalog.commands.size() == 3);
   REQUIRE(chronicle_catalog.commands[1].name == "chronicle");
-  REQUIRE(chronicle_catalog.commands[1].subcommands.size() == 4);
+  REQUIRE(chronicle_catalog.commands[1].subcommands.size() == 6);
   REQUIRE(chronicle_catalog.commands[2].kind ==
           sanguinius::ApplicationCommandKind::message_context);
   REQUIRE(chronicle_catalog.commands[2].name ==

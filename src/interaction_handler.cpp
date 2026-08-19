@@ -64,9 +64,11 @@ InteractionHandler::InteractionHandler(
     HealthService &health_service, Diagnostics &diagnostics,
     const FeatureConfiguration features,
     std::function<QueueSnapshot()> message_queue,
-    std::function<QueueSnapshot()> ai_queue, const std::size_t queue_capacity)
+    std::function<QueueSnapshot()> ai_queue, const std::size_t queue_capacity,
+    RelationshipService *relationships)
     : identities_{identities}, notices_{notices}, clock_{clock},
       durable_controls_{durable_controls}, chronicle_{chronicle},
+      relationships_{relationships},
       health_service_{health_service},
       diagnostics_{diagnostics}, features_{features},
       message_queue_{std::move(message_queue)}, ai_queue_{std::move(ai_queue)},
@@ -187,6 +189,19 @@ void InteractionHandler::process(const RoutedInteraction &request) {
     if (!chronicle_) throw std::runtime_error{"Chronicle service is unavailable."};
     edit(request.interaction, chronicle_->forget(request.interaction),
          "interaction.chronicle_forget");
+    return;
+  case InteractionOperation::chronicle_profile:
+    if (!relationships_)
+      throw std::runtime_error{"Relationship service is unavailable."};
+    edit(request.interaction, relationships_->profile(request.interaction),
+         "interaction.chronicle_profile");
+    return;
+  case InteractionOperation::chronicle_callbacks:
+    if (!relationships_)
+      throw std::runtime_error{"Relationship service is unavailable."};
+    edit(request.interaction,
+         relationships_->set_memory_callbacks(request.interaction),
+         "interaction.chronicle_callbacks");
     return;
   case InteractionOperation::chronicle_edit:
     if (!chronicle_) throw std::runtime_error{"Chronicle service is unavailable."};

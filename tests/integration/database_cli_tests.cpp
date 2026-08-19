@@ -56,7 +56,7 @@ TEST_CASE(
           temporary.path(), clock);
   REQUIRE(migrated.exit_code == 0);
   REQUIRE(migrated.output.find("database=current") != std::string::npos);
-  REQUIRE(migrated.output.find("current_schema=4") != std::string::npos);
+  REQUIRE(migrated.output.find("current_schema=5") != std::string::npos);
 
   const auto checked =
       run({sanguinius::DatabaseCommandType::check, std::nullopt},
@@ -69,6 +69,19 @@ TEST_CASE(
           temporary.path(), clock);
   REQUIRE(integrity.exit_code == 0);
   REQUIRE(integrity.output == "integrity=ok\nforeign_keys=ok\n");
+
+  const auto relationships = run(
+      {sanguinius::DatabaseCommandType::relationships_check, std::nullopt},
+      temporary.path(), clock);
+  REQUIRE(relationships.exit_code == 0);
+  REQUIRE(relationships.output ==
+          "relationships=ok\nevents=0\nprojections=0\nmismatches=0\n");
+  const auto rebuilt = run(
+      {sanguinius::DatabaseCommandType::relationships_rebuild, std::nullopt},
+      temporary.path(), clock);
+  REQUIRE(rebuilt.exit_code == 0);
+  REQUIRE(rebuilt.output ==
+          "relationships=rebuilt\nevents=0\nprojections=0\nmismatches=0\n");
 
   const auto backed_up = run({sanguinius::DatabaseCommandType::backup, backup},
                              temporary.path(), clock);

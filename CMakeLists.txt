@@ -55,6 +55,7 @@ sanguinius_embed_migrations(
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0002_discord_interactions.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0003_durable_work.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0004_chronicle.sql"
+    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0005_relationships.sql"
 )
 
 function(sanguinius_enable_warnings target)
@@ -96,6 +97,8 @@ add_library(sanguinius_core STATIC
     src/outbox.cpp
     src/pending_notice.cpp
     src/persistent_id.cpp
+    src/prompt_compiler.cpp
+    src/relationships.cpp
     src/repositories.cpp
     src/scheduler.cpp
     src/server_scope_policy.cpp
@@ -124,6 +127,7 @@ add_library(sanguinius_persistence STATIC
     src/persistence/sqlite.cpp
     src/persistence/sqlite_chronicle_repository.cpp
     src/persistence/sqlite_durable_work_repository.cpp
+    src/persistence/sqlite_relationship_repository.cpp
     src/persistence/sqlite_repositories.cpp
     src/persistence/transaction.cpp
 )
@@ -196,6 +200,7 @@ if(BUILD_TESTING)
         tests/unit/mention_parse_tests.cpp
         tests/unit/message_logger_tests.cpp
         tests/unit/owner_admin_tests.cpp
+        tests/unit/relationship_tests.cpp
         tests/unit/server_scope_policy_tests.cpp
         tests/unit/snowflake_tests.cpp
         tests/unit/work_queue_tests.cpp
@@ -213,6 +218,7 @@ if(BUILD_TESTING)
         tests/integration/durable_work_tests.cpp
         tests/integration/migration_tests.cpp
         tests/integration/repository_tests.cpp
+        tests/integration/relationship_repository_tests.cpp
         tests/integration/sqlite_tests.cpp
         tests/unit/persistent_id_tests.cpp
     )

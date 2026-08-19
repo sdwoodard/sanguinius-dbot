@@ -3,6 +3,7 @@
 #include "sanguinius/persistence/backup.hpp"
 #include "sanguinius/persistence/database.hpp"
 #include "sanguinius/persistence/migrator.hpp"
+#include "sanguinius/persistence/sqlite_relationship_repository.hpp"
 
 #include <filesystem>
 #include <ostream>
@@ -116,6 +117,32 @@ int run_database_command(const DatabaseCommand &command,
              << persistence::schema_state_name(result.migration.state) << '\n'
              << "schema=" << result.migration.current_version << '\n'
              << "size_bytes=" << result.size_bytes << '\n';
+      return 0;
+    }
+    case DatabaseCommandType::relationships_check: {
+      auto opened = Database::open_inspection(database);
+      migrator.require_current(opened.connection());
+      auto context = std::make_shared<persistence::SqliteRepositoryContext>(
+          std::move(opened));
+      persistence::SqliteRelationshipRepository relationships{context};
+      const auto result = relationships.check_projection();
+      output << "relationships=" << (result.valid ? "ok" : "drift") << '\n'
+             << "events=" << result.event_count << '\n'
+             << "projections=" << result.projection_count << '\n'
+             << "mismatches=" << result.mismatch_count << '\n';
+      return result.valid ? 0 : 1;
+    }
+    case DatabaseCommandType::relationships_rebuild: {
+      auto opened = Database::open_migration(database);
+      migrator.require_current(opened.connection());
+      auto context = std::make_shared<persistence::SqliteRepositoryContext>(
+          std::move(opened));
+      persistence::SqliteRelationshipRepository relationships{context};
+      const auto result = relationships.rebuild_projection();
+      output << "relationships=rebuilt\n"
+             << "events=" << result.event_count << '\n'
+             << "projections=" << result.projection_count << '\n'
+             << "mismatches=" << result.mismatch_count << '\n';
       return 0;
     }
     }

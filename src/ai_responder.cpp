@@ -7,18 +7,7 @@ namespace sanguinius {
 namespace {
 
 constexpr std::size_t history_size = 8;
-constexpr std::size_t maximum_context_message_size = 1'200;
 constexpr std::size_t maximum_discord_reply_size = 1'900;
-
-[[nodiscard]] std::string display_name(const ConversationEntry &message) {
-  return message.author_display_name.empty() ? message.author_username
-                                             : message.author_display_name;
-}
-
-[[nodiscard]] std::string display_name(const IncomingMessage &message) {
-  return message.author_display_name.empty() ? message.author_username
-                                             : message.author_display_name;
-}
 
 [[nodiscard]] std::string limited(const std::string_view text,
                                   const std::size_t maximum_size) {
@@ -32,11 +21,6 @@ constexpr std::size_t maximum_discord_reply_size = 1'900;
     --end;
   }
   return std::string{text.substr(0, end)} + "…";
-}
-
-[[nodiscard]] std::string context_line(const ConversationEntry &message) {
-  return display_name(message) + ": " +
-         limited(message.content, maximum_context_message_size);
 }
 
 [[nodiscard]] ReplyRequest reply_to(const IncomingMessage &message,
@@ -85,9 +69,12 @@ AiResponder::AiResponder(const AiClient &client,
                          DiscordTextDelivery &delivery,
                          Diagnostics &diagnostics, std::string persona,
                          const std::size_t queue_capacity,
-                         const std::size_t worker_count)
+                         const std::size_t worker_count,
+                         RelationshipService *relationships,
+                         const FeatureConfiguration features)
     : client_{client}, conversation_{conversation}, delivery_{delivery},
-      diagnostics_{diagnostics}, persona_{std::move(persona)},
+      diagnostics_{diagnostics}, compiler_{std::move(persona)},
+      relationships_{relationships}, features_{features},
       workers_{queue_capacity, worker_count} {}
 
 AiResponder::~AiResponder() { stop(); }
@@ -157,15 +144,68 @@ void AiResponder::respond(const IncomingMessage &message,
                        error.what(), message.correlation_id});
   }
 
-  const auto prompt = create_prompt(message, recent, replied);
-  AiRequest request{
-      .instructions = persona_,
-      .conversation = {{"user", prompt}},
-      .max_output_tokens = 500,
-  };
-  auto response = client_.generate(request, stop_token);
+  const auto current_request =
+      prompt_after_bot_mention(message.content, message.bot_user_id).value_or("");
+  PreparedPromptContext social;
+  if (relationships_ != nullptr) {
+    social = relationships_->prepare_prompt(
+        message, current_request, replied ? replied->content : std::string{});
+    if (social.status == PromptPreparationStatus::duplicate) return;
+  }
+  const auto fail_attempt =
+      [this, &message, &social](const std::string_view outcome,
+                               const std::string_view error_code) noexcept {
+        if (!social.attempt_id || relationships_ == nullptr) return;
+        try {
+          static_cast<void>(relationships_->fail_prompt(
+              *social.attempt_id, outcome, error_code));
+        } catch (const std::exception &error) {
+          diagnostics_.emit({DiagnosticSeverity::error, "ai.prompt_attempt",
+                             error.what(), message.correlation_id});
+        } catch (...) {
+          diagnostics_.emit(
+              {DiagnosticSeverity::error, "ai.prompt_attempt",
+               "Unknown prompt-attempt finalization failure.",
+               message.correlation_id});
+        }
+      };
+  AiRequest request;
+  try {
+    request = compiler_.compile(PromptCompilerInput{
+        .message = message,
+        .current_request = current_request,
+        .recent = std::move(recent),
+        .replied = replied,
+        .social = social,
+        .features = features_,
+    });
+  } catch (...) {
+    fail_attempt("model_failed", "compilation_failed");
+    throw;
+  }
+  std::string response;
+  try {
+    response = client_.generate(request, stop_token);
+  } catch (const OperationCancelled &) {
+    fail_attempt("cancelled", "shutdown");
+    throw;
+  } catch (...) {
+    fail_attempt("model_failed", "generation_failed");
+    throw;
+  }
   if (stop_token.stop_requested()) {
+    fail_attempt("cancelled", "shutdown");
     throw OperationCancelled{};
+  }
+  if (social.attempt_id && relationships_ != nullptr) {
+    PromptFinalizationStatus finalized;
+    try {
+      finalized = relationships_->complete_prompt(*social.attempt_id);
+    } catch (...) {
+      fail_attempt("model_failed", "finalization_failed");
+      throw;
+    }
+    if (finalized != PromptFinalizationStatus::applied) return;
   }
   response = limited(response, maximum_discord_reply_size);
   delivery_.reply(reply_to(message, std::move(response)));
@@ -190,33 +230,6 @@ AiResponder::replied_message(const IncomingMessage &message,
                               ? message.channel_id
                               : message.replied_to->channel_id;
   return conversation_.message(reply_id, channel_id, stop_token);
-}
-
-std::string AiResponder::create_prompt(
-    const IncomingMessage &message,
-    const std::vector<ConversationEntry> &recent,
-    const std::optional<ConversationEntry> &replied) const {
-  std::string prompt{
-      "Discord conversation context follows. It may be unrelated; use only "
-      "what is relevant.\n"};
-  if (!recent.empty()) {
-    prompt += "\nRecent messages (oldest first):\n";
-    for (const auto &item : recent) {
-      prompt += context_line(item) + '\n';
-    }
-  }
-  if (replied.has_value()) {
-    prompt += "\nMessage explicitly being replied to:\n" +
-              context_line(*replied) + '\n';
-  }
-
-  const auto user_prompt =
-      prompt_after_bot_mention(message.content, message.bot_user_id)
-          .value_or("");
-  prompt += "\nLatest request from " + display_name(message) + ":\n" +
-            (user_prompt.empty() ? "Please respond to the conversation."
-                                 : user_prompt);
-  return prompt;
 }
 
 } // namespace sanguinius

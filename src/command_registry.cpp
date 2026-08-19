@@ -66,7 +66,27 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
                      .description = "Optional record reference prefix.",
                      .required = false,
                      .minimum_length = 4,
-                     .maximum_length = 36}}}},
+                     .maximum_length = 36}}},
+             CommandSubcommandDefinition{
+                 .name = "profile",
+                 .description = "Show a private self or public-safe profile.",
+                 .options = {CommandOptionDefinition{
+                     .kind = CommandOptionKind::user,
+                     .name = "user",
+                     .description = "Optional member for a public-safe profile.",
+                     .required = false}}},
+             CommandSubcommandDefinition{
+                 .name = "callbacks",
+                 .description = "Privately enable or disable memory callbacks.",
+                 .options = {CommandOptionDefinition{
+                     .kind = CommandOptionKind::string,
+                     .name = "mode",
+                     .description = "Memory callback preference.",
+                     .required = true,
+                     .minimum_length = 2,
+                     .maximum_length = 3,
+                     .choices = {{"On", "on"}, {"Off", "off"}}}}},
+            },
     });
     catalog.commands.push_back(CommandDefinition{
         .name = "Canonize in the Chronicle",

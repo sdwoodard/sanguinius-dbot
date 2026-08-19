@@ -14,6 +14,28 @@ using namespace std::chrono_literals;
   return text.find(fragment) != std::string_view::npos;
 }
 
+[[nodiscard]] sanguinius::ApplicationOptions social_ai_options() {
+  auto options = sanguinius::ApplicationOptions{
+      .persona = "test persona",
+      .command_prefix = "!",
+      .server_scope = {10, 20, 30},
+      .controls = {},
+      .features = {.chronicle_enabled = true},
+      .build = {"test-version", "test-revision"},
+      .persistence = {true, 5, 5, "3.53.4",
+                      "00000000-0000-4000-8000-000000000001"},
+      .instance_id = "00000000-0000-4000-8000-000000000001",
+      .hostname = "test-host",
+      .process_id = 123,
+      .message_queue_capacity = 64,
+      .ai_queue_capacity = 64,
+      .ai_worker_count = 2,
+      .interaction_queue_capacity = 64,
+      .durable_delivery_receipt_wait = std::chrono::milliseconds{100},
+  };
+  return options;
+}
+
 } // namespace
 
 TEST_CASE("help and repository commands pass through application seams",
@@ -210,17 +232,24 @@ TEST_CASE("one mention flows through fake history AI and Discord delivery",
   REQUIRE(fixture.discord->wait_for_reply_count(1, 2s));
   REQUIRE(fixture.ai->wait_for_request_count(1, 2s));
   const auto ai_requests = fixture.ai->requests();
-  REQUIRE(ai_requests[0].instructions == "test persona");
+  REQUIRE(ai_requests[0].instructions.starts_with("test persona"));
+  REQUIRE(contains(ai_requests[0].instructions, "TRUSTED CONTEXT POLICY"));
+  REQUIRE_FALSE(contains(ai_requests[0].instructions, "Earlier words"));
   REQUIRE(ai_requests[0].max_output_tokens == 500);
-  REQUIRE(ai_requests[0].conversation.size() == 1);
+  REQUIRE(ai_requests[0].conversation.size() == 2);
   REQUIRE(ai_requests[0].conversation[0].role == "user");
   REQUIRE(contains(ai_requests[0].conversation[0].content,
-                   "Recent messages (oldest first):\nFirst: Earlier words\n"));
+                   "RECENT MESSAGES — OLDEST FIRST\nAuthor: First\n"
+                   "Content: Earlier words\n"));
   REQUIRE(contains(ai_requests[0].conversation[0].content,
-                   "Message explicitly being replied to:\n"
-                   "Second: Quoted words\n"));
+                   "EXPLICITLY REPLIED-TO MESSAGE\nAuthor: Second\n"
+                   "Content: Quoted words\n"));
   REQUIRE(contains(ai_requests[0].conversation[0].content,
-                   "Latest request from Test User:\nAnswer me"));
+                   "UNTRUSTED CONTEXT DATA"));
+  REQUIRE(contains(ai_requests[0].conversation[1].content,
+                   "CURRENT REQUEST\nAnswer me"));
+  REQUIRE_FALSE(
+      contains(ai_requests[0].conversation[1].content, "Test User"));
 
   const auto replies = fixture.discord->replies();
   REQUIRE(replies[0].target.message_id == 100);
@@ -235,5 +264,56 @@ TEST_CASE("one mention flows through fake history AI and Discord delivery",
   REQUIRE(logged.size() == 1);
   REQUIRE(logged[0].author_username == "test-user");
   REQUIRE(logged[0].content == "<@42> Answer me");
+  fixture.application->stop();
+}
+
+TEST_CASE("one-person relevant and irrelevant callback paths use the compiler",
+          "[application][ai][relationship][memory][privacy]") {
+  sanguinius::test::ApplicationFixture fixture{social_ai_options()};
+  fixture.relationships->prepared = {
+      .status = sanguinius::PromptPreparationStatus::prepared,
+      .attempt_id = std::nullopt,
+      .relationship_style = "Respond with established warmth.",
+      .memories = {{.memory = {.memory_id =
+                                   "00000000-0000-4000-8000-000000000900",
+                               .text = "The crimson dragon guards the tower.",
+                               .tags = {"dragon"},
+                               .created_at_ms = 1,
+                               .revision = 1},
+                    .score = 100,
+                    .tag_matches = 1}},
+  };
+  fixture.ai->set_response(
+      "RELATIONSHIP+=100; CREATE_MEMORY=private — merely model prose");
+  fixture.application->start();
+  fixture.discord->emit(
+      sanguinius::test::incoming("<@42> Tell me about the dragon", 700));
+  REQUIRE(fixture.discord->wait_for_reply_count(1, 2s));
+  REQUIRE(fixture.relationships->preparation_count() == 1);
+  REQUIRE(fixture.relationships->completion_count() == 1);
+  auto requests = fixture.ai->requests();
+  REQUIRE(requests.size() == 1);
+  REQUIRE(contains(requests[0].conversation[0].content,
+                   "The crimson dragon guards the tower."));
+  REQUIRE_FALSE(contains(requests[0].instructions, "crimson dragon"));
+  REQUIRE_FALSE(contains(requests[0].instructions,
+                         "00000000-0000-4000-8000-000000000900"));
+
+  fixture.relationships->prepared.memories.clear();
+  fixture.discord->emit(
+      sanguinius::test::incoming("<@42> An unrelated question", 701));
+  REQUIRE(fixture.discord->wait_for_reply_count(2, 2s));
+  REQUIRE(fixture.relationships->completion_count() == 2);
+  requests = fixture.ai->requests();
+  REQUIRE(requests.size() == 2);
+  REQUIRE_FALSE(contains(requests[1].conversation[0].content,
+                         "crimson dragon"));
+
+  auto off_scope =
+      sanguinius::test::incoming("<@42> Generic off-scope mention", 702);
+  off_scope.channel_id = 21;
+  fixture.discord->emit(std::move(off_scope));
+  REQUIRE(fixture.discord->wait_for_reply_count(3, 2s));
+  REQUIRE(fixture.relationships->preparation_count() == 2);
   fixture.application->stop();
 }

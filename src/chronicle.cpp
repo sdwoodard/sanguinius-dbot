@@ -701,11 +701,13 @@ ChronicleService::ChronicleService(
     ChronicleRepository &repository, const Clock &clock,
     PersistentIdGenerator &ids, ServerScopeConfiguration scope,
     ControlConfiguration controls, std::function<void()> outbox_wakeup,
-    std::function<void()> scheduler_wakeup, const std::size_t draft_capacity)
+    std::function<void()> scheduler_wakeup, const std::size_t draft_capacity,
+    std::function<void()> canon_observer)
     : repository_{repository}, clock_{clock}, ids_{ids},
       scope_{std::move(scope)}, controls_{controls},
       outbox_wakeup_{std::move(outbox_wakeup)},
       scheduler_wakeup_{std::move(scheduler_wakeup)},
+      canon_observer_{std::move(canon_observer)},
       volatile_actions_{draft_capacity, [clock_pointer = &clock] {
                           return unix_milliseconds(*clock_pointer);
                         }} {}
@@ -861,6 +863,12 @@ ChronicleService::submit_proposal(const IncomingInteraction &interaction) {
   });
   if (result.wake_outbox && outbox_wakeup_)
     outbox_wakeup_();
+  if (result.became_canon && canon_observer_) {
+    try {
+      canon_observer_();
+    } catch (...) {
+    }
+  }
   return result;
 }
 
@@ -888,6 +896,12 @@ ChronicleService::apply_component(const IncomingInteraction &interaction) {
     });
     if (result.wake_outbox && outbox_wakeup_)
       outbox_wakeup_();
+    if (result.became_canon && canon_observer_) {
+      try {
+        canon_observer_();
+      } catch (...) {
+      }
+    }
     return result;
   }
 
@@ -969,8 +983,12 @@ ChronicleService::complete_expiry(const ClaimedScheduledJob &job) {
 
 InteractionMessage
 ChronicleService::begin_memory_preview(const IncomingInteraction &interaction) {
-  if (!exact_modal_fields(interaction,
-                          {"text", "visibility", "sensitivity", "expiry"})) {
+  const bool base_fields =
+      exact_modal_fields(interaction,
+                         {"text", "visibility", "sensitivity", "expiry"});
+  const bool tagged_fields = exact_modal_fields(
+      interaction, {"text", "tags", "visibility", "sensitivity", "expiry"});
+  if (!base_fields && !tagged_fields) {
     return text_message("The memory preview fields are invalid.");
   }
   const auto text = field(interaction, "text");
@@ -984,6 +1002,14 @@ ChronicleService::begin_memory_preview(const IncomingInteraction &interaction) {
   if (!text || !valid_chronicle_text(*text, maximum_memory_text_size) ||
       !visibility || !sensitivity) {
     return text_message("The memory preview is invalid or exceeds its bounds.");
+  }
+  std::vector<std::string> tags;
+  try {
+    tags = parse_chronicle_tags(field(interaction, "tags").value_or(""));
+  } catch (const std::invalid_argument &) {
+    return text_message(
+        "Use at most five unique topic tags made of lowercase letters, "
+        "numbers, `_`, or `-`.");
   }
   const auto now_ms = unix_milliseconds(clock_);
   std::int64_t expiry{};
@@ -1005,6 +1031,7 @@ ChronicleService::begin_memory_preview(const IncomingInteraction &interaction) {
       std::chrono::duration_cast<std::chrono::milliseconds>(preview_lifetime)
           .count();
   const MemoryDraft draft{.text = *text,
+                          .tags = tags,
                           .visibility = effective_visibility,
                           .sensitivity = *sensitivity,
                           .expires_at_ms = expiry == 0 ? std::nullopt
@@ -1032,11 +1059,20 @@ ChronicleService::begin_memory_preview(const IncomingInteraction &interaction) {
                                    .group_id = group,
                                });
   volatile_actions_.put_group(std::move(actions));
+  std::string tag_line;
+  if (!tags.empty()) {
+    tag_line = "\nTopic tags: `";
+    for (std::size_t index = 0; index < tags.size(); ++index) {
+      if (index != 0) tag_line += "`, `";
+      tag_line += tags[index];
+    }
+    tag_line += "`.";
+  }
   return InteractionMessage{
       .content = "**Memory preview**\n" + *text + "\nVisibility: `" +
                  memory_visibility_name(effective_visibility) +
                  "`; sensitivity: `" + memory_sensitivity_name(*sensitivity) +
-                 "`." +
+                 "`." + tag_line +
                  (coerced ? " Sensitive/personal memories are self-only." : ""),
       .embed = std::nullopt,
       .buttons = {ButtonPayload{.custom_id = make_chronicle_component(
@@ -1181,6 +1217,10 @@ ModalPayload ChronicleService::remember_modal() {
                                    .maximum_length = maximum_memory_text_size,
                                    .style =
                                        ModalFieldPayload::Style::paragraph},
+                 ModalFieldPayload{.custom_id = "tags",
+                                   .label = "Optional topic tags, comma-separated",
+                                   .maximum_length = 164,
+                                   .required = false},
                  ModalFieldPayload{.custom_id = "visibility",
                                    .label = "Visibility: shared or self_only",
                                    .value = "shared",

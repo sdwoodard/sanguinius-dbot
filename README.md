@@ -15,7 +15,7 @@ bot's feature boundary to one guild, one primary text channel, and one owner.
 | `!help` | List the supported commands. |
 | `!repo` | Link to this source repository. |
 
-The configured guild receives command catalog version 3. Chronicle commands
+The configured guild receives command catalog version 4. Chronicle commands
 are registered only when `SANGUINIUS_CHRONICLE_ENABLED=true`; owner commands
 remain separately gated:
 
@@ -25,10 +25,12 @@ remain separately gated:
 | `/sanguinius inbox` | Ephemerally opens the oldest pending sealed notice. Duplicate Discord interaction IDs replay the same result. |
 | `/sanguinius privacy` | Ephemeral identity/preference, voice-input, no-DM, and raw-voice-retention summary. |
 | **Canonize in the Chronicle** | Message context action that privately previews a bounded proposal, then requests sealed participant approval before canon. |
-| `/chronicle remember` | Opens a modal and ephemeral confirm/cancel preview for an explicit memory. Unconfirmed drafts are memory-only and disappear on restart. |
+| `/chronicle remember` | Opens a modal and ephemeral confirm/cancel preview for an explicit memory, with up to five optional lowercase topic tags. Unconfirmed drafts are memory-only and disappear on restart. |
 | `/chronicle recall [query]` | Ephemerally returns up to five canon entries or explicit memories visible to the invoker. |
 | `/chronicle timeline [period]` | Publicly lists up to five shared canon entries for `7d`, `30d`, or `all`. |
 | `/chronicle forget [reference]` | With a unique reference, retracts directly without components; otherwise ephemerally lists controllable records with short-lived controls. |
+| `/chronicle profile [user]` | Shows qualitative relationship continuity ephemerally for self. Another member's profile is public and contains only shared canon counts/headings. |
+| `/chronicle callbacks <on\|off>` | Ephemerally enables or disables relevant confirmed-memory callbacks. Enabling requires Chronicle opt-in; disabling is always allowed. |
 | `/sang-admin health` | Ephemeral owner-only health; registered only when admin commands are enabled. |
 | `/sang-admin work-recent` | Ephemeral owner-only inspection of the ten most recent redacted event/job/outbox summaries. |
 | `/sang-admin work-dead` | Ephemeral owner-only inspection of the ten most recent dead jobs and failed/dead outbox rows. |
@@ -58,7 +60,10 @@ metadata—never attachment bytes, URLs, embeds, or surrounding history. Shared
 canon and retraction cards are public; recall, memory previews, management,
 and personal content are ephemeral. Participant-only entries and all explicit
 memories produce no public content. Sensitive or personal memories are forced
-to self-only visibility. Milestone 6 does not inject memories into AI prompts.
+to self-only visibility. Automatic AI callbacks are separately opt-in and can
+use only confirmed, ordinary, shared memories whose sole user subject is the
+requester. Relevant successful uses have a rolling seven-day per-memory
+cooldown; failed or cancelled model calls do not consume it.
 
 To talk to the AI persona, mention the bot at the start of a message:
 
@@ -66,8 +71,13 @@ To talk to the AI persona, mention the bot at the start of a message:
 @sanguinius What is your favorite color?
 ```
 
-The bot supplies the replied-to message, when present, plus up to eight recent
-messages from the same channel as optional context. The persona is defined in
+The bot compiles immutable persona/privacy instructions, qualitative style,
+feature state, up to three deterministically relevant confirmed memories, the
+up to eight recent messages, and the replied-to message into separately labeled
+layers. Quoted names, memories, and Discord history are untrusted data, never
+instructions. Outside the configured primary channel, the same bounded
+persona/history compiler runs without Chronicle reads, prompt audits,
+callbacks, or relationship writes. The persona is defined in
 [`config/persona.txt`](config/persona.txt). Two AI workers process requests in
 parallel, while bounded 64-item application and AI queues prevent an influx of
 messages from consuming unlimited memory. Message logging, command routing, and
@@ -218,6 +228,8 @@ credentials, or contact the network:
 ./build/release/sanguinius db migrate
 ./build/release/sanguinius db check
 ./build/release/sanguinius db integrity
+./build/release/sanguinius db relationships check
+./build/release/sanguinius db relationships rebuild --confirm
 ./build/release/sanguinius db backup /restricted/backup/sanguinius.sqlite3
 ```
 
@@ -228,6 +240,10 @@ exact embedded schema and WAL mode. `db migrate` is the only command allowed to
 create a database, enable WAL, or apply forward migrations; stop the bot first
 because migration takes the exclusive database sidecar lock. Normal startup
 never creates or upgrades the schema.
+`db relationships check` reconstructs the relationship projection from its
+append-only event chain and prints only counts/status. The guarded rebuild
+replaces only that projection under the offline exclusive database lock and
+verifies the result before committing.
 
 Migration `0001_core_foundation` contains only shared identity and
 configuration state: migration history, application instances, Discord users,
@@ -251,6 +267,12 @@ users already represented by `user_preference`; identities first seen later
 remain opted out, and memory callbacks remain off. Source identity stays
 unique after retraction, expiry jobs are durable, and private prose is absent
 from journal payloads and public outbox rows.
+Migration `0005_relationships` adds append-only bounded relationship events,
+their rebuildable projection, and privacy-minimal AI prompt-attempt/memory-use
+audits. It stores no compiled prompts, Discord context, memory-text copies, or
+model output. Startup abandons prior-process reservations, catches up eligible
+historical canon sources, and fails closed if projection verification detects
+drift.
 The readable SQL for each ordered migration is
 embedded independently with its SHA-256
 checksum. Applied history must be ordered, contiguous, and byte-for-byte
@@ -366,6 +388,13 @@ safe error categories. Inspection and health never render payloads or notice
 content.
 
 AI mentions use a separate two-thread pool with its own bounded 64-item queue.
+For primary-channel opted-in users, preparation and memory reservation are one
+SQLite transaction keyed by the source Discord message. Only a successful
+model call can transactionally update memory-use projections and append the
+deterministic direct-interaction relationship event. Model output is never
+accepted by a relationship or memory mutation API. Relationship dimensions,
+thresholds, preferences, and internal IDs are absent from prompts and Discord
+output; profiles render fixed qualitative phrases instead.
 Each OpenAI request has a connection timeout and an overall timeout, and
 responses are truncated safely below Discord's message-size limit.
 Reply-context lookup requires the bot's **Read Message History** permission. If
@@ -414,7 +443,8 @@ restricts the message log to its owning user. Example:
 2026-07-17T10:22:05-04:00 author="user" message="hello\nworld"
 ```
 
-The log contains user-generated content and usernames, and AI prompts send a
-small amount of recent Discord conversation to OpenAI. Restrict access,
-establish a retention policy, and disclose both practices to server members as
-required by your policies and applicable law.
+The log contains user-generated content and usernames. AI prompts send bounded
+recent/replied Discord context to OpenAI and, only when the requester has opted
+in, may also send a small selection of relevant confirmed ordinary shared
+memories. Restrict access, establish a retention policy, and disclose these
+practices to server members as required by your policies and applicable law.

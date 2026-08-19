@@ -15,6 +15,27 @@ using namespace std::chrono_literals;
   return text.find(fragment) != std::string_view::npos;
 }
 
+[[nodiscard]] sanguinius::ApplicationOptions social_ai_options() {
+  return sanguinius::ApplicationOptions{
+      .persona = "test persona",
+      .command_prefix = "!",
+      .server_scope = {10, 20, 30},
+      .controls = {},
+      .features = {.chronicle_enabled = true},
+      .build = {"test-version", "test-revision"},
+      .persistence = {true, 5, 5, "3.53.4",
+                      "00000000-0000-4000-8000-000000000001"},
+      .instance_id = "00000000-0000-4000-8000-000000000001",
+      .hostname = "test-host",
+      .process_id = 123,
+      .message_queue_capacity = 64,
+      .ai_queue_capacity = 64,
+      .ai_worker_count = 1,
+      .interaction_queue_capacity = 64,
+      .durable_delivery_receipt_wait = std::chrono::milliseconds{100},
+  };
+}
+
 } // namespace
 
 TEST_CASE("AI failure preserves public fallback and diagnostic category",
@@ -34,6 +55,39 @@ TEST_CASE("AI failure preserves public fallback and diagnostic category",
   fixture.application->stop();
 }
 
+TEST_CASE("prompt completion failure releases the prepared reservation",
+          "[application][failure][relationship]") {
+  sanguinius::test::ApplicationFixture fixture{social_ai_options()};
+  fixture.relationships->prepared.status =
+      sanguinius::PromptPreparationStatus::prepared;
+  fixture.relationships->throw_on_completion = true;
+  fixture.application->start();
+  fixture.discord->emit(sanguinius::test::incoming("<@42> speak", 80));
+
+  REQUIRE(fixture.discord->wait_for_reply_count(1, 2s));
+  REQUIRE(fixture.relationships->completion_count() == 1);
+  REQUIRE(fixture.relationships->failure_count() == 1);
+  REQUIRE(fixture.diagnostics->contains_category("ai.response"));
+  fixture.application->stop();
+}
+
+TEST_CASE("prompt transition failures are diagnosed without masking fallback",
+          "[application][failure][relationship]") {
+  sanguinius::test::ApplicationFixture fixture{social_ai_options()};
+  fixture.relationships->prepared.status =
+      sanguinius::PromptPreparationStatus::prepared;
+  fixture.relationships->throw_on_failure = true;
+  fixture.ai->fail();
+  fixture.application->start();
+  fixture.discord->emit(sanguinius::test::incoming("<@42> speak", 81));
+
+  REQUIRE(fixture.discord->wait_for_reply_count(1, 2s));
+  REQUIRE(fixture.relationships->failure_count() == 1);
+  REQUIRE(fixture.diagnostics->contains_category("ai.prompt_attempt"));
+  REQUIRE(fixture.diagnostics->contains_category("ai.response"));
+  fixture.application->stop();
+}
+
 TEST_CASE("history failure still generates from the triggering request",
           "[application][failure]") {
   sanguinius::test::ApplicationFixture fixture;
@@ -45,10 +99,14 @@ TEST_CASE("history failure still generates from the triggering request",
   REQUIRE(fixture.discord->wait_for_reply_count(1, 2s));
   const auto requests = fixture.ai->requests();
   REQUIRE(requests.size() == 1);
+  REQUIRE(contains(requests[0].conversation[1].content,
+                   "CURRENT REQUEST\nlatest request"));
+  REQUIRE_FALSE(
+      contains(requests[0].conversation[1].content, "Test User"));
   REQUIRE(contains(requests[0].conversation[0].content,
-                   "Latest request from Test User:\nlatest request"));
+                   "CURRENT REQUEST AUTHOR METADATA\nDisplay name: Test User"));
   REQUIRE_FALSE(contains(requests[0].conversation[0].content,
-                         "Recent messages (oldest first):"));
+                         "RECENT MESSAGES — OLDEST FIRST"));
   REQUIRE(fixture.diagnostics->contains_category("discord.history"));
   fixture.application->stop();
 }

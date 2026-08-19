@@ -22,6 +22,9 @@ void print_usage(std::ostream &stream, const std::string_view executable) {
   stream << "Usage: " << executable << " [--check-config|--help]\n"
          << "       " << executable << " db <status|check|migrate|integrity>\n"
          << "       " << executable << " db backup <destination>\n"
+         << "       " << executable << " db relationships check\n"
+         << "       " << executable
+         << " db relationships rebuild --confirm\n"
          << "       " << executable << " discord commands sync\n"
          << "       " << executable << " discord commands clear --confirm\n";
 }
@@ -55,6 +58,17 @@ database_command(const int argc, char **argv) {
     }
     return sanguinius::DatabaseCommand{sanguinius::DatabaseCommandType::backup,
                                        destination};
+  }
+  if (argc == 4 && operation == "relationships" &&
+      std::string_view{argv[3]} == "check") {
+    return sanguinius::DatabaseCommand{
+        sanguinius::DatabaseCommandType::relationships_check, std::nullopt};
+  }
+  if (argc == 5 && operation == "relationships" &&
+      std::string_view{argv[3]} == "rebuild" &&
+      std::string_view{argv[4]} == "--confirm") {
+    return sanguinius::DatabaseCommand{
+        sanguinius::DatabaseCommandType::relationships_rebuild, std::nullopt};
   }
   return std::nullopt;
 }

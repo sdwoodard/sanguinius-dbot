@@ -45,8 +45,8 @@ admin_options(const std::size_t interaction_capacity = 64) {
 [[nodiscard]] sanguinius::ApplicationOptions chronicle_options() {
   auto options = admin_options();
   options.features.chronicle_enabled = true;
-  options.persistence.schema_version = 4;
-  options.persistence.target_schema_version = 4;
+  options.persistence.schema_version = 5;
+  options.persistence.target_schema_version = 5;
   return options;
 }
 
@@ -108,7 +108,7 @@ TEST_CASE(
     "[application][interaction][chronicle]") {
   sanguinius::test::ApplicationFixture fixture{chronicle_options()};
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 3);
+  REQUIRE(fixture.discord->command_catalog().version == 4);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 4);
 
   auto remember =
@@ -175,8 +175,11 @@ TEST_CASE(
   REQUIRE(edit_response->wait_for_edit_count(1, 2s));
   REQUIRE(fixture.chronicle->edit_count() == 1);
 
+  fixture.relationships->fail_synchronization();
   fixture.chronicle->set_submit_result(
-      {.code = sanguinius::ChronicleResultCode::updated, .wake_outbox = true});
+      {.code = sanguinius::ChronicleResultCode::updated,
+       .became_canon = true,
+       .wake_outbox = true});
   auto submit_response =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto submit_button = sanguinius::test::interaction(
@@ -185,6 +188,9 @@ TEST_CASE(
   fixture.discord->emit(std::move(submit_button));
   REQUIRE(submit_response->wait_for_edit_count(1, 2s));
   REQUIRE(fixture.chronicle->submission_count() == 1);
+  REQUIRE(contains(submit_response->edits()[0].content, "now canon"));
+  REQUIRE(fixture.diagnostics->contains_category("relationship.canon_sync"));
+  fixture.relationships->fail_synchronization(false);
   fixture.chronicle->set_submit_result(
       {.code = sanguinius::ChronicleResultCode::invalid_token});
 
@@ -373,6 +379,60 @@ TEST_CASE(
   fixture.discord->emit(std::move(wrong_context));
   REQUIRE(wrong->replies().size() == 1);
   REQUIRE(fixture.chronicle->proposal_count() == 1);
+  fixture.application->stop();
+}
+
+TEST_CASE("Chronicle profiles and callback preferences preserve visibility",
+          "[application][interaction][relationship][privacy]") {
+  sanguinius::test::ApplicationFixture fixture{chronicle_options()};
+  fixture.relationships->profile_result = {
+      .found = true,
+      .chronicle_opt_in = true,
+      .memory_callbacks = true,
+      .user_id = 31,
+      .display_name = "Member",
+      .dimensions = {.familiarity = 15,
+                     .esteem = 5,
+                     .mirth = 1,
+                     .reliability = 60,
+                     .wariness = 30},
+      .recent_reasons = {"ai.direct"},
+      .shared_canon_count = 2,
+      .visible_canon_titles = {"A safe shared heading"},
+  };
+  fixture.application->start();
+
+  auto self = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(self, "chronicle", "profile", 600));
+  REQUIRE(self->wait_for_edit_count(1, 2s));
+  REQUIRE(self->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(contains(self->edits()[0].content, "Your Chronicle profile"));
+  REQUIRE(contains(self->edits()[0].content, "Memory callbacks: enabled"));
+  REQUIRE_FALSE(contains(self->edits()[0].content, "15"));
+  REQUIRE_FALSE(contains(self->edits()[0].content, "60"));
+
+  auto other = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto public_profile = slash(other, "chronicle", "profile", 601);
+  public_profile.command_options = {{"user", sanguinius::DiscordId{32}}};
+  fixture.discord->emit(std::move(public_profile));
+  REQUIRE(other->wait_for_edit_count(1, 2s));
+  REQUIRE(other->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::public_message});
+  REQUIRE(contains(other->edits()[0].content, "Public Chronicle profile"));
+  REQUIRE(contains(other->edits()[0].content, "A safe shared heading"));
+  REQUIRE_FALSE(contains(other->edits()[0].content, "Memory callbacks"));
+  REQUIRE_FALSE(contains(other->edits()[0].content, "Bond:"));
+
+  auto callbacks =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto toggle = slash(callbacks, "chronicle", "callbacks", 602);
+  toggle.command_options = {{"mode", std::string{"off"}}};
+  fixture.discord->emit(std::move(toggle));
+  REQUIRE(callbacks->wait_for_edit_count(1, 2s));
+  REQUIRE(callbacks->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(fixture.relationships->preference_change_count() == 1);
   fixture.application->stop();
 }
 

@@ -70,7 +70,7 @@ TEST_CASE("DPP translates Chronicle context commands and typed options",
                                         return command.name == "chronicle";
                                       });
   REQUIRE(chronicle != translated.end());
-  REQUIRE(chronicle->options.size() == 4);
+  REQUIRE(chronicle->options.size() == 6);
   const auto timeline =
       std::find_if(chronicle->options.begin(), chronicle->options.end(),
                    [](const dpp::command_option &option) {
@@ -80,6 +80,14 @@ TEST_CASE("DPP translates Chronicle context commands and typed options",
   REQUIRE(timeline->options.size() == 1);
   REQUIRE(timeline->options[0].type == dpp::co_string);
   REQUIRE(timeline->options[0].choices.size() == 3);
+  const auto profile =
+      std::find_if(chronicle->options.begin(), chronicle->options.end(),
+                   [](const dpp::command_option &option) {
+                     return option.name == "profile";
+                   });
+  REQUIRE(profile != chronicle->options.end());
+  REQUIRE(profile->options.size() == 1);
+  REQUIRE(profile->options[0].type == dpp::co_user);
 }
 
 TEST_CASE("DPP context snapshots retain only bounded Chronicle metadata",

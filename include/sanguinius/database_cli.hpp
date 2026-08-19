@@ -15,6 +15,8 @@ enum class DatabaseCommandType {
   migrate,
   integrity,
   backup,
+  relationships_check,
+  relationships_rebuild,
 };
 
 struct DatabaseCommand {

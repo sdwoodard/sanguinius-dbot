@@ -379,11 +379,13 @@ TEST_CASE("memory preview coerces sensitivity and is lost across restart",
 TEST_CASE("Chronicle modals use fixed bounded fields",
           "[chronicle][unit][modal]") {
   const auto remember = sanguinius::ChronicleService::remember_modal();
-  REQUIRE(remember.fields.size() == 4);
+  REQUIRE(remember.fields.size() == 5);
   REQUIRE(remember.fields[0].style ==
           sanguinius::ModalFieldPayload::Style::paragraph);
   REQUIRE(remember.fields[0].maximum_length ==
           sanguinius::maximum_memory_text_size);
+  REQUIRE(remember.fields[1].custom_id == "tags");
+  REQUIRE_FALSE(remember.fields[1].required);
   const auto edit = sanguinius::ChronicleService::edit_entry_modal(
       "00000000-0000-4000-8000-000000000001");
   REQUIRE(edit.fields.size() == 5);

@@ -56,6 +56,8 @@ slash_operation(const IncomingInteraction &interaction) {
     if (interaction.subcommand_name == "recall") return InteractionOperation::chronicle_recall;
     if (interaction.subcommand_name == "timeline") return InteractionOperation::chronicle_timeline;
     if (interaction.subcommand_name == "forget") return InteractionOperation::chronicle_forget;
+    if (interaction.subcommand_name == "profile") return InteractionOperation::chronicle_profile;
+    if (interaction.subcommand_name == "callbacks") return InteractionOperation::chronicle_callbacks;
   }
   return std::nullopt;
 }
@@ -69,10 +71,15 @@ slash_operation(const IncomingInteraction &interaction) {
   if (interaction.command_options.empty()) {
     return interaction.subcommand_name == "recall" ||
            interaction.subcommand_name == "timeline" ||
-           interaction.subcommand_name == "forget";
+           interaction.subcommand_name == "forget" ||
+           interaction.subcommand_name == "profile";
   }
   if (interaction.command_options.size() != 1) return false;
   const auto &option = interaction.command_options.front();
+  if (interaction.subcommand_name == "profile") {
+    const auto *value = std::get_if<DiscordId>(&option.value);
+    return option.name == "user" && value != nullptr && value->is_set();
+  }
   const auto *value = std::get_if<std::string>(&option.value);
   if (value == nullptr) return false;
   if (interaction.subcommand_name == "recall") {
@@ -91,6 +98,9 @@ slash_operation(const IncomingInteraction &interaction) {
                     (character >= 'a' && character <= 'f') ||
                     character == '-';
            });
+  }
+  if (interaction.subcommand_name == "callbacks") {
+    return option.name == "mode" && (*value == "on" || *value == "off");
   }
   return false;
 }
@@ -251,6 +261,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::chronicle_recall ||
       *operation == InteractionOperation::chronicle_timeline ||
       *operation == InteractionOperation::chronicle_forget ||
+      *operation == InteractionOperation::chronicle_profile ||
+      *operation == InteractionOperation::chronicle_callbacks ||
       *operation == InteractionOperation::chronicle_edit ||
       *operation == InteractionOperation::chronicle_component;
   if (chronicle_operation && !state_->features.chronicle_enabled) {
@@ -301,9 +313,17 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
   }
 
   auto shared_state = state_;
+  bool public_profile = false;
+  if (*operation == InteractionOperation::chronicle_profile &&
+      !interaction.command_options.empty()) {
+    if (const auto *target =
+            std::get_if<DiscordId>(&interaction.command_options.front().value)) {
+      public_profile = *target != interaction.user_id;
+    }
+  }
   auto queued = RoutedInteraction{std::move(interaction), *operation};
   queued.interaction.responder->defer(
-      *operation == InteractionOperation::chronicle_timeline
+      (*operation == InteractionOperation::chronicle_timeline || public_profile)
           ? ResponseVisibility::public_message
           : ResponseVisibility::ephemeral,
       [shared_state, queued = std::move(queued)](

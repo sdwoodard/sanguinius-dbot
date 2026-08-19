@@ -61,6 +61,7 @@ public:
         pending_notices_{std::move(dependencies.pending_notices)},
         durable_work_{std::move(dependencies.durable_work)},
         chronicle_repository_{std::move(dependencies.chronicle)},
+        relationship_repository_{std::move(dependencies.relationships)},
         ai_client_{std::move(dependencies.ai_client)},
         discord_{std::move(dependencies.discord)} {
     if (!clock_ || !id_generator_ || !persistent_id_generator_ ||
@@ -71,9 +72,6 @@ public:
           "Application dependencies must all be configured."};
     }
 
-    ai_responder_ = std::make_unique<AiResponder>(
-        *ai_client_, *discord_, *discord_, *diagnostics_, options_.persona,
-        options_.ai_queue_capacity, options_.ai_worker_count);
     scope_policy_ = std::make_unique<ServerScopePolicy>(options_.server_scope);
     notice_service_ = std::make_unique<PendingNoticeService>(
         *pending_notices_, *clock_, *persistent_id_generator_);
@@ -85,6 +83,21 @@ public:
       throw std::invalid_argument{
           "Chronicle persistence is required when the feature is enabled."};
     }
+    if (options_.features.chronicle_enabled && !relationship_repository_) {
+      throw std::invalid_argument{
+          "Relationship persistence is required when the Chronicle is enabled."};
+    }
+    if (relationship_repository_ && options_.features.chronicle_enabled) {
+      relationship_service_ = std::make_unique<RelationshipService>(
+          *relationship_repository_, *clock_, *persistent_id_generator_,
+          options_.server_scope, options_.instance_id);
+    }
+    ai_responder_ = std::make_unique<AiResponder>(
+        *ai_client_, *discord_, *discord_, *diagnostics_, options_.persona,
+        options_.ai_queue_capacity, options_.ai_worker_count,
+        options_.features.chronicle_enabled ? relationship_service_.get()
+                                            : nullptr,
+        options_.features);
     if (chronicle_repository_) {
       chronicle_service_ = std::make_unique<ChronicleService>(
           *chronicle_repository_, *clock_, *persistent_id_generator_,
@@ -92,6 +105,23 @@ public:
           [this] { outbox_->wake(); },
           [this] {
             if (scheduler_) scheduler_->wake();
+          },
+          64,
+          [this] {
+            if (relationship_service_) {
+              try {
+                static_cast<void>(relationship_service_->recover());
+              } catch (const std::exception &error) {
+                diagnostics_->emit({DiagnosticSeverity::error,
+                                    "relationship.canon_sync", error.what(),
+                                    {}});
+              } catch (...) {
+                diagnostics_->emit(
+                    {DiagnosticSeverity::error, "relationship.canon_sync",
+                     "Unknown Chronicle relationship synchronization failure.",
+                     {}});
+              }
+            }
           });
     }
     scheduler_ = std::make_unique<SchedulerService>(
@@ -141,7 +171,7 @@ public:
         *health_service_, *diagnostics_, options_.features,
         [this] { return message_handler_->queue_snapshot(); },
         [this] { return ai_responder_->queue_snapshot(); },
-        options_.interaction_queue_capacity);
+        options_.interaction_queue_capacity, relationship_service_.get());
     interaction_router_ = std::make_unique<InteractionRouter>(
         *scope_policy_, options_.controls, options_.features,
         *interaction_handler_,
@@ -167,6 +197,13 @@ public:
           .started_at_ms = unix_milliseconds(*clock_),
       });
       instance_started_ = true;
+      if (relationship_service_) {
+        static_cast<void>(relationship_service_->recover());
+        if (!relationship_service_->check_projection().valid) {
+          throw std::runtime_error{
+              "Relationship projection verification failed during startup."};
+        }
+      }
       static_cast<void>(notice_service_->recover_incomplete_deliveries());
       outbox_->start();
       outbox_started_ = true;
@@ -304,6 +341,7 @@ private:
   std::unique_ptr<PendingNoticeRepository> pending_notices_;
   std::unique_ptr<DurableWorkRepository> durable_work_;
   std::unique_ptr<ChronicleRepository> chronicle_repository_;
+  std::unique_ptr<RelationshipRepository> relationship_repository_;
   std::unique_ptr<AiClient> ai_client_;
   std::unique_ptr<DiscordRuntime> discord_;
   std::unique_ptr<AiResponder> ai_responder_;
@@ -314,6 +352,7 @@ private:
   std::unique_ptr<PendingNoticeService> notice_service_;
   std::unique_ptr<OutboxService> outbox_;
   std::unique_ptr<ChronicleService> chronicle_service_;
+  std::unique_ptr<RelationshipService> relationship_service_;
   std::unique_ptr<SchedulerService> scheduler_;
   std::unique_ptr<DurableWorkControlService> durable_controls_;
   std::unique_ptr<InteractionHandler> interaction_handler_;

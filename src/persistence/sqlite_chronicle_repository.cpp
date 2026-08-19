@@ -1954,7 +1954,15 @@ SqliteChronicleRepository::confirm_memory(const ConfirmMemoryRequest &request) {
                   request.now_ms);
   if (request.expiry_job_id)
     require_id(*request.expiry_job_id);
+  const std::set<std::string> unique_tags(request.draft.tags.begin(),
+                                          request.draft.tags.end());
+  const bool tags_valid =
+      request.draft.tags.size() <= maximum_chronicle_tags &&
+      unique_tags.size() == request.draft.tags.size() &&
+      std::all_of(request.draft.tags.begin(), request.draft.tags.end(),
+                  [](const auto &tag) { return valid_tag(tag); });
   if (!valid_chronicle_text(request.draft.text, maximum_memory_text_size) ||
+      !tags_valid ||
       !request.draft.user_id.is_set() || !request.draft.guild_id.is_set() ||
       !request.draft.channel_id.is_set() || request.now_ms < 0 ||
       (request.draft.sensitivity != MemorySensitivity::ordinary &&
@@ -1973,6 +1981,14 @@ SqliteChronicleRepository::confirm_memory(const ConfirmMemoryRequest &request) {
       "expires_at_ms FROM memory WHERE creation_idempotency_key=?");
   replay.bind(1, request.interaction_idempotency_key);
   if (replay.step()) {
+    std::vector<std::string> stored_tags;
+    auto replay_tags = connection.prepare(
+        "SELECT subject_id FROM memory_subject WHERE memory_id=? AND "
+        "subject_type='topic' ORDER BY subject_id");
+    replay_tags.bind(1, replay.column_text(0));
+    while (replay_tags.step()) stored_tags.push_back(replay_tags.column_text(0));
+    auto expected_tags = request.draft.tags;
+    std::ranges::sort(expected_tags);
     const bool matches =
         replay.column_text(1) == request.draft.text &&
         replay.column_text(2) ==
@@ -1980,7 +1996,8 @@ SqliteChronicleRepository::confirm_memory(const ConfirmMemoryRequest &request) {
         replay.column_text(3) ==
             memory_sensitivity_name(request.draft.sensitivity) &&
         replay.column_text(4) == request.draft.user_id.str() &&
-        optional_integer(replay, 5) == request.draft.expires_at_ms;
+        optional_integer(replay, 5) == request.draft.expires_at_ms &&
+        stored_tags == expected_tags;
     if (!matches) {
       throw DatabaseError{DatabaseErrorCategory::constraint, SQLITE_CONSTRAINT,
                           SQLITE_CONSTRAINT, "Memory idempotency conflict."};
@@ -2033,6 +2050,14 @@ SqliteChronicleRepository::confirm_memory(const ConfirmMemoryRequest &request) {
   subject.bind(1, request.memory_id);
   subject.bind(2, request.draft.user_id.str());
   subject.execute();
+  for (const auto &tag : request.draft.tags) {
+    auto topic = connection.prepare(
+        "INSERT INTO memory_subject (memory_id,subject_type,subject_id) "
+        "VALUES (?,'topic',?)");
+    topic.bind(1, request.memory_id);
+    topic.bind(2, tag);
+    topic.execute();
+  }
   if (request.expiry_job_id && request.draft.expires_at_ms) {
     const ScheduledJobEnqueue job{
         .job_id = *request.expiry_job_id,

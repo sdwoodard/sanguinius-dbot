@@ -3,6 +3,8 @@
 #include "sanguinius/ai_client.hpp"
 #include "sanguinius/diagnostics.hpp"
 #include "sanguinius/discord_interfaces.hpp"
+#include "sanguinius/feature_config.hpp"
+#include "sanguinius/prompt_compiler.hpp"
 #include "sanguinius/work_queue.hpp"
 
 #include <cstddef>
@@ -21,7 +23,9 @@ public:
   AiResponder(const AiClient &client, DiscordConversation &conversation,
               DiscordTextDelivery &delivery, Diagnostics &diagnostics,
               std::string persona, std::size_t queue_capacity = 64,
-              std::size_t worker_count = 2);
+              std::size_t worker_count = 2,
+              RelationshipService *relationships = nullptr,
+              FeatureConfiguration features = {});
   ~AiResponder();
 
   AiResponder(const AiResponder &) = delete;
@@ -42,16 +46,13 @@ private:
   replied_message(const IncomingMessage &message,
                   const std::vector<ConversationEntry> &recent,
                   std::stop_token stop_token) const;
-  [[nodiscard]] std::string
-  create_prompt(const IncomingMessage &message,
-                const std::vector<ConversationEntry> &recent,
-                const std::optional<ConversationEntry> &replied) const;
-
   const AiClient &client_;
   DiscordConversation &conversation_;
   DiscordTextDelivery &delivery_;
   Diagnostics &diagnostics_;
-  std::string persona_;
+  PromptCompiler compiler_;
+  RelationshipService *relationships_{};
+  FeatureConfiguration features_;
   BoundedExecutor workers_;
 };
 

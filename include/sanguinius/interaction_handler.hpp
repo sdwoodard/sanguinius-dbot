@@ -10,6 +10,7 @@
 #include "sanguinius/health.hpp"
 #include "sanguinius/pending_notice.hpp"
 #include "sanguinius/repositories.hpp"
+#include "sanguinius/relationships.hpp"
 #include "sanguinius/work_queue.hpp"
 
 #include <cstddef>
@@ -34,6 +35,8 @@ enum class InteractionOperation {
   chronicle_recall,
   chronicle_timeline,
   chronicle_forget,
+  chronicle_profile,
+  chronicle_callbacks,
   chronicle_edit,
   chronicle_component,
 };
@@ -53,7 +56,8 @@ public:
                      FeatureConfiguration features,
                      std::function<QueueSnapshot()> message_queue,
                      std::function<QueueSnapshot()> ai_queue,
-                     std::size_t queue_capacity = 64);
+                     std::size_t queue_capacity = 64,
+                     RelationshipService *relationships = nullptr);
   ~InteractionHandler();
 
   InteractionHandler(const InteractionHandler &) = delete;
@@ -78,6 +82,7 @@ private:
   const Clock &clock_;
   DurableWorkControlService &durable_controls_;
   ChronicleService *chronicle_{};
+  RelationshipService *relationships_{};
   HealthService &health_service_;
   Diagnostics &diagnostics_;
   FeatureConfiguration features_;
