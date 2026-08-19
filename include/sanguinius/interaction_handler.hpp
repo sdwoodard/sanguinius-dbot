@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sanguinius/callback_fence.hpp"
+#include "sanguinius/chronicle.hpp"
 #include "sanguinius/clock.hpp"
 #include "sanguinius/diagnostics.hpp"
 #include "sanguinius/discord_interfaces.hpp"
@@ -28,6 +29,13 @@ enum class InteractionOperation {
   test_schedule_notice,
   test_public_retry,
   open_component,
+  chronicle_canonize,
+  chronicle_memory_preview,
+  chronicle_recall,
+  chronicle_timeline,
+  chronicle_forget,
+  chronicle_edit,
+  chronicle_component,
 };
 
 struct RoutedInteraction {
@@ -40,6 +48,7 @@ public:
   InteractionHandler(CoreIdentityRepository &identities,
                      PendingNoticeService &notices, const Clock &clock,
                      DurableWorkControlService &durable_controls,
+                     ChronicleService *chronicle,
                      HealthService &health_service, Diagnostics &diagnostics,
                      FeatureConfiguration features,
                      std::function<QueueSnapshot()> message_queue,
@@ -68,6 +77,7 @@ private:
   PendingNoticeService &notices_;
   const Clock &clock_;
   DurableWorkControlService &durable_controls_;
+  ChronicleService *chronicle_{};
   HealthService &health_service_;
   Diagnostics &diagnostics_;
   FeatureConfiguration features_;

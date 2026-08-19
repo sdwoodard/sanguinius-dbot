@@ -7,9 +7,10 @@
 
 namespace sanguinius {
 
-inline constexpr std::uint32_t command_catalog_version = 2;
+inline constexpr std::uint32_t command_catalog_version = 3;
 
-[[nodiscard]] CommandCatalog command_catalog(bool admin_commands_enabled);
+[[nodiscard]] CommandCatalog command_catalog(bool admin_commands_enabled,
+                                             bool chronicle_enabled = false);
 [[nodiscard]] std::string
 canonical_command_snapshot(const CommandCatalog &catalog);
 

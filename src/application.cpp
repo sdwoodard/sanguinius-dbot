@@ -60,6 +60,7 @@ public:
         identities_{std::move(dependencies.identities)},
         pending_notices_{std::move(dependencies.pending_notices)},
         durable_work_{std::move(dependencies.durable_work)},
+        chronicle_repository_{std::move(dependencies.chronicle)},
         ai_client_{std::move(dependencies.ai_client)},
         discord_{std::move(dependencies.discord)} {
     if (!clock_ || !id_generator_ || !persistent_id_generator_ ||
@@ -80,9 +81,31 @@ public:
         *durable_work_, *clock_, *persistent_id_generator_, *diagnostics_,
         *discord_, *discord_, options_.server_scope, options_.instance_id, 32,
         options_.durable_delivery_receipt_wait);
+    if (options_.features.chronicle_enabled && !chronicle_repository_) {
+      throw std::invalid_argument{
+          "Chronicle persistence is required when the feature is enabled."};
+    }
+    if (chronicle_repository_) {
+      chronicle_service_ = std::make_unique<ChronicleService>(
+          *chronicle_repository_, *clock_, *persistent_id_generator_,
+          options_.server_scope, options_.controls,
+          [this] { outbox_->wake(); },
+          [this] {
+            if (scheduler_) scheduler_->wake();
+          });
+    }
     scheduler_ = std::make_unique<SchedulerService>(
         *durable_work_, *clock_, *persistent_id_generator_, *diagnostics_,
-        options_.instance_id, [this] { outbox_->wake(); });
+        options_.instance_id, [this] { outbox_->wake(); }, 32,
+        chronicle_service_
+            ? JobHandlerRegistry::Handler{[this](const ClaimedScheduledJob &job) {
+                const auto result = chronicle_service_->complete_expiry(job);
+                if (result.code == ChronicleResultCode::invalid_state) {
+                  throw std::invalid_argument{
+                      "Invalid Chronicle memory-expiry payload."};
+                }
+              }}
+            : JobHandlerRegistry::Handler{});
     durable_controls_ = std::make_unique<DurableWorkControlService>(
         *durable_work_, *clock_, *persistent_id_generator_,
         options_.server_scope, [this] { scheduler_->wake(); },
@@ -114,12 +137,14 @@ public:
         options_.command_prefix, options_.message_queue_capacity);
     interaction_handler_ = std::make_unique<InteractionHandler>(
         *identities_, *notice_service_, *clock_, *durable_controls_,
+        chronicle_service_.get(),
         *health_service_, *diagnostics_, options_.features,
         [this] { return message_handler_->queue_snapshot(); },
         [this] { return ai_responder_->queue_snapshot(); },
         options_.interaction_queue_capacity);
     interaction_router_ = std::make_unique<InteractionRouter>(
-        *scope_policy_, options_.controls, *interaction_handler_,
+        *scope_policy_, options_.controls, options_.features,
+        *interaction_handler_,
         *diagnostics_);
   }
 
@@ -186,7 +211,8 @@ public:
                                   {}});
             }
           },
-          command_catalog(options_.controls.admin_commands_enabled));
+          command_catalog(options_.controls.admin_commands_enabled,
+                          options_.features.chronicle_enabled));
       const std::scoped_lock lock{state_mutex_};
       state_ = ApplicationState::running;
     } catch (...) {
@@ -277,6 +303,7 @@ private:
   std::unique_ptr<CoreIdentityRepository> identities_;
   std::unique_ptr<PendingNoticeRepository> pending_notices_;
   std::unique_ptr<DurableWorkRepository> durable_work_;
+  std::unique_ptr<ChronicleRepository> chronicle_repository_;
   std::unique_ptr<AiClient> ai_client_;
   std::unique_ptr<DiscordRuntime> discord_;
   std::unique_ptr<AiResponder> ai_responder_;
@@ -286,6 +313,7 @@ private:
   std::unique_ptr<MessageHandler> message_handler_;
   std::unique_ptr<PendingNoticeService> notice_service_;
   std::unique_ptr<OutboxService> outbox_;
+  std::unique_ptr<ChronicleService> chronicle_service_;
   std::unique_ptr<SchedulerService> scheduler_;
   std::unique_ptr<DurableWorkControlService> durable_controls_;
   std::unique_ptr<InteractionHandler> interaction_handler_;

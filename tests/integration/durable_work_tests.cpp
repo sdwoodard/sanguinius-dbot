@@ -65,7 +65,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 3);
+      REQUIRE(migrator.apply(database.connection()).current_version == 4);
     }
     context = std::make_shared<SqliteRepositoryContext>(
         Database::open_runtime(temporary.path(), 25ms));
@@ -220,7 +220,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 3);
+      REQUIRE(migrator.apply(database.connection()).current_version == 4);
     }
     auto context = open();
     SqliteCoreIdentityRepository identities{context};
@@ -709,6 +709,54 @@ TEST_CASE("unknown outbox kinds claim without Discord readiness",
       fixture.repository
           ->claim_due_outbox(100, 200, "instance", std::string{lease_2}, false)
           .has_value());
+}
+
+TEST_CASE("Chronicle public effects preserve aggregate causal order",
+          "[durable][outbox][chronicle][ordering]") {
+  DurableFixture fixture;
+  const sanguinius::PublicOutboxPayload payload{
+      .request = {.guild_id = 10,
+                  .channel_id = 20,
+                  .message = sanguinius::text_message("Chronicle card")},
+      .fail_before_first_send = false,
+  };
+  auto canon = public_outbox(outbox_id_1, "outbox:chronicle:canon", 200);
+  canon.aggregate_type = "chronicle_entry";
+  canon.aggregate_id = "entry-1";
+  canon.created_at_ms = 100;
+  auto retraction =
+      public_outbox(outbox_id_2, "outbox:chronicle:retraction", 101);
+  retraction.aggregate_type = "chronicle_entry";
+  retraction.aggregate_id = "entry-1";
+  retraction.created_at_ms = 101;
+  REQUIRE(fixture.repository->enqueue_public(
+      event(event_id_1, "event:chronicle:canon"), canon, payload));
+  REQUIRE(fixture.repository->enqueue_public(
+      event(event_id_2, "event:chronicle:retraction", 101), retraction,
+      payload));
+
+  REQUIRE_FALSE(
+      fixture.repository
+          ->claim_due_outbox(101, 300, "instance", std::string{lease_1}, true)
+          .has_value());
+
+  const auto first = fixture.repository->claim_due_outbox(
+      200, 300, "instance", std::string{lease_1}, true);
+  REQUIRE(first.has_value());
+  REQUIRE(first->outbox_id == outbox_id_1);
+  REQUIRE_FALSE(
+      fixture.repository
+          ->claim_due_outbox(200, 300, "other", std::string{lease_2}, true)
+          .has_value());
+  REQUIRE(fixture.repository->mark_public_outbox_submitted(
+              *first, attempt(200), 300) == WorkMutationStatus::applied);
+  REQUIRE(fixture.repository->complete_public_outbox(*first, 777, 200) ==
+          WorkMutationStatus::applied);
+
+  const auto second = fixture.repository->claim_due_outbox(
+      200, 300, "instance", std::string{lease_2}, true);
+  REQUIRE(second.has_value());
+  REQUIRE(second->outbox_id == outbox_id_2);
 }
 
 TEST_CASE("wall clock rollback preserves durable transition invariants",

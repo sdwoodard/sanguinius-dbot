@@ -18,6 +18,34 @@ struct MessageReference {
   DiscordId channel_id{};
 };
 
+struct ContextUserSnapshot {
+  DiscordId user_id{};
+  std::string username;
+  std::string display_name;
+  bool is_bot{};
+};
+
+struct ContextAttachmentSnapshot {
+  DiscordId attachment_id{};
+  std::string filename;
+  std::optional<std::string> content_type{};
+  std::uint64_t byte_size{};
+  std::optional<std::uint32_t> width{};
+  std::optional<std::uint32_t> height{};
+  bool ephemeral{};
+  bool spoiler{};
+};
+
+struct ContextMessageSnapshot {
+  MessageReference reference;
+  ContextUserSnapshot author;
+  std::string content;
+  bool content_truncated{};
+  std::int64_t occurred_at_ms{};
+  std::vector<ContextUserSnapshot> mentioned_users{};
+  std::vector<ContextAttachmentSnapshot> attachments{};
+};
+
 struct IncomingMessage {
   std::string correlation_id;
   DiscordId bot_user_id{};
@@ -42,7 +70,7 @@ struct ConversationEntry {
 struct EmbedPayload {
   std::uint32_t color{};
   std::string title;
-  std::string url;
+  std::string url{};
   std::string description;
 };
 
@@ -53,9 +81,41 @@ struct ReplyRequest {
   bool suppress_mentions{true};
 };
 
+enum class ApplicationCommandKind {
+  chat_input,
+  message_context,
+};
+
+enum class CommandOptionKind {
+  string,
+  user,
+};
+
+struct CommandOptionChoiceDefinition {
+  std::string name;
+  std::string value;
+
+  [[nodiscard]] bool
+  operator==(const CommandOptionChoiceDefinition &) const = default;
+};
+
+struct CommandOptionDefinition {
+  CommandOptionKind kind{CommandOptionKind::string};
+  std::string name;
+  std::string description;
+  bool required{};
+  std::size_t minimum_length{};
+  std::size_t maximum_length{};
+  std::vector<CommandOptionChoiceDefinition> choices{};
+
+  [[nodiscard]] bool operator==(const CommandOptionDefinition &) const =
+      default;
+};
+
 struct CommandSubcommandDefinition {
   std::string name;
   std::string description;
+  std::vector<CommandOptionDefinition> options{};
 
   [[nodiscard]] bool
   operator==(const CommandSubcommandDefinition &) const = default;
@@ -65,6 +125,7 @@ struct CommandDefinition {
   std::string name;
   std::string description;
   std::vector<CommandSubcommandDefinition> subcommands;
+  ApplicationCommandKind kind{ApplicationCommandKind::chat_input};
 
   [[nodiscard]] bool operator==(const CommandDefinition &) const = default;
 };
@@ -143,12 +204,18 @@ struct InteractionMessage {
 }
 
 struct ModalFieldPayload {
+  enum class Style {
+    short_text,
+    paragraph,
+  };
+
   std::string custom_id;
   std::string label;
-  std::string value;
+  std::string value{};
   std::size_t minimum_length{};
   std::size_t maximum_length{};
   bool required{true};
+  Style style{Style::short_text};
 };
 
 struct ModalPayload {
@@ -185,7 +252,7 @@ struct IncomingInteraction {
   std::string custom_id;
   std::vector<std::string> selected_values;
   std::vector<std::pair<std::string, std::string>> modal_fields;
-  std::optional<MessageReference> context_message;
+  std::optional<ContextMessageSnapshot> context_message;
   std::shared_ptr<DiscordInteractionResponder> responder;
 };
 

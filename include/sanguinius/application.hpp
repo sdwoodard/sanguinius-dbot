@@ -2,6 +2,7 @@
 
 #include "sanguinius/ai_client.hpp"
 #include "sanguinius/build_info.hpp"
+#include "sanguinius/chronicle.hpp"
 #include "sanguinius/clock.hpp"
 #include "sanguinius/diagnostics.hpp"
 #include "sanguinius/discord_interfaces.hpp"
@@ -51,6 +52,7 @@ struct ApplicationDependencies {
   std::unique_ptr<CoreIdentityRepository> identities;
   std::unique_ptr<PendingNoticeRepository> pending_notices;
   std::unique_ptr<DurableWorkRepository> durable_work;
+  std::unique_ptr<ChronicleRepository> chronicle;
   std::unique_ptr<AiClient> ai_client;
   std::unique_ptr<DiscordRuntime> discord;
 };

@@ -19,5 +19,13 @@ namespace sanguinius::persistence::detail {
 [[nodiscard]] bool insert_outbox_uncommitted(SqliteConnection &connection,
                                              const OutboxEnqueue &outbox,
                                              const std::string &payload_json);
+[[nodiscard]] std::string
+encode_public_payload(const PublicOutboxPayload &payload,
+                      std::string_view correlation_id,
+                      const std::optional<std::string> &causation_event_id);
+[[nodiscard]] std::string
+encode_memory_expiry_payload(const MemoryExpiryJobPayload &payload,
+                             std::string_view correlation_id,
+                             const std::optional<std::string> &causation_event_id);
 
 } // namespace sanguinius::persistence::detail

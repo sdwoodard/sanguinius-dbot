@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace sanguinius {
 
@@ -76,8 +77,16 @@ enum class InteractionTokenKind {
 };
 
 struct PendingNoticeContent {
+  struct Action {
+    std::string custom_id;
+    std::string label;
+
+    [[nodiscard]] bool operator==(const Action &) const = default;
+  };
+
   std::string title;
   std::string body;
+  std::vector<Action> actions{};
 
   [[nodiscard]] bool operator==(const PendingNoticeContent &) const = default;
 };

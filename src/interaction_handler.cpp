@@ -60,12 +60,14 @@ privacy_message(const FeatureConfiguration &features,
 InteractionHandler::InteractionHandler(
     CoreIdentityRepository &identities, PendingNoticeService &notices,
     const Clock &clock, DurableWorkControlService &durable_controls,
+    ChronicleService *chronicle,
     HealthService &health_service, Diagnostics &diagnostics,
     const FeatureConfiguration features,
     std::function<QueueSnapshot()> message_queue,
     std::function<QueueSnapshot()> ai_queue, const std::size_t queue_capacity)
     : identities_{identities}, notices_{notices}, clock_{clock},
-      durable_controls_{durable_controls}, health_service_{health_service},
+      durable_controls_{durable_controls}, chronicle_{chronicle},
+      health_service_{health_service},
       diagnostics_{diagnostics}, features_{features},
       message_queue_{std::move(message_queue)}, ai_queue_{std::move(ai_queue)},
       callbacks_{std::make_shared<CallbackFence>()},
@@ -159,6 +161,44 @@ void InteractionHandler::process(const RoutedInteraction &request) {
     edit_reveal(request.interaction,
                 notices_.open_component(request.interaction),
                 "interaction.component");
+    return;
+  case InteractionOperation::chronicle_canonize:
+    if (!chronicle_) throw std::runtime_error{"Chronicle service is unavailable."};
+    edit(request.interaction,
+         render_chronicle_proposal(chronicle_->canonize_message(request.interaction)),
+         "interaction.chronicle_canonize");
+    return;
+  case InteractionOperation::chronicle_memory_preview:
+    if (!chronicle_) throw std::runtime_error{"Chronicle service is unavailable."};
+    edit(request.interaction, chronicle_->begin_memory_preview(request.interaction),
+         "interaction.chronicle_memory_preview");
+    return;
+  case InteractionOperation::chronicle_recall:
+    if (!chronicle_) throw std::runtime_error{"Chronicle service is unavailable."};
+    edit(request.interaction, chronicle_->recall(request.interaction),
+         "interaction.chronicle_recall");
+    return;
+  case InteractionOperation::chronicle_timeline:
+    if (!chronicle_) throw std::runtime_error{"Chronicle service is unavailable."};
+    edit(request.interaction, chronicle_->timeline(request.interaction),
+         "interaction.chronicle_timeline");
+    return;
+  case InteractionOperation::chronicle_forget:
+    if (!chronicle_) throw std::runtime_error{"Chronicle service is unavailable."};
+    edit(request.interaction, chronicle_->forget(request.interaction),
+         "interaction.chronicle_forget");
+    return;
+  case InteractionOperation::chronicle_edit:
+    if (!chronicle_) throw std::runtime_error{"Chronicle service is unavailable."};
+    edit(request.interaction,
+         render_chronicle_mutation(chronicle_->edit_proposal(request.interaction)),
+         "interaction.chronicle_edit");
+    return;
+  case InteractionOperation::chronicle_component:
+    if (!chronicle_) throw std::runtime_error{"Chronicle service is unavailable."};
+    edit(request.interaction,
+         render_chronicle_mutation(chronicle_->apply_component(request.interaction)),
+         "interaction.chronicle_component");
     return;
   case InteractionOperation::admin_health: {
     const auto snapshot =

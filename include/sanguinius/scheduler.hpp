@@ -35,7 +35,8 @@ public:
   SchedulerService(DurableWorkRepository &repository, const Clock &clock,
                    PersistentIdGenerator &ids, Diagnostics &diagnostics,
                    std::string instance_id, std::function<void()> outbox_wakeup,
-                   std::size_t queue_capacity = 32);
+                   std::size_t queue_capacity = 32,
+                   JobHandlerRegistry::Handler chronicle_expiry_handler = {});
   ~SchedulerService();
 
   SchedulerService(const SchedulerService &) = delete;

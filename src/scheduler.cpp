@@ -1,5 +1,7 @@
 #include "sanguinius/scheduler.hpp"
 
+#include "sanguinius/chronicle.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <stdexcept>
@@ -58,7 +60,8 @@ SchedulerService::SchedulerService(DurableWorkRepository &repository,
                                    Diagnostics &diagnostics,
                                    std::string instance_id,
                                    std::function<void()> outbox_wakeup,
-                                   const std::size_t queue_capacity)
+                                   const std::size_t queue_capacity,
+                                   JobHandlerRegistry::Handler chronicle_expiry_handler)
     : repository_{repository}, clock_{clock}, ids_{ids},
       diagnostics_{diagnostics}, instance_id_{std::move(instance_id)},
       outbox_wakeup_{std::move(outbox_wakeup)}, workers_{queue_capacity, 1} {
@@ -68,6 +71,10 @@ SchedulerService::SchedulerService(DurableWorkRepository &repository,
   handlers_.add(
       std::string{owner_test_notice_job_type},
       [this](const ClaimedScheduledJob &job) { handle_test_notice(job); });
+  if (chronicle_expiry_handler) {
+    handlers_.add(std::string{memory_expiry_job_type},
+                  std::move(chronicle_expiry_handler));
+  }
   handlers_.freeze();
 }
 

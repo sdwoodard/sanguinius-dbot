@@ -42,6 +42,14 @@ admin_options(const std::size_t interaction_capacity = 64) {
   };
 }
 
+[[nodiscard]] sanguinius::ApplicationOptions chronicle_options() {
+  auto options = admin_options();
+  options.features.chronicle_enabled = true;
+  options.persistence.schema_version = 4;
+  options.persistence.target_schema_version = 4;
+  return options;
+}
+
 [[nodiscard]] sanguinius::IncomingInteraction
 slash(const std::shared_ptr<sanguinius::test::FakeInteractionResponder>
           &responder,
@@ -94,6 +102,279 @@ durable_outbox(std::string outbox_id, std::string kind, std::string key) {
 }
 
 } // namespace
+
+TEST_CASE(
+    "Chronicle interactions preserve immediate and deferred response rules",
+    "[application][interaction][chronicle]") {
+  sanguinius::test::ApplicationFixture fixture{chronicle_options()};
+  fixture.application->start();
+  REQUIRE(fixture.discord->command_catalog().version == 3);
+  REQUIRE(fixture.discord->command_catalog().commands.size() == 4);
+
+  auto remember =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(remember, "chronicle", "remember", 180));
+  REQUIRE(remember->modals().size() == 1);
+  REQUIRE(remember->deferrals().empty());
+  REQUIRE(remember->modals()[0].fields[0].style ==
+          sanguinius::ModalFieldPayload::Style::paragraph);
+
+  auto preview = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto submitted = sanguinius::test::interaction(
+      preview, sanguinius::InteractionKind::modal_submit, 181);
+  submitted.custom_id = "chronicle.remember:1";
+  submitted.modal_fields = {{"text", "An explicit personal memory."},
+                            {"visibility", "shared"},
+                            {"sensitivity", "personal"},
+                            {"expiry", "never"}};
+  fixture.discord->emit(std::move(submitted));
+  REQUIRE(preview->wait_for_edit_count(1, 2s));
+  REQUIRE(preview->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(contains(preview->edits()[0].content, "self_only"));
+  REQUIRE(preview->edits()[0].buttons.size() == 2);
+
+  auto context = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto canonize = sanguinius::test::interaction(
+      context, sanguinius::InteractionKind::message_context_command, 182);
+  canonize.command_name = "Canonize in the Chronicle";
+  canonize.context_message = sanguinius::ContextMessageSnapshot{
+      .reference = {.message_id = 80, .guild_id = 10, .channel_id = 20},
+      .author = {.user_id = 31, .username = "source", .display_name = "Source"},
+      .content = "A selected source message.",
+      .occurred_at_ms = 1'000};
+  fixture.discord->emit(std::move(canonize));
+  REQUIRE(context->wait_for_edit_count(1, 2s));
+  REQUIRE(fixture.chronicle->proposal_count() == 1);
+  REQUIRE(context->edits()[0].buttons.size() == 3);
+  REQUIRE(contains(context->edits()[0].content, "TEST DATA"));
+  REQUIRE(context->edits()[0].embed.has_value());
+  REQUIRE(contains(context->edits()[0].embed->description,
+                   "selected source message"));
+
+  auto edit_launcher =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto edit_button = sanguinius::test::interaction(
+      edit_launcher, sanguinius::InteractionKind::button, 186);
+  edit_button.custom_id = context->edits()[0].buttons[0].custom_id;
+  fixture.discord->emit(std::move(edit_button));
+  REQUIRE(edit_launcher->modals().size() == 1);
+  REQUIRE(edit_launcher->deferrals().empty());
+
+  auto edit_response =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto edit_submit = sanguinius::test::interaction(
+      edit_response, sanguinius::InteractionKind::modal_submit, 187);
+  edit_submit.custom_id = edit_launcher->modals()[0].custom_id;
+  edit_submit.modal_fields = {{"title", "Edited heading"},
+                              {"body", "Edited Chronicle body."},
+                              {"type", "deed"},
+                              {"visibility", "shared"},
+                              {"tags", "deed"}};
+  fixture.discord->emit(std::move(edit_submit));
+  REQUIRE(edit_response->wait_for_edit_count(1, 2s));
+  REQUIRE(fixture.chronicle->edit_count() == 1);
+
+  fixture.chronicle->set_submit_result(
+      {.code = sanguinius::ChronicleResultCode::updated, .wake_outbox = true});
+  auto submit_response =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto submit_button = sanguinius::test::interaction(
+      submit_response, sanguinius::InteractionKind::button, 188);
+  submit_button.custom_id = context->edits()[0].buttons[1].custom_id;
+  fixture.discord->emit(std::move(submit_button));
+  REQUIRE(submit_response->wait_for_edit_count(1, 2s));
+  REQUIRE(fixture.chronicle->submission_count() == 1);
+  fixture.chronicle->set_submit_result(
+      {.code = sanguinius::ChronicleResultCode::invalid_token});
+
+  const std::string approval_token{"00000000-0000-4000-8000-000000000950"};
+  static_cast<void>(fixture.notices->create_with_token(
+      {.notice_id = "00000000-0000-4000-8000-000000000951",
+       .token_id = "00000000-0000-4000-8000-000000000952",
+       .target_user_id = 30,
+       .guild_id = 10,
+       .channel_id = 20,
+       .notice_type = "chronicle_approval",
+       .content = {.title = "Chronicle approval requested",
+                   .body = "Private bounded proposal provenance.",
+                   .actions = {{.custom_id =
+                                    sanguinius::make_chronicle_component(
+                                        sanguinius::chronicle_component_prefix,
+                                        approval_token),
+                                .label = "Approve"}}},
+       .source_aggregate_type = "chronicle_entry",
+       .source_aggregate_id = "00000000-0000-4000-8000-000000000953",
+       .expires_at_ms = 60'000,
+       .notice_idempotency_key = "notice:chronicle:application",
+       .token_idempotency_key = "token:chronicle:application",
+       .created_at_ms = 1}));
+  auto inbox = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(inbox, "sanguinius", "inbox", 199));
+  REQUIRE(inbox->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(inbox->edits()[0].content,
+                   "Private bounded proposal provenance"));
+  REQUIRE(inbox->edits()[0].buttons.size() == 1);
+  auto approval_response =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto approval_button = sanguinius::test::interaction(
+      approval_response, sanguinius::InteractionKind::button, 200);
+  approval_button.custom_id = inbox->edits()[0].buttons[0].custom_id;
+  fixture.discord->emit(std::move(approval_button));
+  REQUIRE(approval_response->wait_for_edit_count(1, 2s));
+  REQUIRE(fixture.chronicle->approval_count() == 1);
+
+  auto cancel_response =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto cancel_button = sanguinius::test::interaction(
+      cancel_response, sanguinius::InteractionKind::button, 189);
+  cancel_button.custom_id = preview->edits()[0].buttons[1].custom_id;
+  fixture.discord->emit(std::move(cancel_button));
+  REQUIRE(cancel_response->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(cancel_response->edits()[0].content, "discarded"));
+  REQUIRE(fixture.chronicle->confirmation_count() == 0);
+
+  auto discarded_confirm =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto discarded_button = sanguinius::test::interaction(
+      discarded_confirm, sanguinius::InteractionKind::button, 190);
+  discarded_button.custom_id = preview->edits()[0].buttons[0].custom_id;
+  fixture.discord->emit(std::move(discarded_button));
+  REQUIRE(discarded_confirm->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(discarded_confirm->edits()[0].content,
+                   "invalid or no longer available"));
+
+  auto second_preview =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto second_modal = sanguinius::test::interaction(
+      second_preview, sanguinius::InteractionKind::modal_submit, 191);
+  second_modal.custom_id = "chronicle.remember:1";
+  second_modal.modal_fields = {{"text", "An ordinary shared memory."},
+                               {"visibility", "shared"},
+                               {"sensitivity", "ordinary"},
+                               {"expiry", "30d"}};
+  fixture.discord->emit(std::move(second_modal));
+  REQUIRE(second_preview->wait_for_edit_count(1, 2s));
+
+  auto confirm_response =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto confirm_button = sanguinius::test::interaction(
+      confirm_response, sanguinius::InteractionKind::button, 192);
+  confirm_button.custom_id = second_preview->edits()[0].buttons[0].custom_id;
+  fixture.discord->emit(confirm_button);
+  REQUIRE(confirm_response->wait_for_edit_count(1, 2s));
+  REQUIRE(fixture.chronicle->confirmation_count() == 1);
+  auto duplicate_confirm =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  confirm_button.responder = duplicate_confirm;
+  fixture.discord->emit(std::move(confirm_button));
+  REQUIRE(duplicate_confirm->wait_for_edit_count(1, 2s));
+  REQUIRE(fixture.chronicle->confirmation_count() == 1);
+
+  sanguinius::ChronicleEntry test_entry;
+  test_entry.entry_id = "00000000-0000-4000-8000-000000000901";
+  test_entry.title = "Owner test canon";
+  test_entry.body = "A visibly marked test entry.";
+  test_entry.status = sanguinius::ChronicleEntryStatus::canon;
+  test_entry.tags = {"owner-test"};
+  fixture.chronicle->recall_results.entries = {test_entry};
+  fixture.chronicle->timeline_results = {test_entry};
+
+  auto recall = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(recall, "chronicle", "recall", 193));
+  REQUIRE(recall->wait_for_edit_count(1, 2s));
+  REQUIRE(recall->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(contains(recall->edits()[0].content, "TEST DATA"));
+
+  auto timeline =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto timeline_request = slash(timeline, "chronicle", "timeline", 194);
+  timeline_request.command_options.push_back({"period", std::string{"7d"}});
+  fixture.discord->emit(std::move(timeline_request));
+  REQUIRE(timeline->wait_for_edit_count(1, 2s));
+  REQUIRE(timeline->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::public_message});
+  REQUIRE(contains(timeline->edits()[0].content, "TEST DATA"));
+
+  fixture.chronicle->manageable_results = {
+      {.kind = sanguinius::ManageableKind::memory,
+       .entity_id = "00000000-0000-4000-8000-000000000902",
+       .revision = 1,
+       .summary = "An ordinary shared memory."}};
+  auto forget = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(forget, "chronicle", "forget", 195));
+  REQUIRE(forget->wait_for_edit_count(1, 2s));
+  REQUIRE(forget->edits()[0].buttons.size() == 1);
+  auto retract = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto retract_button = sanguinius::test::interaction(
+      retract, sanguinius::InteractionKind::button, 196);
+  retract_button.custom_id = forget->edits()[0].buttons[0].custom_id;
+  fixture.discord->emit(retract_button);
+  REQUIRE(retract->wait_for_edit_count(1, 2s));
+  REQUIRE(fixture.chronicle->retraction_count() == 1);
+  auto duplicate_retract =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  retract_button.responder = duplicate_retract;
+  fixture.discord->emit(std::move(retract_button));
+  REQUIRE(duplicate_retract->wait_for_edit_count(1, 2s));
+  REQUIRE(fixture.chronicle->retraction_count() == 1);
+
+  fixture.chronicle->manageable_results = {
+      {.kind = sanguinius::ManageableKind::memory,
+       .entity_id = "00000000-0000-4000-8000-000000000903",
+       .revision = 2,
+       .summary = "A command-only memory."}};
+  auto direct_forget =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto direct_forget_request = slash(direct_forget, "chronicle", "forget", 210);
+  direct_forget_request.command_options.push_back(
+      {"reference", std::string{"00000000-0000-4000-8000-000000000903"}});
+  fixture.discord->emit(std::move(direct_forget_request));
+  REQUIRE(direct_forget->wait_for_edit_count(1, 2s));
+  REQUIRE(direct_forget->edits()[0].buttons.empty());
+  REQUIRE(fixture.chronicle->retraction_count() == 2);
+
+  fixture.chronicle->manageable_results = {
+      {.kind = sanguinius::ManageableKind::memory,
+       .entity_id = "00000000-0000-4000-8000-000000000904",
+       .revision = 1,
+       .summary = "First matching record."},
+      {.kind = sanguinius::ManageableKind::entry,
+       .entity_id = "00000000-0000-4000-8000-000000000905",
+       .revision = 1,
+       .summary = "Second matching record."}};
+  auto ambiguous_forget =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto ambiguous_request = slash(ambiguous_forget, "chronicle", "forget", 211);
+  ambiguous_request.command_options.push_back(
+      {"reference", std::string{"0000"}});
+  fixture.discord->emit(std::move(ambiguous_request));
+  REQUIRE(ambiguous_forget->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(ambiguous_forget->edits()[0].content, "ambiguous"));
+  REQUIRE(ambiguous_forget->edits()[0].buttons.empty());
+  REQUIRE(fixture.chronicle->retraction_count() == 2);
+
+  auto malformed =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto malformed_timeline = slash(malformed, "chronicle", "timeline", 197);
+  malformed_timeline.command_options.push_back({"period", std::string{"90d"}});
+  fixture.discord->emit(std::move(malformed_timeline));
+  REQUIRE(malformed->replies().size() == 1);
+  REQUIRE(malformed->deferrals().empty());
+  REQUIRE(contains(malformed->replies()[0].first.content, "malformed"));
+
+  auto wrong = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto wrong_context = sanguinius::test::interaction(
+      wrong, sanguinius::InteractionKind::message_context_command, 198);
+  wrong_context.channel_id = 21;
+  wrong_context.command_name = "Canonize in the Chronicle";
+  wrong_context.context_message = sanguinius::ContextMessageSnapshot{};
+  fixture.discord->emit(std::move(wrong_context));
+  REQUIRE(wrong->replies().size() == 1);
+  REQUIRE(fixture.chronicle->proposal_count() == 1);
+  fixture.application->stop();
+}
 
 TEST_CASE("slash status privacy and scope enforcement remain ephemeral",
           "[application][interaction][privacy]") {

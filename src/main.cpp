@@ -91,7 +91,8 @@ int main(const int argc, char **argv) {
           *operation, std::move(command_config.token),
           command_config.request_timeout,
           sanguinius::DiscordId{command_config.guild_id.value()},
-          sanguinius::command_catalog(command_config.admin_commands_enabled),
+          sanguinius::command_catalog(command_config.admin_commands_enabled,
+                                      command_config.chronicle_enabled),
           std::cout, std::cerr);
     }
     if (argc > 2) {

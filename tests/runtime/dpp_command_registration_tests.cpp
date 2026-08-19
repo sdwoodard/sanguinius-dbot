@@ -1,4 +1,6 @@
 #include "sanguinius/callback_fence.hpp"
+#include "sanguinius/chronicle.hpp"
+#include "sanguinius/command_registry.hpp"
 #include "sanguinius/dpp_command_registry.hpp"
 #include "sanguinius/dpp_discord_adapter.hpp"
 
@@ -6,9 +8,11 @@
 #include <dpp/dpp.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <future>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -45,6 +49,87 @@ TEST_CASE("DPP command comparison ignores assigned fields only",
                                               "Description francaise");
   REQUIRE_FALSE(
       sanguinius::dpp_adapter_detail::commands_match(registered, desired));
+}
+
+TEST_CASE("DPP translates Chronicle context commands and typed options",
+          "[discord][commands][chronicle]") {
+  const auto translated =
+      sanguinius::dpp_adapter_detail::translate_command_catalog(
+          sanguinius::command_catalog(false, true), 42);
+  REQUIRE(translated.size() == 3);
+  const auto context =
+      std::find_if(translated.begin(), translated.end(),
+                   [](const dpp::slashcommand &command) {
+                     return command.name == "Canonize in the Chronicle";
+                   });
+  REQUIRE(context != translated.end());
+  REQUIRE(context->type == dpp::ctxm_message);
+
+  const auto chronicle = std::find_if(translated.begin(), translated.end(),
+                                      [](const dpp::slashcommand &command) {
+                                        return command.name == "chronicle";
+                                      });
+  REQUIRE(chronicle != translated.end());
+  REQUIRE(chronicle->options.size() == 4);
+  const auto timeline =
+      std::find_if(chronicle->options.begin(), chronicle->options.end(),
+                   [](const dpp::command_option &option) {
+                     return option.name == "timeline";
+                   });
+  REQUIRE(timeline != chronicle->options.end());
+  REQUIRE(timeline->options.size() == 1);
+  REQUIRE(timeline->options[0].type == dpp::co_string);
+  REQUIRE(timeline->options[0].choices.size() == 3);
+}
+
+TEST_CASE("DPP context snapshots retain only bounded Chronicle metadata",
+          "[discord][chronicle][privacy]") {
+  dpp::message message;
+  message.id = 100;
+  message.guild_id = 10;
+  message.channel_id = 20;
+  message.author.id = 30;
+  message.author.username = "author";
+  message.member.set_nickname("Display");
+  message.content = std::string(2'001, 'a') + "secret tail";
+  message.sent = 123;
+  message.attachments.emplace_back(&message);
+  auto &attachment = message.attachments.back();
+  attachment.id = 200;
+  attachment.filename = "SPOILER_proof.png";
+  attachment.content_type = "image/png";
+  attachment.size = 99;
+  attachment.width = 10;
+  attachment.height = 20;
+  attachment.ephemeral = true;
+  attachment.url = "https://secret.invalid/original";
+  attachment.proxy_url = "https://secret.invalid/proxy";
+  attachment.description = "not retained";
+  attachment.waveform = "not retained";
+
+  const auto snapshot =
+      sanguinius::dpp_adapter_detail::context_message_snapshot(message);
+  REQUIRE(snapshot.reference.message_id == 100);
+  REQUIRE(snapshot.author.user_id == 30);
+  REQUIRE(snapshot.author.display_name == "Display");
+  REQUIRE(snapshot.content.size() == sanguinius::maximum_chronicle_source_size);
+  REQUIRE(snapshot.content_truncated);
+  REQUIRE(snapshot.occurred_at_ms == 123'000);
+  REQUIRE(snapshot.attachments.size() == 1);
+  REQUIRE(snapshot.attachments[0].filename == "SPOILER_proof.png");
+  REQUIRE(snapshot.attachments[0].spoiler);
+  REQUIRE(snapshot.attachments[0].ephemeral);
+
+  for (std::size_t index = 0; index <= sanguinius::maximum_chronicle_mentions;
+       ++index) {
+    dpp::user mentioned;
+    mentioned.id = 300 + index;
+    mentioned.username = "participant";
+    message.mentions.emplace_back(std::move(mentioned), dpp::guild_member{});
+  }
+  REQUIRE_THROWS_AS(
+      sanguinius::dpp_adapter_detail::context_message_snapshot(message),
+      std::invalid_argument);
 }
 
 TEST_CASE("callback fence waits for active work and suppresses late callbacks",

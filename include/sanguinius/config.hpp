@@ -33,6 +33,7 @@ struct DiscordCommandConfiguration {
   DiscordSnowflake guild_id;
   std::chrono::seconds request_timeout{10};
   bool admin_commands_enabled{};
+  bool chronicle_enabled{};
 };
 
 struct AiConfiguration {

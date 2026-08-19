@@ -196,8 +196,14 @@ InteractionMessage
 render_private_notice(const OpenPendingNoticeResult &result) {
   if (result.status == OpenPendingNoticeStatus::opened &&
       result.notice.has_value()) {
-    return text_message("**" + result.notice->content.title + "**\n" +
-                        result.notice->content.body);
+    InteractionMessage message = text_message(
+        "**" + result.notice->content.title + "**\n" +
+        result.notice->content.body);
+    for (const auto &action : result.notice->content.actions) {
+      message.buttons.push_back(ButtonPayload{.custom_id = action.custom_id,
+                                              .label = action.label});
+    }
+    return message;
   }
   switch (result.status) {
   case OpenPendingNoticeStatus::no_pending_notice:

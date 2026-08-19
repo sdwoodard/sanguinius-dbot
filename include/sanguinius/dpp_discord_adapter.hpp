@@ -5,6 +5,7 @@
 #include "sanguinius/discord_interfaces.hpp"
 
 #include <dpp/message.h>
+#include <dpp/appcommand.h>
 
 #include <chrono>
 #include <memory>
@@ -22,6 +23,11 @@ durable_public_message_json(const PublicMessageRequest &request,
 classify_http_delivery(bool succeeded, int http_status,
                        bool transport_failed) noexcept;
 [[nodiscard]] DiscordId provider_message_id(const dpp::message &message);
+[[nodiscard]] ContextMessageSnapshot
+context_message_snapshot(const dpp::message &message);
+[[nodiscard]] std::vector<dpp::slashcommand>
+translate_command_catalog(const CommandCatalog &catalog,
+                          dpp::snowflake application_id);
 
 } // namespace dpp_adapter_detail
 

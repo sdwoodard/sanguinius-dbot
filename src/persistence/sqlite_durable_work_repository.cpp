@@ -129,6 +129,11 @@ void add_trace(Json &value, const std::string_view correlation_id,
     const std::string_view correlation_id = {},
     const std::optional<std::string> &causation_event_id = std::nullopt) {
   const auto &notice = payload.notice;
+  Json actions = Json::array();
+  for (const auto &action : notice.content.actions) {
+    actions.push_back(
+        {{"custom_id", action.custom_id}, {"label", action.label}});
+  }
   Json result{
       {"payload_version", 1},
       {"notice_id", notice.notice_id},
@@ -139,6 +144,7 @@ void add_trace(Json &value, const std::string_view correlation_id,
       {"notice_type", notice.notice_type},
       {"title", notice.content.title},
       {"body", notice.content.body},
+      {"actions", std::move(actions)},
       {"expires_at_ms", notice.expires_at_ms},
       {"notice_idempotency_key", notice.notice_idempotency_key},
       {"token_idempotency_key", notice.token_idempotency_key},
@@ -188,6 +194,14 @@ void add_trace(Json &value, const std::string_view correlation_id,
           value.at("token_idempotency_key").get<std::string>(),
       .created_at_ms = value.at("created_at_ms").get<std::int64_t>(),
   };
+  if (value.contains("actions")) {
+    for (const auto &action : value.at("actions")) {
+      notice.content.actions.push_back(PendingNoticeContent::Action{
+          .custom_id = action.at("custom_id").get<std::string>(),
+          .label = action.at("label").get<std::string>(),
+      });
+    }
+  }
   return NoticeOutboxPayload{
       .notice = std::move(notice),
       .announce_publicly = value.at("announce_publicly").get<bool>(),
@@ -270,6 +284,31 @@ void add_trace(Json &value, const std::string_view correlation_id,
   };
 }
 
+[[nodiscard]] Json encode_memory_expiry(
+    const MemoryExpiryJobPayload &payload,
+    const std::string_view correlation_id = {},
+    const std::optional<std::string> &causation_event_id = std::nullopt) {
+  Json result{{"payload_version", 1},
+              {"memory_id", payload.memory_id},
+              {"expected_revision", payload.expected_revision}};
+  add_trace(result, correlation_id, causation_event_id);
+  return result;
+}
+
+[[nodiscard]] MemoryExpiryJobPayload decode_memory_expiry(const Json &value) {
+  if (!value.is_object() || value.at("payload_version").get<int>() != 1) {
+    throw std::runtime_error{"Unsupported memory expiry payload."};
+  }
+  auto result = MemoryExpiryJobPayload{
+      .memory_id = value.at("memory_id").get<std::string>(),
+      .expected_revision = value.at("expected_revision").get<std::size_t>(),
+  };
+  if (!valid_uuid_v4(result.memory_id) || result.expected_revision == 0) {
+    throw std::runtime_error{"Invalid memory expiry payload."};
+  }
+  return result;
+}
+
 [[nodiscard]] DurablePayload decode_payload(const std::string_view kind,
                                             const std::string &payload) {
   try {
@@ -281,6 +320,9 @@ void add_trace(Json &value, const std::string_view correlation_id,
     if (kind == public_discord_outbox_kind ||
         kind == test_public_retry_outbox_kind) {
       return decode_message(value);
+    }
+    if (kind == "chronicle.memory-expire.v1") {
+      return decode_memory_expiry(value);
     }
   } catch (const std::exception &) {
     return std::monostate{};
@@ -677,10 +719,16 @@ void add_trace(Json &value, const std::string_view correlation_id,
 void create_notice(SqliteConnection &connection,
                    const NoticeOutboxPayload &payload) {
   const auto &request = payload.notice;
+  Json actions = Json::array();
+  for (const auto &action : request.content.actions) {
+    actions.push_back(
+        {{"custom_id", action.custom_id}, {"label", action.label}});
+  }
   const auto payload_json = Json{
       {"title", request.content.title},
-      {"body",
-       request.content.body}}.dump();
+      {"body", request.content.body},
+      {"actions",
+       std::move(actions)}}.dump();
 
   auto notice = connection.prepare(
       "INSERT INTO pending_notice "
@@ -825,6 +873,21 @@ bool insert_outbox_uncommitted(SqliteConnection &connection,
                                const OutboxEnqueue &outbox,
                                const std::string &payload_json) {
   return insert_outbox(connection, outbox, payload_json);
+}
+
+std::string
+encode_public_payload(const PublicOutboxPayload &payload,
+                      const std::string_view correlation_id,
+                      const std::optional<std::string> &causation_event_id) {
+  return encode_message(payload, correlation_id, causation_event_id).dump();
+}
+
+std::string encode_memory_expiry_payload(
+    const MemoryExpiryJobPayload &payload,
+    const std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id) {
+  return encode_memory_expiry(payload, correlation_id, causation_event_id)
+      .dump();
 }
 
 } // namespace detail
@@ -1204,15 +1267,26 @@ SqliteDurableWorkRepository::claim_due_outbox(
   exhaust.execute();
 
   auto select = context_->connection().prepare(
-      "SELECT outbox_id, kind, payload_json, available_at_ms, attempt_count, "
-      "max_attempts, first_attempt_at_ms, first_attempt_elapsed_ms, "
-      "first_attempt_boot_id, submission_started_at_ms, provider_nonce, "
-      "last_error_code "
-      "FROM outbox_message "
-      "WHERE ((state = 'pending' AND available_at_ms <= ?) OR "
-      "(state = 'claimed' AND lease_until_ms <= ?)) "
-      "AND attempt_count < max_attempts AND (? OR kind NOT IN (?, ?)) "
-      "ORDER BY available_at_ms, outbox_id "
+      "SELECT candidate.outbox_id, candidate.kind, candidate.payload_json, "
+      "candidate.available_at_ms, candidate.attempt_count, "
+      "candidate.max_attempts, candidate.first_attempt_at_ms, "
+      "candidate.first_attempt_elapsed_ms, candidate.first_attempt_boot_id, "
+      "candidate.submission_started_at_ms, candidate.provider_nonce, "
+      "candidate.last_error_code "
+      "FROM outbox_message AS candidate "
+      "WHERE ((candidate.state = 'pending' AND "
+      "candidate.available_at_ms <= ?) OR (candidate.state = 'claimed' AND "
+      "candidate.lease_until_ms <= ?)) "
+      "AND candidate.attempt_count < candidate.max_attempts "
+      "AND (? OR candidate.kind NOT IN (?, ?)) "
+      "AND (candidate.aggregate_type IS NULL OR "
+      "candidate.aggregate_type <> 'chronicle_entry' OR NOT EXISTS ("
+      "SELECT 1 FROM outbox_message AS predecessor WHERE "
+      "predecessor.aggregate_type = 'chronicle_entry' AND "
+      "predecessor.aggregate_id = candidate.aggregate_id AND "
+      "predecessor.created_at_ms < candidate.created_at_ms AND "
+      "predecessor.state IN ('pending','claimed'))) "
+      "ORDER BY candidate.available_at_ms, candidate.outbox_id "
       "LIMIT 1");
   select.bind(1, now_ms);
   select.bind(2, now_ms);

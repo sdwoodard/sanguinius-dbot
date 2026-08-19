@@ -92,8 +92,14 @@ struct PublicOutboxPayload {
   bool fail_before_first_send{};
 };
 
+struct MemoryExpiryJobPayload {
+  std::string memory_id;
+  std::size_t expected_revision{};
+};
+
 using DurablePayload =
-    std::variant<std::monostate, NoticeOutboxPayload, PublicOutboxPayload>;
+    std::variant<std::monostate, NoticeOutboxPayload, PublicOutboxPayload,
+                 MemoryExpiryJobPayload>;
 
 struct ClaimedScheduledJob {
   std::string job_id;

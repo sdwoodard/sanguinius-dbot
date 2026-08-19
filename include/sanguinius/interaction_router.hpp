@@ -12,7 +12,8 @@ namespace sanguinius {
 class InteractionRouter {
 public:
   InteractionRouter(const ServerScopePolicy &scope_policy,
-                    ControlConfiguration controls, InteractionHandler &handler,
+                    ControlConfiguration controls, FeatureConfiguration features,
+                    InteractionHandler &handler,
                     Diagnostics &diagnostics);
   ~InteractionRouter();
 

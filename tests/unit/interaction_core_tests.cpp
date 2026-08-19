@@ -22,10 +22,10 @@ namespace {
 
 } // namespace
 
-TEST_CASE("command catalog version two is deterministic and admin gated",
+TEST_CASE("command catalog version three is deterministic and feature gated",
           "[interaction][commands]") {
   const auto public_catalog = sanguinius::command_catalog(false);
-  REQUIRE(public_catalog.version == 2);
+  REQUIRE(public_catalog.version == 3);
   REQUIRE(public_catalog.commands.size() == 1);
   REQUIRE(public_catalog.commands[0].name == "sanguinius");
   REQUIRE(public_catalog.commands[0].subcommands.size() == 3);
@@ -39,6 +39,15 @@ TEST_CASE("command catalog version two is deterministic and admin gated",
               sanguinius::command_catalog(true)));
   REQUIRE(sanguinius::canonical_command_snapshot(public_catalog) !=
           sanguinius::canonical_command_snapshot(admin_catalog));
+
+  const auto chronicle_catalog = sanguinius::command_catalog(false, true);
+  REQUIRE(chronicle_catalog.commands.size() == 3);
+  REQUIRE(chronicle_catalog.commands[1].name == "chronicle");
+  REQUIRE(chronicle_catalog.commands[1].subcommands.size() == 4);
+  REQUIRE(chronicle_catalog.commands[2].kind ==
+          sanguinius::ApplicationCommandKind::message_context);
+  REQUIRE(chronicle_catalog.commands[2].name ==
+          "Canonize in the Chronicle");
 }
 
 TEST_CASE("command registration reconciliation is guarded and retryable",

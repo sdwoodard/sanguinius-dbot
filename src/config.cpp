@@ -199,6 +199,8 @@ discord_command_configuration_from_source(const ConfigSource &source) {
   config.request_timeout = request_timeout(source, ignored_origin);
   config.admin_commands_enabled =
       optional_boolean(source, "SANGUINIUS_ADMIN_COMMANDS_ENABLED", false);
+  config.chronicle_enabled =
+      optional_boolean(source, "SANGUINIUS_CHRONICLE_ENABLED", false);
   return config;
 }
 

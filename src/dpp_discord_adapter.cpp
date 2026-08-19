@@ -2,6 +2,7 @@
 
 #include "sanguinius/ai_client.hpp"
 #include "sanguinius/callback_fence.hpp"
+#include "sanguinius/chronicle.hpp"
 #include "sanguinius/command_registry.hpp"
 #include "sanguinius/dpp_command_registry.hpp"
 #include "sanguinius/interaction_response_state.hpp"
@@ -175,7 +176,10 @@ discord_modal(const ModalPayload &source) {
     }
     dpp::component field;
     field.set_type(dpp::cot_text)
-        .set_text_style(dpp::text_short)
+        .set_text_style(source_field.style ==
+                                ModalFieldPayload::Style::paragraph
+                            ? dpp::text_paragraph
+                            : dpp::text_short)
         .set_id(source_field.custom_id)
         .set_label(source_field.label)
         .set_default_value(source_field.value)
@@ -474,17 +478,45 @@ void append_command_options(const std::vector<dpp::command_data_option> &source,
 }
 
 [[nodiscard]] std::vector<dpp::slashcommand>
-discord_commands(const CommandCatalog &catalog,
-                 const dpp::snowflake application_id) {
+make_discord_commands(const CommandCatalog &catalog,
+                      const dpp::snowflake application_id) {
   std::vector<dpp::slashcommand> result;
   result.reserve(catalog.commands.size());
   for (const auto &definition : catalog.commands) {
-    dpp::slashcommand command{definition.name, definition.description,
-                              application_id};
+    dpp::slashcommand command;
+    if (definition.kind == ApplicationCommandKind::message_context) {
+      // D++ 10.1.7's context-command constructor applies chat-input
+      // lowercasing before it assigns the context type. Set the type first so
+      // Discord receives the intended human-facing context-menu name.
+      command.set_type(dpp::ctxm_message)
+          .set_name(definition.name)
+          .set_application_id(application_id);
+    } else {
+      command = dpp::slashcommand{definition.name, definition.description,
+                                  application_id};
+    }
     command.set_dm_permission(false);
     for (const auto &subcommand : definition.subcommands) {
-      command.add_option(dpp::command_option{
-          dpp::co_sub_command, subcommand.name, subcommand.description});
+      dpp::command_option translated{dpp::co_sub_command, subcommand.name,
+                                     subcommand.description};
+      for (const auto &option : subcommand.options) {
+        dpp::command_option translated_option{
+            option.kind == CommandOptionKind::user ? dpp::co_user
+                                                   : dpp::co_string,
+            option.name, option.description, option.required};
+        if (option.kind == CommandOptionKind::string) {
+          translated_option.set_min_length(
+              static_cast<std::int64_t>(option.minimum_length));
+          translated_option.set_max_length(
+              static_cast<std::int64_t>(option.maximum_length));
+        }
+        for (const auto &choice : option.choices) {
+          translated_option.add_choice(
+              dpp::command_option_choice{choice.name, choice.value});
+        }
+        translated.add_option(translated_option);
+      }
+      command.add_option(translated);
     }
     result.push_back(std::move(command));
   }
@@ -535,6 +567,84 @@ DiscordId dpp_adapter_detail::provider_message_id(const dpp::message &message) {
     throw std::invalid_argument{"Discord delivery receipt has no message ID."};
   }
   return result;
+}
+
+ContextMessageSnapshot
+dpp_adapter_detail::context_message_snapshot(const dpp::message &message) {
+  if (message.mentions.size() > maximum_chronicle_mentions) {
+    throw std::invalid_argument{
+        "Discord message has too many Chronicle participants."};
+  }
+  const auto bounded = [](const std::string &value, const std::size_t maximum) {
+    if (value.size() <= maximum)
+      return value;
+    auto end = maximum;
+    while (end > 0 &&
+           (static_cast<unsigned char>(value[end]) & 0xC0U) == 0x80U) {
+      --end;
+    }
+    return value.substr(0, end);
+  };
+  ContextMessageSnapshot snapshot{
+      .reference = MessageReference{.message_id = id(message.id),
+                                    .guild_id = id(message.guild_id),
+                                    .channel_id = id(message.channel_id)},
+      .author =
+          ContextUserSnapshot{
+              .user_id = id(message.author.id),
+              .username = bounded(message.author.username, 128),
+              .display_name = bounded(!message.member.get_nickname().empty()
+                                          ? message.member.get_nickname()
+                                          : (!message.author.global_name.empty()
+                                                 ? message.author.global_name
+                                                 : message.author.username),
+                                      128),
+              .is_bot = message.author.is_bot()},
+      .content = bounded(message.content, maximum_chronicle_source_size),
+      .content_truncated =
+          message.content.size() > maximum_chronicle_source_size,
+      .occurred_at_ms = static_cast<std::int64_t>(message.sent) * 1'000,
+      .mentioned_users = {},
+      .attachments = {},
+  };
+  for (std::size_t index = 0; index < message.mentions.size(); ++index) {
+    const auto &[user, member] = message.mentions[index];
+    snapshot.mentioned_users.push_back(ContextUserSnapshot{
+        .user_id = id(user.id),
+        .username = bounded(user.username, 128),
+        .display_name =
+            bounded(!member.get_nickname().empty()
+                        ? member.get_nickname()
+                        : (!user.global_name.empty() ? user.global_name
+                                                     : user.username),
+                    128),
+        .is_bot = user.is_bot()});
+  }
+  const auto attachment_count = std::min<std::size_t>(
+      message.attachments.size(), maximum_chronicle_attachments);
+  for (std::size_t index = 0; index < attachment_count; ++index) {
+    const auto &attachment = message.attachments[index];
+    snapshot.attachments.push_back(ContextAttachmentSnapshot{
+        .attachment_id = id(attachment.id),
+        .filename = bounded(attachment.filename, 255),
+        .content_type =
+            attachment.content_type.empty()
+                ? std::nullopt
+                : std::optional{bounded(attachment.content_type, 127)},
+        .byte_size = attachment.size,
+        .width = attachment.width == 0 ? std::nullopt
+                                       : std::optional{attachment.width},
+        .height = attachment.height == 0 ? std::nullopt
+                                         : std::optional{attachment.height},
+        .ephemeral = attachment.ephemeral,
+        .spoiler = attachment.filename.starts_with("SPOILER_")});
+  }
+  return snapshot;
+}
+
+std::vector<dpp::slashcommand> dpp_adapter_detail::translate_command_catalog(
+    const CommandCatalog &catalog, const dpp::snowflake application_id) {
+  return make_discord_commands(catalog, application_id);
 }
 
 std::string dpp_adapter_detail::durable_public_message_json(
@@ -608,7 +718,8 @@ int run_discord_command_operator(const DiscordCommandOperation operation,
         return;
       }
 
-      const auto desired = discord_commands(catalog, bot.me.id);
+      const auto desired =
+          dpp_adapter_detail::translate_command_catalog(catalog, bot.me.id);
       bot.guild_commands_get(
           dpp::snowflake{guild_id.value()},
           [&bot, guild_id, desired, finish,
@@ -865,11 +976,8 @@ public:
                   event, InteractionKind::message_context_command, callbacks);
               interaction.command_name = event.command.get_command_name();
               const auto &message = event.get_message();
-              interaction.context_message = MessageReference{
-                  .message_id = id(message.id),
-                  .guild_id = id(message.guild_id),
-                  .channel_id = id(message.channel_id),
-              };
+              interaction.context_message =
+                  dpp_adapter_detail::context_message_snapshot(message);
               interaction_callback_(std::move(interaction));
             } catch (const std::exception &) {
               reject_interaction(event, "Message-context translation failed.");
@@ -951,7 +1059,8 @@ public:
     if (!registration_.begin()) {
       return;
     }
-    const auto desired = discord_commands(command_catalog_, bot_.me.id);
+    const auto desired = dpp_adapter_detail::translate_command_catalog(
+        command_catalog_, bot_.me.id);
     bot_.guild_commands_get(
         dpp::snowflake{guild_id_.value()},
         [this, callbacks = callbacks_,

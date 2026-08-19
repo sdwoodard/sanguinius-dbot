@@ -4,6 +4,7 @@
 
 #include "support/fake_ai_client.hpp"
 #include "support/fake_clock.hpp"
+#include "support/fake_chronicle_repository.hpp"
 #include "support/fake_diagnostics.hpp"
 #include "support/fake_discord.hpp"
 #include "support/fake_durable_work_repository.hpp"
@@ -53,6 +54,7 @@ public:
     auto owned_notices = std::make_unique<FakePendingNoticeRepository>();
     auto owned_durable_work =
         std::make_unique<FakeDurableWorkRepository>(*owned_notices);
+    auto owned_chronicle = std::make_unique<FakeChronicleRepository>();
     auto owned_ai = std::make_unique<FakeAiClient>();
     auto owned_discord = std::make_unique<FakeDiscord>();
 
@@ -64,6 +66,7 @@ public:
     identities = owned_identities.get();
     notices = owned_notices.get();
     durable_work = owned_durable_work.get();
+    chronicle = owned_chronicle.get();
     ai = owned_ai.get();
     discord = owned_discord.get();
 
@@ -79,6 +82,7 @@ public:
             .identities = std::move(owned_identities),
             .pending_notices = std::move(owned_notices),
             .durable_work = std::move(owned_durable_work),
+            .chronicle = std::move(owned_chronicle),
             .ai_client = std::move(owned_ai),
             .discord = std::move(owned_discord),
         });
@@ -102,6 +106,7 @@ public:
   FakeCoreIdentityRepository *identities{};
   FakePendingNoticeRepository *notices{};
   FakeDurableWorkRepository *durable_work{};
+  FakeChronicleRepository *chronicle{};
   FakeAiClient *ai{};
   FakeDiscord *discord{};
   std::unique_ptr<Application> application;

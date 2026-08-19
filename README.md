@@ -1,11 +1,12 @@
 # Sanguinius
 
 Sanguinius is a Discord bot built with modern C++ and [D++](https://dpp.dev/).
-It supports guild-scoped slash commands and sealed notices, preserves two
-public prefix commands, answers messages that begin with a bot mention through
-the OpenAI Responses API, and writes every visible guild message-create event
-to an append-only text log. Typed configuration fixes the bot's feature
-boundary to one guild, one primary text channel, and one owner.
+It supports guild-scoped slash commands, sealed notices, and an optional
+Living Chronicle with deliberate canon entries and explicit memories. It
+preserves two public prefix commands, answers messages that begin with a bot
+mention through the OpenAI Responses API, and writes every visible guild
+message-create event to an append-only text log. Typed configuration fixes the
+bot's feature boundary to one guild, one primary text channel, and one owner.
 
 ## Commands
 
@@ -14,13 +15,20 @@ boundary to one guild, one primary text channel, and one owner.
 | `!help` | List the supported commands. |
 | `!repo` | Link to this source repository. |
 
-The configured guild also receives command catalog version 2:
+The configured guild receives command catalog version 3. Chronicle commands
+are registered only when `SANGUINIUS_CHRONICLE_ENABLED=true`; owner commands
+remain separately gated:
 
 | Command | Visibility and behavior |
 | --- | --- |
 | `/sanguinius status` | Ephemeral readiness, feature-mode, and unopened-notice summary. |
 | `/sanguinius inbox` | Ephemerally opens the oldest pending sealed notice. Duplicate Discord interaction IDs replay the same result. |
 | `/sanguinius privacy` | Ephemeral identity/preference, voice-input, no-DM, and raw-voice-retention summary. |
+| **Canonize in the Chronicle** | Message context action that privately previews a bounded proposal, then requests sealed participant approval before canon. |
+| `/chronicle remember` | Opens a modal and ephemeral confirm/cancel preview for an explicit memory. Unconfirmed drafts are memory-only and disappear on restart. |
+| `/chronicle recall [query]` | Ephemerally returns up to five canon entries or explicit memories visible to the invoker. |
+| `/chronicle timeline [period]` | Publicly lists up to five shared canon entries for `7d`, `30d`, or `all`. |
+| `/chronicle forget [reference]` | With a unique reference, retracts directly without components; otherwise ephemerally lists controllable records with short-lived controls. |
 | `/sang-admin health` | Ephemeral owner-only health; registered only when admin commands are enabled. |
 | `/sang-admin work-recent` | Ephemeral owner-only inspection of the ten most recent redacted event/job/outbox summaries. |
 | `/sang-admin work-dead` | Ephemeral owner-only inspection of the ten most recent dead jobs and failed/dead outbox rows. |
@@ -44,6 +52,13 @@ private proactive content is stored as a pending notice. A neutral public card
 may mention only its target and contains no private title/body or database
 identifier. The target retrieves the content by clicking its opaque,
 expiring button or by running `/sanguinius inbox`.
+
+Chronicle proposals retain only bounded source text and approved attachment
+metadata—never attachment bytes, URLs, embeds, or surrounding history. Shared
+canon and retraction cards are public; recall, memory previews, management,
+and personal content are ephemeral. Participant-only entries and all explicit
+memories produce no public content. Sensitive or personal memories are forced
+to self-only visibility. Milestone 6 does not inject memories into AI prompts.
 
 To talk to the AI persona, mention the bot at the start of a message:
 
@@ -163,7 +178,7 @@ Optional settings are:
 | `SANGUINIUS_DATABASE_FILE` | `state/sanguinius.sqlite3` | SQLite state file. Production should use an absolute path outside release directories. |
 | `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Register owner slash controls and enable the transitional prefix health command. |
 | `SANGUINIUS_TEST_MODE` | `false` | Enable auditable, self-targeted durable-work test controls. |
-| `SANGUINIUS_CHRONICLE_ENABLED` | `false` | Configured Chronicle mode; no Chronicle behavior exists yet. |
+| `SANGUINIUS_CHRONICLE_ENABLED` | `false` | Register and enable the Living Chronicle context/slash flows. Durable memory expiry remains safe while UI access is disabled. |
 | `SANGUINIUS_TAROT_ENABLED` | `false` | Configured Tarot mode; no Tarot behavior exists yet. |
 | `SANGUINIUS_APPEARANCES_MODE` | `off` | Configured `off`, `dry_run`, or `live` intent; no appearance service exists yet. |
 | `SANGUINIUS_VOX_ENABLED` | `false` | Configured Vox mode; no voice connection exists yet. |
@@ -229,6 +244,13 @@ rows also persist a boot-session identifier and boot-relative elapsed time so
 wall-clock correction cannot reopen the nonce retry window. Pending,
 lease-expiry, aggregate-history, recent-event, and dead/failed inspection paths
 have dedicated indexes, and event updates/deletes are rejected by triggers.
+Migration `0004_chronicle` adds bounded Chronicle proposals, participants,
+tags, attachment metadata, approvals, explicit memories/subjects, and
+revision-fenced interaction tokens. It imports Chronicle consent only for
+users already represented by `user_preference`; identities first seen later
+remain opted out, and memory callbacks remain off. Source identity stays
+unique after retraction, expiry jobs are durable, and private prose is absent
+from journal payloads and public outbox rows.
 The readable SQL for each ordered migration is
 embedded independently with its SHA-256
 checksum. Applied history must be ordered, contiguous, and byte-for-byte

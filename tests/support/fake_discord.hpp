@@ -132,6 +132,11 @@ public:
     return deferrals_;
   }
 
+  [[nodiscard]] std::vector<ModalPayload> modals() const {
+    const std::scoped_lock lock{mutex_};
+    return modals_;
+  }
+
 private:
   mutable std::mutex mutex_;
   mutable std::condition_variable changed_;

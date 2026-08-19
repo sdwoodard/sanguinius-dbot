@@ -39,15 +39,28 @@ void validate_key(const std::string_view value) {
 
 void validate_notice_content(const PendingNoticeContent &content) {
   if (content.title.empty() || content.title.size() > 100 ||
-      content.body.empty() || content.body.size() > 1'500) {
+      content.body.empty() || content.body.size() > 1'500 ||
+      content.actions.size() > 2) {
     throw std::invalid_argument{"Pending notice content is invalid."};
+  }
+  for (const auto &action : content.actions) {
+    if (action.custom_id.empty() || action.custom_id.size() > 100 ||
+        action.label.empty() || action.label.size() > 80) {
+      throw std::invalid_argument{"Pending notice action is invalid."};
+    }
   }
 }
 
 [[nodiscard]] std::string
 encode_notice_content(const PendingNoticeContent &content) {
-  return nlohmann::json{{"title", content.title}, {"body", content.body}}
-      .dump();
+  auto actions = nlohmann::json::array();
+  for (const auto &action : content.actions) {
+    actions.push_back({{"custom_id", action.custom_id},
+                       {"label", action.label}});
+  }
+  return nlohmann::json{{"title", content.title},
+                        {"body", content.body},
+                        {"actions", std::move(actions)}}.dump();
 }
 
 [[nodiscard]] PendingNoticeContent
@@ -61,6 +74,17 @@ decode_notice_content(const std::string &payload) {
     }
     PendingNoticeContent content{parsed.at("title").get<std::string>(),
                                  parsed.at("body").get<std::string>()};
+    if (parsed.contains("actions")) {
+      if (!parsed.at("actions").is_array()) {
+        throw std::runtime_error{"shape"};
+      }
+      for (const auto &action : parsed.at("actions")) {
+        content.actions.push_back(PendingNoticeContent::Action{
+            .custom_id = action.at("custom_id").get<std::string>(),
+            .label = action.at("label").get<std::string>(),
+        });
+      }
+    }
     validate_notice_content(content);
     return content;
   } catch (const std::exception &) {
