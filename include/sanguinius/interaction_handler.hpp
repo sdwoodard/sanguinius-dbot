@@ -4,6 +4,7 @@
 #include "sanguinius/clock.hpp"
 #include "sanguinius/diagnostics.hpp"
 #include "sanguinius/discord_interfaces.hpp"
+#include "sanguinius/durable_work_controls.hpp"
 #include "sanguinius/feature_config.hpp"
 #include "sanguinius/health.hpp"
 #include "sanguinius/pending_notice.hpp"
@@ -21,7 +22,11 @@ enum class InteractionOperation {
   inbox,
   privacy,
   admin_health,
+  work_recent,
+  work_dead,
   test_notice,
+  test_schedule_notice,
+  test_public_retry,
   open_component,
 };
 
@@ -34,7 +39,7 @@ class InteractionHandler {
 public:
   InteractionHandler(CoreIdentityRepository &identities,
                      PendingNoticeService &notices, const Clock &clock,
-                     DiscordPublicDelivery &public_delivery,
+                     DurableWorkControlService &durable_controls,
                      HealthService &health_service, Diagnostics &diagnostics,
                      FeatureConfiguration features,
                      std::function<QueueSnapshot()> message_queue,
@@ -62,7 +67,7 @@ private:
   CoreIdentityRepository &identities_;
   PendingNoticeService &notices_;
   const Clock &clock_;
-  DiscordPublicDelivery &public_delivery_;
+  DurableWorkControlService &durable_controls_;
   HealthService &health_service_;
   Diagnostics &diagnostics_;
   FeatureConfiguration features_;

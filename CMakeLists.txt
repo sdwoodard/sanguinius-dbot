@@ -53,6 +53,7 @@ sanguinius_embed_migrations(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embedded_migration.cpp.in"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0001_core_foundation.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0002_discord_interactions.sql"
+    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0003_durable_work.sql"
 )
 
 function(sanguinius_enable_warnings target)
@@ -78,6 +79,8 @@ add_library(sanguinius_core STATIC
     src/command_registry.cpp
     src/config.cpp
     src/diagnostics.cpp
+    src/durable_work.cpp
+    src/durable_work_controls.cpp
     src/discord_command_cli.cpp
     src/feature_config.cpp
     src/health.cpp
@@ -88,9 +91,11 @@ add_library(sanguinius_core STATIC
     src/message_handler.cpp
     src/message_logger.cpp
     src/owner_admin.cpp
+    src/outbox.cpp
     src/pending_notice.cpp
     src/persistent_id.cpp
     src/repositories.cpp
+    src/scheduler.cpp
     src/server_scope_policy.cpp
     src/snowflake.cpp
     src/work_queue.cpp
@@ -115,6 +120,7 @@ add_library(sanguinius_persistence STATIC
     src/persistence/database.cpp
     src/persistence/migrator.cpp
     src/persistence/sqlite.cpp
+    src/persistence/sqlite_durable_work_repository.cpp
     src/persistence/sqlite_repositories.cpp
     src/persistence/transaction.cpp
 )
@@ -180,6 +186,7 @@ if(BUILD_TESTING)
     add_sanguinius_test(sanguinius_unit_tests
         tests/unit/config_tests.cpp
         tests/unit/command_parse_tests.cpp
+        tests/unit/durable_work_service_tests.cpp
         tests/unit/health_tests.cpp
         tests/unit/interaction_core_tests.cpp
         tests/unit/mention_parse_tests.cpp
@@ -198,6 +205,7 @@ if(BUILD_TESTING)
     add_executable(sanguinius_persistence_tests
         tests/integration/backup_tests.cpp
         tests/integration/database_cli_tests.cpp
+        tests/integration/durable_work_tests.cpp
         tests/integration/migration_tests.cpp
         tests/integration/repository_tests.cpp
         tests/integration/sqlite_tests.cpp

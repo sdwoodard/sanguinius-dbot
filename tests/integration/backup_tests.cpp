@@ -38,7 +38,7 @@ TEST_CASE("online backup produces a portable verified restorable database",
       source.connection(), temporary.path(), backup_path, migrator, 25ms);
   REQUIRE(result.migration.state ==
           sanguinius::persistence::SchemaState::current);
-  REQUIRE(result.migration.current_version == 2);
+  REQUIRE(result.migration.current_version == 3);
   REQUIRE(result.size_bytes > 0);
   REQUIRE(std::filesystem::is_regular_file(backup_path));
   const auto permissions = std::filesystem::status(backup_path).permissions();

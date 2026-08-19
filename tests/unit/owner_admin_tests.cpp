@@ -29,7 +29,10 @@ TEST_CASE("owner admin service applies enabled scope and owner boundaries",
              return sanguinius::QueueSnapshot{
                  .capacity = 16, .queued = 2, .accepting = true};
            },
-       .pending_notice_count = [] { return std::size_t{3}; }}};
+       .scheduler_queue = [] { return sanguinius::QueueSnapshot{}; },
+       .outbox_queue = [] { return sanguinius::QueueSnapshot{}; },
+       .pending_notice_count = [] { return std::size_t{3}; },
+       .durable_work = [] { return sanguinius::DurableWorkHealth{}; }}};
   const sanguinius::OwnerAdminService service{
       {.admin_commands_enabled = true, .test_mode = false}, policy, health};
 
@@ -72,7 +75,10 @@ TEST_CASE("owner admin service is disabled independently of owner identity",
       {},
       {true, 1, 1, "3.53.4", "instance"},
       {.interaction_queue = [] { return sanguinius::QueueSnapshot{}; },
-       .pending_notice_count = [] { return std::size_t{}; }}};
+       .scheduler_queue = [] { return sanguinius::QueueSnapshot{}; },
+       .outbox_queue = [] { return sanguinius::QueueSnapshot{}; },
+       .pending_notice_count = [] { return std::size_t{}; },
+       .durable_work = [] { return sanguinius::DurableWorkHealth{}; }}};
   const sanguinius::OwnerAdminService service{{}, policy, health};
 
   const auto result = service.handle(

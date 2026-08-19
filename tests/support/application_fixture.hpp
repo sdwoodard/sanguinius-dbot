@@ -6,6 +6,7 @@
 #include "support/fake_clock.hpp"
 #include "support/fake_diagnostics.hpp"
 #include "support/fake_discord.hpp"
+#include "support/fake_durable_work_repository.hpp"
 #include "support/fake_id_generator.hpp"
 #include "support/fake_message_log.hpp"
 #include "support/fake_repositories.hpp"
@@ -34,6 +35,7 @@ public:
           .ai_queue_capacity = 64,
           .ai_worker_count = 2,
           .interaction_queue_capacity = 64,
+          .durable_delivery_receipt_wait = std::chrono::milliseconds{100},
       }) {
     auto owned_clock = std::make_unique<FakeClock>();
     auto owned_ids = std::make_unique<FakeIdGenerator>(std::vector<std::string>{
@@ -49,6 +51,8 @@ public:
         std::make_unique<FakeApplicationInstanceRepository>();
     auto owned_identities = std::make_unique<FakeCoreIdentityRepository>();
     auto owned_notices = std::make_unique<FakePendingNoticeRepository>();
+    auto owned_durable_work =
+        std::make_unique<FakeDurableWorkRepository>(*owned_notices);
     auto owned_ai = std::make_unique<FakeAiClient>();
     auto owned_discord = std::make_unique<FakeDiscord>();
 
@@ -59,6 +63,7 @@ public:
     instances = owned_instances.get();
     identities = owned_identities.get();
     notices = owned_notices.get();
+    durable_work = owned_durable_work.get();
     ai = owned_ai.get();
     discord = owned_discord.get();
 
@@ -73,6 +78,7 @@ public:
             .application_instances = std::move(owned_instances),
             .identities = std::move(owned_identities),
             .pending_notices = std::move(owned_notices),
+            .durable_work = std::move(owned_durable_work),
             .ai_client = std::move(owned_ai),
             .discord = std::move(owned_discord),
         });
@@ -95,6 +101,7 @@ public:
   FakeApplicationInstanceRepository *instances{};
   FakeCoreIdentityRepository *identities{};
   FakePendingNoticeRepository *notices{};
+  FakeDurableWorkRepository *durable_work{};
   FakeAiClient *ai{};
   FakeDiscord *discord{};
   std::unique_ptr<Application> application;

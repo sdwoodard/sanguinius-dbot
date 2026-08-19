@@ -34,8 +34,20 @@ slash_operation(const IncomingInteraction &interaction) {
     if (interaction.subcommand_name == "health") {
       return InteractionOperation::admin_health;
     }
+    if (interaction.subcommand_name == "work-recent") {
+      return InteractionOperation::work_recent;
+    }
+    if (interaction.subcommand_name == "work-dead") {
+      return InteractionOperation::work_dead;
+    }
     if (interaction.subcommand_name == "test-notice") {
       return InteractionOperation::test_notice;
+    }
+    if (interaction.subcommand_name == "test-schedule-notice") {
+      return InteractionOperation::test_schedule_notice;
+    }
+    if (interaction.subcommand_name == "test-public-retry") {
+      return InteractionOperation::test_public_retry;
     }
   }
   return std::nullopt;
@@ -127,8 +139,18 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
     return;
   }
 
-  if (*operation == InteractionOperation::admin_health ||
-      *operation == InteractionOperation::test_notice) {
+  const bool admin_operation =
+      *operation == InteractionOperation::admin_health ||
+      *operation == InteractionOperation::work_recent ||
+      *operation == InteractionOperation::work_dead ||
+      *operation == InteractionOperation::test_notice ||
+      *operation == InteractionOperation::test_schedule_notice ||
+      *operation == InteractionOperation::test_public_retry;
+  const bool test_operation =
+      *operation == InteractionOperation::test_notice ||
+      *operation == InteractionOperation::test_schedule_notice ||
+      *operation == InteractionOperation::test_public_retry;
+  if (admin_operation) {
     if (!state_->controls.admin_commands_enabled) {
       state_->diagnostics.emit(
           {DiagnosticSeverity::warning, "interaction.admin_rejected",
@@ -149,8 +171,7 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       reply_ephemeral(interaction, "This owner-only command is unavailable.");
       return;
     }
-    if (*operation == InteractionOperation::test_notice &&
-        !state_->controls.test_mode) {
+    if (test_operation && !state_->controls.test_mode) {
       state_->diagnostics.emit(
           {DiagnosticSeverity::warning, "interaction.admin_rejected",
            "Owner test interaction was rejected because test mode is disabled.",

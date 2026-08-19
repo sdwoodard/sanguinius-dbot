@@ -46,6 +46,8 @@ private:
 [[nodiscard]] std::optional<std::string>
 parse_component_token(std::string_view custom_id);
 [[nodiscard]] std::string make_component_id(std::string_view token_id);
+[[nodiscard]] PublicMessageRequest
+make_neutral_notice_card(const CreatePendingNoticeRequest &request);
 [[nodiscard]] InteractionMessage
 render_private_notice(const OpenPendingNoticeResult &result);
 

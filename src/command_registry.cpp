@@ -29,7 +29,13 @@ CommandCatalog command_catalog(const bool admin_commands_enabled) {
         .subcommands =
             {
                 {"health", "Show the private redacted health snapshot."},
+                {"work-recent", "Inspect recent redacted durable work."},
+                {"work-dead", "Inspect failed and dead durable work."},
                 {"test-notice", "Create a private self-targeted test notice."},
+                {"test-schedule-notice",
+                 "Schedule a private self-targeted test notice."},
+                {"test-public-retry",
+                 "Exercise one synthetic public delivery retry."},
             },
     });
   }

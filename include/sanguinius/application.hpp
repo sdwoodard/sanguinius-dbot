@@ -5,6 +5,7 @@
 #include "sanguinius/clock.hpp"
 #include "sanguinius/diagnostics.hpp"
 #include "sanguinius/discord_interfaces.hpp"
+#include "sanguinius/durable_work.hpp"
 #include "sanguinius/feature_config.hpp"
 #include "sanguinius/health.hpp"
 #include "sanguinius/id_generator.hpp"
@@ -13,6 +14,7 @@
 #include "sanguinius/repositories.hpp"
 #include "sanguinius/server_scope_policy.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -35,6 +37,8 @@ struct ApplicationOptions {
   std::size_t ai_queue_capacity{64};
   std::size_t ai_worker_count{2};
   std::size_t interaction_queue_capacity{64};
+  std::chrono::milliseconds durable_delivery_receipt_wait{
+      std::chrono::seconds{90}};
 };
 
 struct ApplicationDependencies {
@@ -46,6 +50,7 @@ struct ApplicationDependencies {
   std::unique_ptr<ApplicationInstanceRepository> application_instances;
   std::unique_ptr<CoreIdentityRepository> identities;
   std::unique_ptr<PendingNoticeRepository> pending_notices;
+  std::unique_ptr<DurableWorkRepository> durable_work;
   std::unique_ptr<AiClient> ai_client;
   std::unique_ptr<DiscordRuntime> discord;
 };

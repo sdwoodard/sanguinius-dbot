@@ -2,11 +2,14 @@
 
 #include "sanguinius/ai_responder.hpp"
 #include "sanguinius/command_registry.hpp"
+#include "sanguinius/durable_work_controls.hpp"
 #include "sanguinius/health.hpp"
 #include "sanguinius/interaction_handler.hpp"
 #include "sanguinius/interaction_router.hpp"
 #include "sanguinius/message_handler.hpp"
+#include "sanguinius/outbox.hpp"
 #include "sanguinius/owner_admin.hpp"
+#include "sanguinius/scheduler.hpp"
 
 #include <chrono>
 #include <mutex>
@@ -35,7 +38,8 @@ void validate(const ApplicationDependencies &dependencies) {
       !dependencies.persistent_id_generator || !dependencies.diagnostics ||
       !dependencies.message_log || !dependencies.application_instances ||
       !dependencies.identities || !dependencies.pending_notices ||
-      !dependencies.ai_client || !dependencies.discord) {
+      !dependencies.durable_work || !dependencies.ai_client ||
+      !dependencies.discord) {
     throw std::invalid_argument{
         "Application dependencies must all be configured."};
   }
@@ -55,11 +59,13 @@ public:
         application_instances_{std::move(dependencies.application_instances)},
         identities_{std::move(dependencies.identities)},
         pending_notices_{std::move(dependencies.pending_notices)},
+        durable_work_{std::move(dependencies.durable_work)},
         ai_client_{std::move(dependencies.ai_client)},
         discord_{std::move(dependencies.discord)} {
     if (!clock_ || !id_generator_ || !persistent_id_generator_ ||
         !diagnostics_ || !message_log_ || !application_instances_ ||
-        !identities_ || !pending_notices_ || !ai_client_ || !discord_) {
+        !identities_ || !pending_notices_ || !durable_work_ || !ai_client_ ||
+        !discord_) {
       throw std::invalid_argument{
           "Application dependencies must all be configured."};
     }
@@ -70,6 +76,17 @@ public:
     scope_policy_ = std::make_unique<ServerScopePolicy>(options_.server_scope);
     notice_service_ = std::make_unique<PendingNoticeService>(
         *pending_notices_, *clock_, *persistent_id_generator_);
+    outbox_ = std::make_unique<OutboxService>(
+        *durable_work_, *clock_, *persistent_id_generator_, *diagnostics_,
+        *discord_, *discord_, options_.server_scope, options_.instance_id, 32,
+        options_.durable_delivery_receipt_wait);
+    scheduler_ = std::make_unique<SchedulerService>(
+        *durable_work_, *clock_, *persistent_id_generator_, *diagnostics_,
+        options_.instance_id, [this] { outbox_->wake(); });
+    durable_controls_ = std::make_unique<DurableWorkControlService>(
+        *durable_work_, *clock_, *persistent_id_generator_,
+        options_.server_scope, [this] { scheduler_->wake(); },
+        [this] { outbox_->wake(); });
     health_service_ = std::make_unique<HealthService>(
         options_.build, options_.controls, options_.features,
         options_.persistence,
@@ -81,8 +98,14 @@ public:
                              ? QueueSnapshot{}
                              : interaction_handler_->queue_snapshot();
                 },
+            .scheduler_queue = [this] { return scheduler_->queue_snapshot(); },
+            .outbox_queue = [this] { return outbox_->queue_snapshot(); },
             .pending_notice_count =
                 [this] { return notice_service_->pending_count_all(); },
+            .durable_work =
+                [this] {
+                  return durable_work_->health(unix_milliseconds(*clock_));
+                },
         });
     owner_admin_ = std::make_unique<OwnerAdminService>(
         options_.controls, *scope_policy_, *health_service_);
@@ -90,8 +113,8 @@ public:
         *message_log_, *ai_responder_, *discord_, *diagnostics_, *owner_admin_,
         options_.command_prefix, options_.message_queue_capacity);
     interaction_handler_ = std::make_unique<InteractionHandler>(
-        *identities_, *notice_service_, *clock_, *discord_, *health_service_,
-        *diagnostics_, options_.features,
+        *identities_, *notice_service_, *clock_, *durable_controls_,
+        *health_service_, *diagnostics_, options_.features,
         [this] { return message_handler_->queue_snapshot(); },
         [this] { return ai_responder_->queue_snapshot(); },
         options_.interaction_queue_capacity);
@@ -120,6 +143,10 @@ public:
       });
       instance_started_ = true;
       static_cast<void>(notice_service_->recover_incomplete_deliveries());
+      outbox_->start();
+      outbox_started_ = true;
+      scheduler_->start();
+      scheduler_started_ = true;
       ai_responder_->start();
       ai_started_ = true;
       message_handler_->start();
@@ -196,6 +223,14 @@ private:
     if (interaction_router_) {
       interaction_router_->stop();
     }
+    if (scheduler_started_) {
+      scheduler_->stop();
+      scheduler_started_ = false;
+    }
+    if (outbox_started_) {
+      outbox_->stop();
+      outbox_started_ = false;
+    }
     if (interaction_handler_started_) {
       interaction_handler_->stop();
       interaction_handler_started_ = false;
@@ -241,6 +276,7 @@ private:
   std::unique_ptr<ApplicationInstanceRepository> application_instances_;
   std::unique_ptr<CoreIdentityRepository> identities_;
   std::unique_ptr<PendingNoticeRepository> pending_notices_;
+  std::unique_ptr<DurableWorkRepository> durable_work_;
   std::unique_ptr<AiClient> ai_client_;
   std::unique_ptr<DiscordRuntime> discord_;
   std::unique_ptr<AiResponder> ai_responder_;
@@ -249,6 +285,9 @@ private:
   std::unique_ptr<OwnerAdminService> owner_admin_;
   std::unique_ptr<MessageHandler> message_handler_;
   std::unique_ptr<PendingNoticeService> notice_service_;
+  std::unique_ptr<OutboxService> outbox_;
+  std::unique_ptr<SchedulerService> scheduler_;
+  std::unique_ptr<DurableWorkControlService> durable_controls_;
   std::unique_ptr<InteractionHandler> interaction_handler_;
   std::unique_ptr<InteractionRouter> interaction_router_;
   std::mutex state_mutex_;
@@ -256,6 +295,8 @@ private:
   bool ai_started_{false};
   bool message_handler_started_{false};
   bool interaction_handler_started_{false};
+  bool outbox_started_{false};
+  bool scheduler_started_{false};
   bool instance_started_{false};
   bool instance_finished_{false};
 };

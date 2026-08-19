@@ -14,7 +14,7 @@ boundary to one guild, one primary text channel, and one owner.
 | `!help` | List the supported commands. |
 | `!repo` | Link to this source repository. |
 
-The configured guild also receives command catalog version 1:
+The configured guild also receives command catalog version 2:
 
 | Command | Visibility and behavior |
 | --- | --- |
@@ -22,7 +22,11 @@ The configured guild also receives command catalog version 1:
 | `/sanguinius inbox` | Ephemerally opens the oldest pending sealed notice. Duplicate Discord interaction IDs replay the same result. |
 | `/sanguinius privacy` | Ephemeral identity/preference, voice-input, no-DM, and raw-voice-retention summary. |
 | `/sang-admin health` | Ephemeral owner-only health; registered only when admin commands are enabled. |
-| `/sang-admin test-notice` | Owner-only, test-mode-gated creation of a fixed, self-targeted 24-hour notice. |
+| `/sang-admin work-recent` | Ephemeral owner-only inspection of the ten most recent redacted event/job/outbox summaries. |
+| `/sang-admin work-dead` | Ephemeral owner-only inspection of the ten most recent dead jobs and failed/dead outbox rows. |
+| `/sang-admin test-notice` | Owner-only, test-mode-gated durable queueing of a fixed, self-targeted 24-hour notice. |
+| `/sang-admin test-schedule-notice` | Owner-only, test-mode-gated scheduling of the same self-targeted notice for 60 seconds later. |
+| `/sang-admin test-public-retry` | Owner-only, test-mode-gated neutral card whose first attempt fails before Discord submission and then retries once. |
 
 Command names are case-insensitive. Messages written by bots are logged but are
 not treated as commands.
@@ -158,7 +162,7 @@ Optional settings are:
 | `SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS` | `10` | Discord REST timeout, from 1 through 300 seconds. |
 | `SANGUINIUS_DATABASE_FILE` | `state/sanguinius.sqlite3` | SQLite state file. Production should use an absolute path outside release directories. |
 | `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Register owner slash controls and enable the transitional prefix health command. |
-| `SANGUINIUS_TEST_MODE` | `false` | Enable auditable owner test controls such as self-targeted `test-notice`. |
+| `SANGUINIUS_TEST_MODE` | `false` | Enable auditable, self-targeted durable-work test controls. |
 | `SANGUINIUS_CHRONICLE_ENABLED` | `false` | Configured Chronicle mode; no Chronicle behavior exists yet. |
 | `SANGUINIUS_TAROT_ENABLED` | `false` | Configured Tarot mode; no Tarot behavior exists yet. |
 | `SANGUINIUS_APPEARANCES_MODE` | `off` | Configured `off`, `dry_run`, or `live` intent; no appearance service exists yet. |
@@ -217,7 +221,15 @@ the one-guild scope, and user preferences. Migration
 tokens, durable reveal-attempt/idempotency records, state/timestamp constraints,
 and lookup/expiry indexes. A notice remains pending until Discord confirms its
 private interaction response; failed or interrupted delivery leaves it
-retrievable through the inbox. The readable SQL for each ordered migration is
+retrievable through the inbox. Migration `0003_durable_work` adds the immutable
+structured event journal, fenced scheduled-job leases, and the transactional
+outbox used by pending notices and public Discord messages. Durable payloads
+are bounded valid JSON; Discord IDs remain canonical decimal text. Public-send
+rows also persist a boot-session identifier and boot-relative elapsed time so
+wall-clock correction cannot reopen the nonce retry window. Pending,
+lease-expiry, aggregate-history, recent-event, and dead/failed inspection paths
+have dedicated indexes, and event updates/deletes are rejected by triggers.
+The readable SQL for each ordered migration is
 embedded independently with its SHA-256
 checksum. Applied history must be ordered, contiguous, and byte-for-byte
 checksum compatible with the running binary. The effective `sqlite_schema`
@@ -298,6 +310,39 @@ with an ephemeral overload response. When the message queue is full,
 actionable commands or mentions receive the normal overload reply; ordinary
 and bot-authored messages are dropped with a diagnostic to avoid public spam.
 
+Durable work uses a 32-item scheduler queue with one handler worker and a
+32-item outbox queue with two delivery workers; those workers also cap Discord
+REST submissions at two in flight. Polling is once per second, claims are made
+inside worker tasks in batches no larger than 16, leases last 60 seconds, and
+work defaults to five attempts with capped 5/10/20/40-second backoff. Queue
+saturation leaves rows pending. Claims and state transitions use lease-token
+fencing, so an expired worker cannot complete a reclaimed attempt. Readiness
+loss before submission releases the claim without consuming an attempt. Once a
+public Discord request is submitted, its fenced lease is extended through the
+receipt-wait deadline plus a reconciliation margin so another worker cannot
+reclaim an attempt whose callback is still legitimately in flight.
+Unknown or malformed versioned handler types are retained and dead-lettered
+with safe error categories; Milestone 5 registers only the owner test notice,
+pending-notice, public Discord, and synthetic retry handlers.
+
+Public outbox delivery uses one stable 25-character nonce with Discord's
+`enforce_nonce` flag. Immediately before network I/O, the current fenced claim
+records wall time, boot-relative elapsed time, the boot-session identifier, and
+an in-flight submission marker; a confirmed provider message ID is persisted
+and clears that marker. Transient or ambiguous outcomes retry with the same
+nonce only inside a conservative 90-second boot-relative window. A reboot or
+unverifiable elapsed-time relationship fails closed. If a callback is lost,
+the surviving marker makes a reclaimed attempt explicitly ambiguous, and an
+older attempt is quarantined as failed rather than resent. This quarantine also
+takes precedence over ordinary retry exhaustion when the submitted attempt was
+the row's final allowed attempt. Known public rows are not claimed until Discord
+reports ready. Local pending-notice rows and unknown kinds remain claimable so
+local effects can proceed and unsupported versions can dead-letter safely even
+while the gateway is unavailable. Health includes both durable queue snapshots,
+pending/claimed/dead/failed counts, retry totals, oldest-work lag, and the latest
+safe error categories. Inspection and health never render payloads or notice
+content.
+
 AI mentions use a separate two-thread pool with its own bounded 64-item queue.
 Each OpenAI request has a connection timeout and an overall timeout, and
 responses are truncated safely below Discord's message-size limit.
@@ -309,12 +354,15 @@ retrieval through the API.
 
 The application owns all long-lived services. SIGINT or SIGTERM first detaches
 Discord message and interaction intake, then stops the interaction, message,
-and AI workers before shutting down D++. Pending work cancelled solely because
-of shutdown does not emit a misleading failure reply. Callback fences wait for
+AI, scheduler, and outbox workers before shutting down D++. An acquired local
+claim that has not started is released without consuming an attempt. A request
+already handed to Discord remains fenced and is reconciled after lease expiry
+with the same nonce policy. Pending work cancelled solely because of shutdown
+does not emit a misleading failure reply. Callback fences wait for
 already-running interaction, gateway, REST-delivery, and command-registration
 callbacks while permanently suppressing late completions, so D++ teardown
-cannot access destroyed application state. An interrupted notice reveal remains
-pending and is recovered on the next startup.
+cannot access destroyed application state. Interrupted notice reveals and
+durable work are recovered on the next startup.
 
 The application enforces owner health requests through one reusable server
 scope policy: configured guild, then primary channel, then owner identity.

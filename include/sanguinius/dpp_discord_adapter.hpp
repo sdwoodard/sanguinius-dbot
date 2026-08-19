@@ -4,12 +4,26 @@
 #include "sanguinius/discord_command_cli.hpp"
 #include "sanguinius/discord_interfaces.hpp"
 
+#include <dpp/message.h>
+
 #include <chrono>
 #include <memory>
 #include <ostream>
 #include <string>
 
 namespace sanguinius {
+
+namespace dpp_adapter_detail {
+
+[[nodiscard]] std::string
+durable_public_message_json(const PublicMessageRequest &request,
+                            std::string_view provider_nonce);
+[[nodiscard]] DeliveryResult
+classify_http_delivery(bool succeeded, int http_status,
+                       bool transport_failed) noexcept;
+[[nodiscard]] DiscordId provider_message_id(const dpp::message &message);
+
+} // namespace dpp_adapter_detail
 
 class DppDiscordAdapter final : public DiscordRuntime {
 public:
@@ -31,7 +45,8 @@ public:
   void show_typing(DiscordId channel_id) override;
   void reply(const ReplyRequest &request) override;
   void send_public(const PublicMessageRequest &request,
-                   DeliveryCallback callback = {}) override;
+                   std::string_view provider_nonce,
+                   PublicDeliveryCallback callback = {}) override;
   [[nodiscard]] DiscordRuntimeStatus status() const noexcept override;
 
   [[nodiscard]] std::vector<ConversationEntry>

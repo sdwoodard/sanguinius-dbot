@@ -6,11 +6,13 @@
 #include <functional>
 #include <memory>
 #include <stop_token>
+#include <string_view>
 #include <vector>
 
 namespace sanguinius {
 
 using DeliveryCallback = std::function<void(DeliveryResult)>;
+using PublicDeliveryCallback = std::function<void(PublicDeliveryReceipt)>;
 
 class DiscordInteractionResponder {
 public:
@@ -74,7 +76,8 @@ public:
   virtual ~DiscordPublicDelivery() = default;
 
   virtual void send_public(const PublicMessageRequest &request,
-                           DeliveryCallback callback = {}) = 0;
+                           std::string_view provider_nonce,
+                           PublicDeliveryCallback callback = {}) = 0;
 };
 
 class DiscordStatusProvider {

@@ -22,10 +22,10 @@ namespace {
 
 } // namespace
 
-TEST_CASE("command catalog version one is deterministic and admin gated",
+TEST_CASE("command catalog version two is deterministic and admin gated",
           "[interaction][commands]") {
   const auto public_catalog = sanguinius::command_catalog(false);
-  REQUIRE(public_catalog.version == 1);
+  REQUIRE(public_catalog.version == 2);
   REQUIRE(public_catalog.commands.size() == 1);
   REQUIRE(public_catalog.commands[0].name == "sanguinius");
   REQUIRE(public_catalog.commands[0].subcommands.size() == 3);
@@ -33,7 +33,7 @@ TEST_CASE("command catalog version one is deterministic and admin gated",
   const auto admin_catalog = sanguinius::command_catalog(true);
   REQUIRE(admin_catalog.commands.size() == 2);
   REQUIRE(admin_catalog.commands[1].name == "sang-admin");
-  REQUIRE(admin_catalog.commands[1].subcommands.size() == 2);
+  REQUIRE(admin_catalog.commands[1].subcommands.size() == 6);
   REQUIRE(sanguinius::canonical_command_snapshot(admin_catalog) ==
           sanguinius::canonical_command_snapshot(
               sanguinius::command_catalog(true)));

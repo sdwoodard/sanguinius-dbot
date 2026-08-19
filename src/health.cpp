@@ -66,7 +66,9 @@ HealthService::HealthService(BuildInfo build, ControlConfiguration controls,
                              HealthRuntimeProviders runtime)
     : build_{std::move(build)}, controls_{controls}, features_{features},
       persistence_{std::move(persistence)}, runtime_{std::move(runtime)} {
-  if (!runtime_.interaction_queue || !runtime_.pending_notice_count) {
+  if (!runtime_.interaction_queue || !runtime_.scheduler_queue ||
+      !runtime_.outbox_queue || !runtime_.pending_notice_count ||
+      !runtime_.durable_work) {
     throw std::invalid_argument{"Health runtime providers are required."};
   }
 }
@@ -79,6 +81,8 @@ HealthSnapshot HealthService::snapshot(const QueueSnapshot message_queue,
       .message_queue = message_queue,
       .ai_queue = ai_queue,
       .interaction_queue = runtime_.interaction_queue(),
+      .scheduler_queue = runtime_.scheduler_queue(),
+      .outbox_queue = runtime_.outbox_queue(),
       .controls = controls_,
       .features = features_,
       .persistence = persistence_,
@@ -86,6 +90,7 @@ HealthSnapshot HealthService::snapshot(const QueueSnapshot message_queue,
                      ? DiscordRuntimeStatus{}
                      : runtime_.discord_status->status(),
       .pending_notice_count = runtime_.pending_notice_count(),
+      .durable_work = runtime_.durable_work(),
       .scope_matched = scope_matched,
   };
 }
@@ -110,6 +115,12 @@ std::string render_health(const HealthSnapshot &snapshot) {
   if (snapshot.interaction_queue.capacity != 0) {
     append_queue(output, "interaction", snapshot.interaction_queue);
   }
+  if (snapshot.scheduler_queue.capacity != 0) {
+    append_queue(output, "scheduler", snapshot.scheduler_queue);
+  }
+  if (snapshot.outbox_queue.capacity != 0) {
+    append_queue(output, "outbox", snapshot.outbox_queue);
+  }
   output << "discord_ready=" << enabled(snapshot.discord.ready) << '\n'
          << "command_catalog=" << snapshot.discord.command_catalog_version
          << '\n'
@@ -117,7 +128,29 @@ std::string render_health(const HealthSnapshot &snapshot) {
          << command_registration_state_name(
                 snapshot.discord.command_registration)
          << '\n'
-         << "pending_notices=" << snapshot.pending_notice_count << '\n';
+         << "pending_notices=" << snapshot.pending_notice_count << '\n'
+         << "jobs=" << snapshot.durable_work.pending_jobs << " pending, "
+         << snapshot.durable_work.claimed_jobs << " claimed, "
+         << snapshot.durable_work.dead_jobs << " dead, "
+         << snapshot.durable_work.job_retries << " retries\n"
+         << "outbox_work=" << snapshot.durable_work.pending_outbox
+         << " pending, " << snapshot.durable_work.claimed_outbox << " claimed, "
+         << snapshot.durable_work.failed_outbox << " failed, "
+         << snapshot.durable_work.dead_outbox << " dead, "
+         << snapshot.durable_work.outbox_retries << " retries\n"
+         << "scheduler_lag_ms=" << snapshot.durable_work.scheduler_lag_ms
+         << '\n'
+         << "outbox_lag_ms=" << snapshot.durable_work.outbox_lag_ms << '\n';
+  if (snapshot.durable_work.last_job_error.has_value()) {
+    output << "last_job_error="
+           << safe_build_metadata(*snapshot.durable_work.last_job_error)
+           << '\n';
+  }
+  if (snapshot.durable_work.last_outbox_error.has_value()) {
+    output << "last_outbox_error="
+           << safe_build_metadata(*snapshot.durable_work.last_outbox_error)
+           << '\n';
+  }
   output << "admin_commands="
          << enabled(snapshot.controls.admin_commands_enabled) << '\n'
          << "test_mode=" << enabled(snapshot.controls.test_mode) << '\n'

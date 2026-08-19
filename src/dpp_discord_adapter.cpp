@@ -7,6 +7,7 @@
 #include "sanguinius/interaction_response_state.hpp"
 
 #include <dpp/dpp.h>
+#include <dpp/restrequest.h>
 
 #include <algorithm>
 #include <atomic>
@@ -89,18 +90,9 @@ conversation_entry(const dpp::message &message) {
 
 [[nodiscard]] DeliveryResult
 delivery_result(const dpp::confirmation_callback_t &confirmation) noexcept {
-  if (!confirmation.is_error()) {
-    return DeliveryResult::success;
-  }
-  if (confirmation.http_info.status == 0 ||
-      confirmation.http_info.error != dpp::h_success) {
-    return DeliveryResult::unknown_outcome;
-  }
-  if (confirmation.http_info.status == 429 ||
-      confirmation.http_info.status >= 500) {
-    return DeliveryResult::transient_failure;
-  }
-  return DeliveryResult::permanent_failure;
+  return dpp_adapter_detail::classify_http_delivery(
+      !confirmation.is_error(), confirmation.http_info.status,
+      confirmation.http_info.error != dpp::h_success);
 }
 
 template <typename Callback>
@@ -521,6 +513,50 @@ Value wait_for_discord(std::future<Value> &future,
 }
 
 } // namespace
+
+DeliveryResult dpp_adapter_detail::classify_http_delivery(
+    const bool succeeded, const int http_status,
+    const bool transport_failed) noexcept {
+  if (succeeded) {
+    return DeliveryResult::success;
+  }
+  if (http_status == 0 || transport_failed) {
+    return DeliveryResult::unknown_outcome;
+  }
+  if (http_status == 429 || http_status >= 500) {
+    return DeliveryResult::transient_failure;
+  }
+  return DeliveryResult::permanent_failure;
+}
+
+DiscordId dpp_adapter_detail::provider_message_id(const dpp::message &message) {
+  const auto result = id(message.id);
+  if (!result.is_set()) {
+    throw std::invalid_argument{"Discord delivery receipt has no message ID."};
+  }
+  return result;
+}
+
+std::string dpp_adapter_detail::durable_public_message_json(
+    const PublicMessageRequest &request,
+    const std::string_view provider_nonce) {
+  if (provider_nonce.size() != 25 ||
+      std::any_of(provider_nonce.begin(), provider_nonce.end(),
+                  [](const char character) {
+                    return !((character >= '0' && character <= '9') ||
+                             (character >= 'a' && character <= 'f'));
+                  })) {
+    throw std::invalid_argument{"Discord provider nonce is invalid."};
+  }
+  auto message = discord_message(request.message);
+  message.channel_id = dpp::snowflake{request.channel_id.value()};
+  message.guild_id = dpp::snowflake{request.guild_id.value()};
+  message.nonce = provider_nonce;
+  auto payload = message.to_json(false);
+  payload["nonce"] = provider_nonce;
+  payload["enforce_nonce"] = true;
+  return payload.dump();
+}
 
 int run_discord_command_operator(const DiscordCommandOperation operation,
                                  std::string token,
@@ -1075,18 +1111,50 @@ void DppDiscordAdapter::reply(const ReplyRequest &request) {
 }
 
 void DppDiscordAdapter::send_public(const PublicMessageRequest &request,
-                                    DeliveryCallback callback) {
+                                    const std::string_view provider_nonce,
+                                    PublicDeliveryCallback callback) {
+  std::string payload;
   try {
-    auto message = discord_message(request.message);
-    message.channel_id = dpp::snowflake{request.channel_id.value()};
-    message.guild_id = dpp::snowflake{request.guild_id.value()};
-    auto asynchronous_callback = callback;
-    impl_->bot_.message_create(
-        message,
-        completion(impl_->callbacks_, std::move(asynchronous_callback)));
+    payload = dpp_adapter_detail::durable_public_message_json(request,
+                                                              provider_nonce);
   } catch (...) {
     if (callback) {
-      callback(DeliveryResult::permanent_failure);
+      callback({DeliveryResult::permanent_failure, std::nullopt});
+    }
+    return;
+  }
+
+  try {
+    auto asynchronous_callback = callback;
+    dpp::rest_request<dpp::message>(
+        &impl_->bot_, "/channels", request.channel_id.str(), "/messages",
+        dpp::m_post, payload,
+        [callbacks = impl_->callbacks_,
+         callback = std::move(asynchronous_callback)](
+            const dpp::confirmation_callback_t &confirmation) mutable {
+          invoke_callback(callbacks, [&callback, &confirmation] {
+            if (!callback) {
+              return;
+            }
+            PublicDeliveryReceipt receipt{
+                .result = delivery_result(confirmation),
+                .provider_message_id = std::nullopt,
+            };
+            if (receipt.result == DeliveryResult::success) {
+              try {
+                receipt.provider_message_id =
+                    dpp_adapter_detail::provider_message_id(
+                        confirmation.get<dpp::message>());
+              } catch (...) {
+                receipt.result = DeliveryResult::unknown_outcome;
+              }
+            }
+            callback(std::move(receipt));
+          });
+        });
+  } catch (...) {
+    if (callback) {
+      callback({DeliveryResult::unknown_outcome, std::nullopt});
     }
   }
 }

@@ -7,6 +7,7 @@
 #include "sanguinius/openai_client.hpp"
 #include "sanguinius/persistence/database.hpp"
 #include "sanguinius/persistence/migrator.hpp"
+#include "sanguinius/persistence/sqlite_durable_work_repository.hpp"
 #include "sanguinius/persistence/sqlite_repositories.hpp"
 #include "sanguinius/persistent_id.hpp"
 
@@ -64,6 +65,9 @@ std::unique_ptr<Application> make_application(const Config &config) {
   auto pending_notices =
       std::make_unique<persistence::SqlitePendingNoticeRepository>(
           repository_context);
+  auto durable_work =
+      std::make_unique<persistence::SqliteDurableWorkRepository>(
+          repository_context);
 
   auto id_generator = std::make_unique<ProcessIdGenerator>();
   auto diagnostics = std::make_unique<ConsoleDiagnostics>();
@@ -108,6 +112,7 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .application_instances = std::move(application_instances),
           .identities = std::move(identities),
           .pending_notices = std::move(pending_notices),
+          .durable_work = std::move(durable_work),
           .ai_client = std::move(ai_client),
           .discord = std::move(discord),
       });

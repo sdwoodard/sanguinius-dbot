@@ -2,6 +2,7 @@
 
 #include "sanguinius/build_info.hpp"
 #include "sanguinius/discord_interfaces.hpp"
+#include "sanguinius/durable_work.hpp"
 #include "sanguinius/feature_config.hpp"
 #include "sanguinius/work_queue.hpp"
 
@@ -27,18 +28,24 @@ struct HealthSnapshot {
   QueueSnapshot message_queue;
   QueueSnapshot ai_queue;
   QueueSnapshot interaction_queue;
+  QueueSnapshot scheduler_queue;
+  QueueSnapshot outbox_queue;
   ControlConfiguration controls;
   FeatureConfiguration features;
   PersistenceHealth persistence;
   DiscordRuntimeStatus discord;
   std::size_t pending_notice_count{};
+  DurableWorkHealth durable_work;
   bool scope_matched{};
 };
 
 struct HealthRuntimeProviders {
   const DiscordStatusProvider *discord_status{};
   std::function<QueueSnapshot()> interaction_queue;
+  std::function<QueueSnapshot()> scheduler_queue;
+  std::function<QueueSnapshot()> outbox_queue;
   std::function<std::size_t()> pending_notice_count;
+  std::function<DurableWorkHealth()> durable_work;
 };
 
 class HealthService {

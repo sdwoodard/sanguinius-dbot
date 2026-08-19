@@ -163,6 +163,11 @@ struct PublicMessageRequest {
   InteractionMessage message;
 };
 
+struct PublicDeliveryReceipt {
+  DeliveryResult result{DeliveryResult::permanent_failure};
+  std::optional<DiscordId> provider_message_id;
+};
+
 class DiscordInteractionResponder;
 
 struct IncomingInteraction {

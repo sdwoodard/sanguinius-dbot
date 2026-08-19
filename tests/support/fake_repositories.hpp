@@ -151,6 +151,7 @@ public:
                     Token{notice.notice_id, request.target_user_id,
                           request.guild_id, request.channel_id,
                           request.expires_at_ms, InteractionTokenKind::button});
+    changed_.notify_all();
     return {notice, request.token_id, true};
   }
 
@@ -437,6 +438,14 @@ public:
     return notices_.size();
   }
 
+  [[nodiscard]] bool
+  wait_for_notice_count(const std::size_t count,
+                        const std::chrono::milliseconds timeout) const {
+    std::unique_lock lock{mutex_};
+    return changed_.wait_for(
+        lock, timeout, [this, count] { return notices_.size() >= count; });
+  }
+
 private:
   enum class AttemptState {
     prepared,
@@ -479,6 +488,7 @@ private:
   }
 
   mutable std::mutex mutex_;
+  mutable std::condition_variable changed_;
   std::unordered_map<std::string, PendingNoticeRecord> notices_;
   std::unordered_map<std::string, Token> tokens_;
   std::unordered_map<std::string, std::string> creation_keys_;

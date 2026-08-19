@@ -59,13 +59,13 @@ privacy_message(const FeatureConfiguration &features,
 
 InteractionHandler::InteractionHandler(
     CoreIdentityRepository &identities, PendingNoticeService &notices,
-    const Clock &clock, DiscordPublicDelivery &public_delivery,
+    const Clock &clock, DurableWorkControlService &durable_controls,
     HealthService &health_service, Diagnostics &diagnostics,
     const FeatureConfiguration features,
     std::function<QueueSnapshot()> message_queue,
     std::function<QueueSnapshot()> ai_queue, const std::size_t queue_capacity)
     : identities_{identities}, notices_{notices}, clock_{clock},
-      public_delivery_{public_delivery}, health_service_{health_service},
+      durable_controls_{durable_controls}, health_service_{health_service},
       diagnostics_{diagnostics}, features_{features},
       message_queue_{std::move(message_queue)}, ai_queue_{std::move(ai_queue)},
       callbacks_{std::make_shared<CallbackFence>()},
@@ -167,52 +167,48 @@ void InteractionHandler::process(const RoutedInteraction &request) {
          "interaction.health");
     return;
   }
+  case InteractionOperation::work_recent:
+    edit(request.interaction,
+         text_message(render_work_inspection(durable_controls_.recent(),
+                                             "Recent durable work")),
+         "interaction.work_recent");
+    return;
+  case InteractionOperation::work_dead:
+    edit(request.interaction,
+         text_message(render_work_inspection(durable_controls_.dead(),
+                                             "Failed and dead durable work")),
+         "interaction.work_dead");
+    return;
   case InteractionOperation::test_notice: {
-    auto creation = notices_.create_test_notice(request.interaction);
-    if (!creation.persistence.created) {
-      diagnostics_.emit(
-          {DiagnosticSeverity::info, "interaction.test_notice",
-           "Owner test notice creation was replayed idempotently.",
-           request.interaction.correlation_id});
-      edit(request.interaction,
-           text_message("That test notice was already created. Open it from "
-                        "its card or with `/sanguinius inbox`."),
-           "interaction.test_notice");
-      return;
-    }
-    diagnostics_.emit({DiagnosticSeverity::info, "interaction.test_notice",
-                       "Owner test notice was created.",
-                       request.interaction.correlation_id});
-    const auto responder = request.interaction.responder;
-    const auto correlation_id = request.interaction.correlation_id;
-    const auto callbacks = callbacks_;
-    public_delivery_.send_public(
-        creation.public_card, [this, callbacks, responder,
-                               correlation_id](const DeliveryResult result) {
-          try {
-            static_cast<void>(callbacks->invoke([this, responder,
-                                                 correlation_id, result] {
-              if (!responder) {
-                return;
-              }
-              if (result == DeliveryResult::success) {
-                responder->edit_original(text_message(
-                    "The test notice was stored and its neutral card was "
-                    "posted."));
-                return;
-              }
-              diagnostics_.emit({DiagnosticSeverity::warning,
-                                 "discord.public_notice",
-                                 "A neutral notice card was not confirmed "
-                                 "delivered; the notice remains in the inbox.",
-                                 correlation_id});
-              responder->edit_original(text_message(
-                  "The test notice was stored, but its public card was not "
-                  "confirmed delivered. Use `/sanguinius inbox` to open it."));
-            }));
-          } catch (...) {
-          }
-        });
+    const auto created =
+        durable_controls_.queue_test_notice(request.interaction);
+    edit(request.interaction,
+         text_message(created ? "The private test notice is queued for durable "
+                                "delivery."
+                              : "That private test notice was already queued."),
+         "interaction.test_notice");
+    return;
+  }
+  case InteractionOperation::test_schedule_notice: {
+    const auto created =
+        durable_controls_.schedule_test_notice(request.interaction);
+    edit(request.interaction,
+         text_message(created
+                          ? "A private test notice is scheduled for 60 seconds "
+                            "from now."
+                          : "That private test notice was already scheduled."),
+         "interaction.test_schedule_notice");
+    return;
+  }
+  case InteractionOperation::test_public_retry: {
+    const auto created =
+        durable_controls_.queue_test_public_retry(request.interaction);
+    edit(request.interaction,
+         text_message(created
+                          ? "The synthetic public retry is queued. Its first "
+                            "attempt will fail before Discord submission."
+                          : "That synthetic public retry was already queued."),
+         "interaction.test_public_retry");
     return;
   }
   }

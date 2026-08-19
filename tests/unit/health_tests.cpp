@@ -14,7 +14,7 @@ public:
     return {.ready = true,
             .command_registration =
                 sanguinius::CommandRegistrationState::synchronized,
-            .command_catalog_version = 1};
+            .command_catalog_version = 2};
   }
 };
 
@@ -43,7 +43,35 @@ TEST_CASE("health snapshot renders build queues and configured modes",
              return sanguinius::QueueSnapshot{
                  .capacity = 16, .queued = 1, .active = 1, .accepting = true};
            },
-       .pending_notice_count = [] { return std::size_t{7}; }}};
+       .scheduler_queue =
+           [] {
+             return sanguinius::QueueSnapshot{
+                 .capacity = 32, .queued = 1, .active = 0, .accepting = true};
+           },
+       .outbox_queue =
+           [] {
+             return sanguinius::QueueSnapshot{
+                 .capacity = 32, .queued = 2, .active = 1, .accepting = true};
+           },
+       .pending_notice_count = [] { return std::size_t{7}; },
+       .durable_work =
+           [] {
+             return sanguinius::DurableWorkHealth{
+                 .pending_jobs = 2,
+                 .claimed_jobs = 1,
+                 .dead_jobs = 3,
+                 .pending_outbox = 4,
+                 .claimed_outbox = 1,
+                 .failed_outbox = 2,
+                 .dead_outbox = 1,
+                 .job_retries = 5,
+                 .outbox_retries = 6,
+                 .scheduler_lag_ms = 700,
+                 .outbox_lag_ms = 800,
+                 .last_job_error = "handler_exception",
+                 .last_outbox_error = "discord_transient",
+             };
+           }}};
 
   const auto snapshot = service.snapshot(
       {.capacity = 64, .queued = 3, .active = 1, .accepting = true},
@@ -59,10 +87,18 @@ TEST_CASE("health snapshot renders build queues and configured modes",
   REQUIRE(contains(rendered, "ai_queue=2/32 queued, 2 active, stopped"));
   REQUIRE(
       contains(rendered, "interaction_queue=1/16 queued, 1 active, accepting"));
+  REQUIRE(contains(rendered, "scheduler_queue=1/32 queued, 0 active"));
+  REQUIRE(contains(rendered, "outbox_queue=2/32 queued, 1 active"));
   REQUIRE(contains(rendered, "discord_ready=enabled"));
-  REQUIRE(contains(rendered, "command_catalog=1"));
+  REQUIRE(contains(rendered, "command_catalog=2"));
   REQUIRE(contains(rendered, "command_registration=synchronized"));
   REQUIRE(contains(rendered, "pending_notices=7"));
+  REQUIRE(contains(rendered, "jobs=2 pending, 1 claimed, 3 dead, 5 retries"));
+  REQUIRE(contains(rendered,
+                   "outbox_work=4 pending, 1 claimed, 2 failed, 1 dead, 6 "
+                   "retries"));
+  REQUIRE(contains(rendered, "scheduler_lag_ms=700"));
+  REQUIRE(contains(rendered, "last_outbox_error=discord_transient"));
   REQUIRE(contains(rendered, "admin_commands=enabled"));
   REQUIRE(contains(rendered, "test_mode=enabled"));
   REQUIRE(contains(rendered, "appearances=dry_run"));
@@ -76,7 +112,10 @@ TEST_CASE("health snapshot renders build queues and configured modes",
       {true, 1, 1, std::string(4'000, 's'),
        "instance\ninjected=" + std::string(4'000, 'i')},
       {.interaction_queue = [] { return sanguinius::QueueSnapshot{}; },
-       .pending_notice_count = [] { return std::size_t{}; }}};
+       .scheduler_queue = [] { return sanguinius::QueueSnapshot{}; },
+       .outbox_queue = [] { return sanguinius::QueueSnapshot{}; },
+       .pending_notice_count = [] { return std::size_t{}; },
+       .durable_work = [] { return sanguinius::DurableWorkHealth{}; }}};
   const auto bounded = sanguinius::render_health(oversized_metadata.snapshot(
       {.capacity = 64, .queued = 1, .active = 1, .accepting = true},
       {.capacity = 64, .accepting = true}, true));
@@ -93,7 +132,10 @@ TEST_CASE("health types cannot expose secret configuration", "[health]") {
       {},
       {true, 1, 1, "3.53.4", "id"},
       {.interaction_queue = [] { return sanguinius::QueueSnapshot{}; },
-       .pending_notice_count = [] { return std::size_t{}; }}};
+       .scheduler_queue = [] { return sanguinius::QueueSnapshot{}; },
+       .outbox_queue = [] { return sanguinius::QueueSnapshot{}; },
+       .pending_notice_count = [] { return std::size_t{}; },
+       .durable_work = [] { return sanguinius::DurableWorkHealth{}; }}};
   const auto rendered = sanguinius::render_health(
       service.snapshot({.capacity = 1}, {.capacity = 1}, true));
 

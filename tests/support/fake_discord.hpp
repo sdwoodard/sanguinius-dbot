@@ -158,7 +158,7 @@ public:
     interaction_callback_ = std::move(interaction_callback);
     command_catalog_ = std::move(command_catalog);
     accepting_ = true;
-    status_ = {.ready = true,
+    status_ = {.ready = ready_on_start_,
                .command_registration = CommandRegistrationState::synchronized,
                .command_catalog_version = command_catalog_.version};
     if (fail_start_) {
@@ -214,16 +214,47 @@ public:
   }
 
   void send_public(const PublicMessageRequest &request,
-                   DeliveryCallback callback = {}) override {
-    DeliveryResult result;
+                   const std::string_view provider_nonce,
+                   PublicDeliveryCallback callback = {}) override {
+    PublicDeliveryReceipt receipt;
+    bool hold_callback{};
     {
       const std::scoped_lock lock{mutex_};
-      public_messages_.push_back(request);
-      result = public_delivery_result_;
+      const auto existing = public_nonces_.find(std::string{provider_nonce});
+      if (existing != public_nonces_.end()) {
+        receipt = {DeliveryResult::success, existing->second};
+      } else {
+        const auto result = public_delivery_results_.empty()
+                                ? public_delivery_result_
+                                : public_delivery_results_.front();
+        if (!public_delivery_results_.empty()) {
+          public_delivery_results_.erase(public_delivery_results_.begin());
+        }
+        receipt.result = result;
+        if (result == DeliveryResult::success) {
+          const DiscordId message_id{next_public_message_id_++};
+          public_messages_.push_back(request);
+          public_nonces_.emplace(std::string{provider_nonce}, message_id);
+          if (omit_next_success_message_id_) {
+            omit_next_success_message_id_ = false;
+          } else {
+            receipt.provider_message_id = message_id;
+          }
+        } else if (result == DeliveryResult::unknown_outcome &&
+                   accept_unknown_delivery_) {
+          const DiscordId message_id{next_public_message_id_++};
+          public_messages_.push_back(request);
+          public_nonces_.emplace(std::string{provider_nonce}, message_id);
+        }
+      }
+      hold_callback = hold_public_callbacks_ && static_cast<bool>(callback);
+      if (hold_callback) {
+        held_public_callbacks_.emplace_back(std::move(callback), receipt);
+      }
       changed_.notify_all();
     }
-    if (callback) {
-      callback(result);
+    if (callback && !hold_callback) {
+      callback(receipt);
     }
   }
 
@@ -295,6 +326,42 @@ public:
     public_delivery_result_ = result;
   }
 
+  void set_public_delivery_results(std::vector<DeliveryResult> results) {
+    const std::scoped_lock lock{mutex_};
+    public_delivery_results_ = std::move(results);
+  }
+
+  void accept_unknown_delivery(const bool value = true) {
+    const std::scoped_lock lock{mutex_};
+    accept_unknown_delivery_ = value;
+  }
+
+  void omit_next_success_message_id() {
+    const std::scoped_lock lock{mutex_};
+    omit_next_success_message_id_ = true;
+  }
+
+  void hold_public_callbacks(const bool value = true) {
+    const std::scoped_lock lock{mutex_};
+    hold_public_callbacks_ = value;
+  }
+
+  void set_ready_on_start(const bool ready) {
+    const std::scoped_lock lock{mutex_};
+    ready_on_start_ = ready;
+  }
+
+  void release_public_callbacks() {
+    std::vector<std::pair<PublicDeliveryCallback, PublicDeliveryReceipt>> held;
+    {
+      const std::scoped_lock lock{mutex_};
+      held.swap(held_public_callbacks_);
+    }
+    for (auto &[callback, receipt] : held) {
+      callback(std::move(receipt));
+    }
+  }
+
   void set_recent(std::vector<ConversationEntry> recent) {
     const std::scoped_lock lock{mutex_};
     recent_ = std::move(recent);
@@ -331,6 +398,23 @@ public:
     std::unique_lock lock{mutex_};
     return changed_.wait_for(
         lock, timeout, [this, count] { return replies_.size() >= count; });
+  }
+
+  [[nodiscard]] bool
+  wait_for_public_message_count(const std::size_t count,
+                                const std::chrono::milliseconds timeout) const {
+    std::unique_lock lock{mutex_};
+    return changed_.wait_for(lock, timeout, [this, count] {
+      return public_messages_.size() >= count;
+    });
+  }
+
+  [[nodiscard]] bool wait_for_held_public_callback_count(
+      const std::size_t count, const std::chrono::milliseconds timeout) const {
+    std::unique_lock lock{mutex_};
+    return changed_.wait_for(lock, timeout, [this, count] {
+      return held_public_callbacks_.size() >= count;
+    });
   }
 
   [[nodiscard]] std::vector<ReplyRequest> replies() const {
@@ -374,6 +458,9 @@ private:
   std::unordered_map<DiscordId, ConversationEntry> fetched_;
   std::vector<ReplyRequest> replies_;
   std::vector<PublicMessageRequest> public_messages_;
+  std::unordered_map<std::string, DiscordId> public_nonces_;
+  std::vector<std::pair<PublicDeliveryCallback, PublicDeliveryReceipt>>
+      held_public_callbacks_;
   std::vector<DiscordId> typing_channels_;
   std::vector<std::string> lifecycle_;
   std::function<void()> shutdown_observer_;
@@ -384,6 +471,12 @@ private:
   bool reply_context_failure_{false};
   bool delivery_failure_{false};
   DeliveryResult public_delivery_result_{DeliveryResult::success};
+  std::vector<DeliveryResult> public_delivery_results_;
+  bool accept_unknown_delivery_{};
+  bool omit_next_success_message_id_{};
+  bool hold_public_callbacks_{};
+  bool ready_on_start_{true};
+  std::uint64_t next_public_message_id_{1'000};
 };
 
 [[nodiscard]] inline IncomingMessage

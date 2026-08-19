@@ -62,30 +62,23 @@ PendingNoticeCreation PendingNoticeService::create_test_notice(
       .created_at_ms = now_ms,
   });
 
-  PublicMessageRequest public_card{
+  auto public_card = make_neutral_notice_card(CreatePendingNoticeRequest{
+      .notice_id = persistence.notice.notice_id,
+      .token_id = persistence.token_id,
+      .target_user_id = interaction.user_id,
       .guild_id = interaction.guild_id,
       .channel_id = interaction.channel_id,
-      .message =
-          InteractionMessage{
-              .content = "<@" + interaction.user_id.str() +
-                         ">, a sealed notice awaits.",
-              .embed =
-                  EmbedPayload{
-                      .color = 0x8B0000U,
-                      .title = "A sealed notice awaits",
-                      .url = {},
-                      .description =
-                          "Status: pending. Only the addressed recipient may "
-                          "open it. Expires in 24 hours.",
-                  },
-              .buttons = {ButtonPayload{
-                  .custom_id = make_component_id(persistence.token_id),
-                  .label = "Open sealed notice",
-                  .disabled = false,
-              }},
-              .allowed_user_mentions = {interaction.user_id},
-          },
-  };
+      .notice_type = "owner_test",
+      .content = persistence.notice.content,
+      .source_aggregate_type = "owner_test",
+      .source_aggregate_id = interaction.interaction_id.str(),
+      .expires_at_ms = now_ms + lifetime_ms,
+      .notice_idempotency_key =
+          "notice:create:test:" + interaction.interaction_id.str(),
+      .token_idempotency_key =
+          "token:create:test:" + interaction.interaction_id.str(),
+      .created_at_ms = now_ms,
+  });
   return {std::move(persistence), std::move(public_card)};
 }
 
@@ -169,6 +162,34 @@ std::string make_component_id(const std::string_view token_id) {
     throw std::invalid_argument{"Component token must be a UUIDv4."};
   }
   return std::string{component_token_prefix} + token;
+}
+
+PublicMessageRequest
+make_neutral_notice_card(const CreatePendingNoticeRequest &request) {
+  return PublicMessageRequest{
+      .guild_id = request.guild_id,
+      .channel_id = request.channel_id,
+      .message =
+          InteractionMessage{
+              .content = "<@" + request.target_user_id.str() +
+                         ">, a sealed notice awaits.",
+              .embed =
+                  EmbedPayload{
+                      .color = 0x8B0000U,
+                      .title = "A sealed notice awaits",
+                      .url = {},
+                      .description =
+                          "Status: pending. Only the addressed recipient may "
+                          "open it. Expires in 24 hours.",
+                  },
+              .buttons = {ButtonPayload{
+                  .custom_id = make_component_id(request.token_id),
+                  .label = "Open sealed notice",
+                  .disabled = false,
+              }},
+              .allowed_user_mentions = {request.target_user_id},
+          },
+  };
 }
 
 InteractionMessage
