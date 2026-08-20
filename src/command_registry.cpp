@@ -2,6 +2,7 @@
 #include "sanguinius/chronicle.hpp"
 
 #include <sstream>
+#include <utility>
 
 namespace sanguinius {
 
@@ -29,7 +30,40 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
                              2,
                              3,
                              {{"On", "on"}, {"Off", "off"}}}}},
+                          {"appearance-feedback",
+                           "Privately respond to a delivered appearance.",
+                           {{CommandOptionKind::string,
+                             "response",
+                             "Your private response.",
+                             true,
+                             4,
+                             12,
+                             {{"More like this", "more"},
+                              {"Less like this", "less"},
+                              {"Not relevant", "not_relevant"}}},
+                            {CommandOptionKind::string, "reference",
+                             "Optional decision or message reference.", false,
+                             4, 36}}},
                       },
+                  .subcommand_groups = {CommandSubcommandGroupDefinition{
+                      .name = "quiet",
+                      .description = "Set server-wide appearance quiet.",
+                      .subcommands =
+                          {{"for",
+                            "Quiet appearances for a duration.",
+                            {{CommandOptionKind::string,
+                              "duration",
+                              "Quiet duration.",
+                              true,
+                              2,
+                              2,
+                              {{"2 hours", "2h"}}}}},
+                           {"tonight", "Quiet until tomorrow at 10:00 AM."},
+                           {"until",
+                            "Quiet until the next local time.",
+                            {{CommandOptionKind::string, "time",
+                              "Local time as HH:MM.", true, 5, 5}}},
+                           {"off", "End quiet early if authorized."}}}},
               },
           },
   };
@@ -210,70 +244,79 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
         .kind = ApplicationCommandKind::message_context,
     });
   }
+  CommandDefinition owner_controls{
+      .name = "sang-admin",
+      .description = "Owner-only Sanguinius controls.",
+      .subcommands = {},
+      .subcommand_groups =
+          {
+              CommandSubcommandGroupDefinition{
+                  .name = "appearance",
+                  .description = "Inspect and control appearances.",
+                  .subcommands =
+                      {
+                          {"disable", "Persistently disable live appearances."},
+                          {"enable",
+                           "Clear the global appearance kill switch."},
+                      }},
+          },
+  };
   if (admin_commands_enabled) {
-    catalog.commands.push_back(CommandDefinition{
-        .name = "sang-admin",
-        .description = "Owner-only Sanguinius controls.",
-        .subcommands =
-            {
-                {"health", "Show the private redacted health snapshot."},
-                {"work-recent", "Inspect recent redacted durable work."},
-                {"work-dead", "Inspect failed and dead durable work."},
-                {"test-notice", "Create a private self-targeted test notice."},
-                {"test-schedule-notice",
-                 "Schedule a private self-targeted test notice."},
-                {"test-public-retry",
-                 "Exercise one synthetic public delivery retry."},
-            },
-        .subcommand_groups =
-            {
-                CommandSubcommandGroupDefinition{
-                    .name = "appearance",
-                    .description = "Inspect the appearance dry-run engine.",
-                    .subcommands =
-                        {
-                            {"simulate",
-                             "Create an auditable dry-run fixture.",
-                             {{CommandOptionKind::string,
-                               "fixture",
-                               "Sanitized fixture to evaluate.",
-                               true,
-                               8,
-                               64,
-                               {{"Lively game-night banter",
-                                 "lively_game_night_banter"},
-                                {"One-person quiet channel",
-                                 "one_person_quiet_channel"},
-                                {"Bot just spoke", "bot_just_spoke"},
-                                {"Quiet hours", "quiet_hours"},
-                                {"Manual quiet", "manual_quiet"},
-                                {"Sensitive serious conversation",
-                                 "sensitive_serious_conversation"},
-                                {"Christianity", "christianity"},
-                                {"Chronicle anniversary",
-                                 "chronicle_anniversary"},
-                                {"Repeated inside joke",
-                                 "repeated_inside_joke_on_cooldown"},
-                                {"Tarot settlement", "tarot_settlement"},
-                                {"Opted-out participant",
-                                 "opted_out_participant"},
-                                {"Stale candidate", "stale_candidate"},
-                                {"Owner dry run", "owner_dry_run"}}}}},
-                            {"preview",
-                             "Inspect one stored redacted decision.",
-                             {{CommandOptionKind::string, "reference",
-                               "Full candidate or decision UUID.", true, 36,
-                               36}}},
-                            {"recent",
-                             "Inspect ten recent redacted decisions."},
-                        }},
-            },
-    });
+    owner_controls.subcommands = {
+        {"health", "Show the private redacted health snapshot."},
+        {"work-recent", "Inspect recent redacted durable work."},
+        {"work-dead", "Inspect failed and dead durable work."},
+        {"test-notice", "Create a private self-targeted test notice."},
+        {"test-schedule-notice",
+         "Schedule a private self-targeted test notice."},
+        {"test-public-retry", "Exercise one synthetic public delivery retry."},
+    };
+    owner_controls.subcommand_groups.front().subcommands = {
+        {"simulate",
+         "Create an auditable dry-run fixture.",
+         {{CommandOptionKind::string,
+           "fixture",
+           "Sanitized fixture to evaluate.",
+           true,
+           8,
+           64,
+           {{"Lively game-night banter", "lively_game_night_banter"},
+            {"One-person quiet channel", "one_person_quiet_channel"},
+            {"Bot just spoke", "bot_just_spoke"},
+            {"Quiet hours", "quiet_hours"},
+            {"Manual quiet", "manual_quiet"},
+            {"Sensitive serious conversation",
+             "sensitive_serious_conversation"},
+            {"Christianity", "christianity"},
+            {"Chronicle anniversary", "chronicle_anniversary"},
+            {"Repeated inside joke", "repeated_inside_joke_on_cooldown"},
+            {"Tarot settlement", "tarot_settlement"},
+            {"Opted-out participant", "opted_out_participant"},
+            {"Stale candidate", "stale_candidate"},
+            {"Owner dry run", "owner_dry_run"}}}}},
+        {"preview",
+         "Inspect one stored redacted decision.",
+         {{CommandOptionKind::string, "reference",
+           "Full candidate or decision UUID.", true, 36, 36}}},
+        {"recent", "Inspect ten recent redacted decisions."},
+        {"trigger",
+         "Queue one auditable owner live test.",
+         {{CommandOptionKind::string,
+           "fixture",
+           "Curated live fixture.",
+           true,
+           8,
+           64,
+           {{"Owner live safe", "owner_live_safe"}}}}},
+        {"disable", "Persistently disable live appearances."},
+        {"enable", "Clear the global appearance kill switch."},
+    };
     if (chronicle_enabled) {
-      catalog.commands.back().subcommands.push_back(
+      owner_controls.subcommands.push_back(
           {"test-anniversary", "Exercise an exactly-once test anniversary."});
     }
   }
+  catalog.commands.push_back(std::move(owner_controls));
   return catalog;
 }
 

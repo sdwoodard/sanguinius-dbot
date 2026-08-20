@@ -62,6 +62,15 @@ enum class InteractionOperation {
   appearance_simulate,
   appearance_preview,
   appearance_recent,
+  appearance_quiet_for,
+  appearance_quiet_tonight,
+  appearance_quiet_until,
+  appearance_quiet_off,
+  appearance_feedback,
+  appearance_feedback_component,
+  appearance_trigger,
+  appearance_disable,
+  appearance_enable,
 };
 
 struct RoutedInteraction {

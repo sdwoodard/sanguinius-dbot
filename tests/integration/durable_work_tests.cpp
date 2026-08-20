@@ -10,6 +10,7 @@
 #include "support/temp_database.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <nlohmann/json.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -65,7 +66,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 7);
+      REQUIRE(migrator.apply(database.connection()).current_version == 8);
     }
     context = std::make_shared<SqliteRepositoryContext>(
         Database::open_runtime(temporary.path(), 25ms));
@@ -187,6 +188,44 @@ template <typename Predicate>
   return predicate();
 }
 
+TEST_CASE("durable button styles preserve old primary rows and live secondary rows",
+          "[durable][outbox][buttons][compatibility]") {
+  DurableFixture fixture;
+  const sanguinius::PublicOutboxPayload payload{
+      .request = {.guild_id = 10,
+                  .channel_id = 20,
+                  .message = {.content = "Styled controls",
+                              .embed = std::nullopt,
+                              .buttons = {{.custom_id = "old-primary",
+                                           .label = "Primary"},
+                                          {.custom_id = "live-secondary",
+                                           .label = "Secondary",
+                                           .disabled = false,
+                                           .style = sanguinius::ButtonStyle::secondary}},
+                              .allowed_user_mentions = {}}},
+      .fail_before_first_send = false};
+  REQUIRE(fixture.repository->enqueue_public(
+      event(event_id_1, "event:button-styles"),
+      public_outbox(outbox_id_1, "outbox:button-styles", 100), payload));
+  auto stored = fixture.context->connection().prepare(
+      "SELECT payload_json FROM outbox_message WHERE outbox_id=?");
+  stored.bind(1, outbox_id_1);
+  REQUIRE(stored.step());
+  const auto json = nlohmann::json::parse(stored.column_text(0));
+  REQUIRE_FALSE(json.at("buttons")[0].contains("style"));
+  REQUIRE(json.at("buttons")[1].at("style") == "secondary");
+  const auto claimed = fixture.repository->claim_due_outbox(
+      100, 200, "style-worker", std::string{lease_1}, true);
+  REQUIRE(claimed);
+  const auto *decoded =
+      std::get_if<sanguinius::PublicOutboxPayload>(&claimed->payload);
+  REQUIRE(decoded);
+  REQUIRE(decoded->request.message.buttons[0].style ==
+          sanguinius::ButtonStyle::primary);
+  REQUIRE(decoded->request.message.buttons[1].style ==
+          sanguinius::ButtonStyle::secondary);
+}
+
 class ImmediateDiscord final : public sanguinius::DiscordPublicDelivery,
                                public sanguinius::DiscordStatusProvider {
 public:
@@ -220,7 +259,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 7);
+      REQUIRE(migrator.apply(database.connection()).current_version == 8);
     }
     auto context = open();
     SqliteCoreIdentityRepository identities{context};

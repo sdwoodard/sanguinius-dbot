@@ -108,7 +108,7 @@ TEST_CASE(
     "[application][interaction][chronicle]") {
   sanguinius::test::ApplicationFixture fixture{chronicle_options()};
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 6);
+  REQUIRE(fixture.discord->command_catalog().version == 7);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 4);
 
   auto remember =
@@ -454,7 +454,7 @@ TEST_CASE("slash status privacy and scope enforcement remain ephemeral",
           "[application][interaction][privacy]") {
   sanguinius::test::ApplicationFixture fixture;
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().commands.size() == 1);
+  REQUIRE(fixture.discord->command_catalog().commands.size() == 2);
 
   auto wrong_scope =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -674,8 +674,7 @@ TEST_CASE(
   preview.command_options = {{"reference", reference}};
   fixture.discord->emit(std::move(preview));
   REQUIRE(previewed->wait_for_edit_count(1, 2s));
-  REQUIRE(
-      contains(previewed->edits()[0].content, "Appearance dry-run decision"));
+  REQUIRE(contains(previewed->edits()[0].content, "Appearance decision"));
 
   auto recent = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto recent_request = slash(recent, "sang-admin", "recent", 502);
@@ -720,6 +719,179 @@ TEST_CASE(
   REQUIRE(fixture.appearances->callback_enabled());
   REQUIRE(fixture.discord->public_messages().empty());
   fixture.application->stop();
+}
+
+TEST_CASE(
+    "live appearance commands remain private and respect owner boundaries",
+    "[application][interaction][appearance][live][privacy]") {
+  auto options = admin_options();
+  options.features.appearances_mode = sanguinius::AppearanceMode::live;
+  sanguinius::test::ApplicationFixture fixture{options};
+  fixture.clock->set(std::chrono::sys_seconds{std::chrono::seconds{1'000}});
+  fixture.application->start();
+  REQUIRE(fixture.discord->command_catalog().version == 7);
+
+  auto quiet = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto quiet_request = slash(quiet, "sanguinius", "tonight", 520);
+  quiet_request.subcommand_group_name = "quiet";
+  quiet_request.user_id = 31;
+  fixture.discord->emit(std::move(quiet_request));
+  REQUIRE(quiet->wait_for_edit_count(1, 2s));
+  REQUIRE(quiet->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(contains(quiet->edits()[0].content, "Server-wide"));
+
+  auto status = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto status_request = slash(status, "sanguinius", "status", 521);
+  status_request.user_id = 32;
+  fixture.discord->emit(std::move(status_request));
+  REQUIRE(status->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(status->edits()[0].content, "quiet=active"));
+  REQUIRE(contains(status->edits()[0].content, "quiet_until="));
+  REQUIRE(contains(status->edits()[0].content,
+                   "Your appearance callbacks: disabled"));
+  REQUIRE_FALSE(contains(status->edits()[0].content, "31"));
+  REQUIRE_FALSE(contains(status->edits()[0].content, "reservations="));
+  REQUIRE_FALSE(contains(status->edits()[0].content, "recommendation="));
+  REQUIRE_FALSE(contains(status->edits()[0].content, "feedback="));
+
+  auto privacy = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto privacy_request = slash(privacy, "sanguinius", "privacy", 531);
+  privacy_request.user_id = 32;
+  fixture.discord->emit(std::move(privacy_request));
+  REQUIRE(privacy->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(privacy->edits()[0].content, "kill_switch=clear"));
+  REQUIRE(contains(privacy->edits()[0].content, "quiet=active"));
+  REQUIRE_FALSE(contains(privacy->edits()[0].content, "outbox_pending="));
+  REQUIRE_FALSE(contains(privacy->edits()[0].content, "model_failures_1h="));
+
+  auto other_clear =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto other_clear_request = slash(other_clear, "sanguinius", "off", 522);
+  other_clear_request.subcommand_group_name = "quiet";
+  other_clear_request.user_id = 32;
+  fixture.discord->emit(std::move(other_clear_request));
+  REQUIRE(other_clear->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(other_clear->edits()[0].content, "latest quiet setter"));
+
+  auto owner_clear =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto owner_clear_request = slash(owner_clear, "sanguinius", "off", 523);
+  owner_clear_request.subcommand_group_name = "quiet";
+  fixture.discord->emit(std::move(owner_clear_request));
+  REQUIRE(owner_clear->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(owner_clear->edits()[0].content, "cleared"));
+
+  auto feedback =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto feedback_request =
+      slash(feedback, "sanguinius", "appearance-feedback", 524);
+  feedback_request.user_id = 31;
+  feedback_request.command_options = {{"response", std::string{"more"}}};
+  fixture.discord->emit(std::move(feedback_request));
+  REQUIRE(feedback->wait_for_edit_count(1, 2s));
+  REQUIRE(feedback->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(contains(feedback->edits()[0].content, "recorded privately"));
+  REQUIRE(fixture.appearances->feedback_count() == 1);
+
+  auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto disable_request = slash(disable, "sang-admin", "disable", 525);
+  disable_request.subcommand_group_name = "appearance";
+  fixture.discord->emit(std::move(disable_request));
+  REQUIRE(disable->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(disable->edits()[0].content, "globally disabled"));
+
+  auto suppressed_trigger =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto suppressed_trigger_request =
+      slash(suppressed_trigger, "sang-admin", "trigger", 526);
+  suppressed_trigger_request.subcommand_group_name = "appearance";
+  suppressed_trigger_request.command_options = {
+      {"fixture", std::string{"owner_live_safe"}}};
+  fixture.discord->emit(std::move(suppressed_trigger_request));
+  REQUIRE(suppressed_trigger->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(suppressed_trigger->edits()[0].content,
+                   "suppressed by final gate: global_kill_switch"));
+  REQUIRE_FALSE(contains(suppressed_trigger->edits()[0].content, "queued"));
+
+  auto enable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto enable_request = slash(enable, "sang-admin", "enable", 527);
+  enable_request.subcommand_group_name = "appearance";
+  fixture.discord->emit(std::move(enable_request));
+  REQUIRE(enable->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(enable->edits()[0].content, "kill switch is clear"));
+
+  auto trigger = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto trigger_request = slash(trigger, "sang-admin", "trigger", 528);
+  trigger_request.subcommand_group_name = "appearance";
+  trigger_request.command_options = {
+      {"fixture", std::string{"owner_live_safe"}}};
+  fixture.discord->emit(std::move(trigger_request));
+  REQUIRE(trigger->wait_for_edit_count(1, 2s));
+  REQUIRE(
+      contains(trigger->edits()[0].content, "Owner live appearance queued"));
+
+  auto health = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(health, "sang-admin", "health", 529));
+  REQUIRE(health->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(health->edits()[0].content,
+                   "Appearances: configured=live, persisted=live"));
+  REQUIRE(fixture.discord->public_messages().empty());
+  fixture.application->stop();
+
+  auto no_test_options = admin_options();
+  no_test_options.controls.test_mode = false;
+  no_test_options.features.appearances_mode = sanguinius::AppearanceMode::live;
+  sanguinius::test::ApplicationFixture no_test{no_test_options};
+  no_test.application->start();
+  auto still_disable =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto still_disable_request =
+      slash(still_disable, "sang-admin", "disable", 530);
+  still_disable_request.subcommand_group_name = "appearance";
+  no_test.discord->emit(std::move(still_disable_request));
+  REQUIRE(still_disable->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(still_disable->edits()[0].content, "globally disabled"));
+  no_test.application->stop();
+
+  auto safety_options = admin_options();
+  safety_options.controls.admin_commands_enabled = false;
+  safety_options.controls.test_mode = false;
+  safety_options.features.appearances_mode = sanguinius::AppearanceMode::live;
+  sanguinius::test::ApplicationFixture safety{safety_options};
+  safety.application->start();
+  REQUIRE(safety.discord->command_catalog().commands.size() == 2);
+  REQUIRE(safety.discord->command_catalog().commands[1].name == "sang-admin");
+  REQUIRE(safety.discord->command_catalog()
+              .commands[1]
+              .subcommand_groups[0]
+              .subcommands.size() == 2);
+
+  auto safety_disable =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto safety_disable_request =
+      slash(safety_disable, "sang-admin", "disable", 532);
+  safety_disable_request.subcommand_group_name = "appearance";
+  safety.discord->emit(std::move(safety_disable_request));
+  REQUIRE(safety_disable->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(safety_disable->edits()[0].content, "globally disabled"));
+
+  auto safety_other =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto safety_other_request = slash(safety_other, "sang-admin", "enable", 533);
+  safety_other_request.subcommand_group_name = "appearance";
+  safety_other_request.user_id = 31;
+  safety.discord->emit(std::move(safety_other_request));
+  REQUIRE(safety_other->replies().size() == 1);
+  REQUIRE(contains(safety_other->replies()[0].first.content, "owner-only"));
+
+  auto unavailable_health =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  safety.discord->emit(slash(unavailable_health, "sang-admin", "health", 534));
+  REQUIRE(unavailable_health->replies().size() == 1);
+  REQUIRE(contains(unavailable_health->replies()[0].first.content, "disabled"));
+  safety.application->stop();
 }
 
 TEST_CASE("owner durable test controls schedule retry and inspect safely",

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "policy_version": "m9-initial-1",
+  "policy_version": "m10-live-1",
   "activity": {
     "window_seconds": 600,
     "human_messages_required": 8,

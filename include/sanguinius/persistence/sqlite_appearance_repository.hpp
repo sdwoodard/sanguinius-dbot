@@ -4,6 +4,7 @@
 #include "sanguinius/persistence/sqlite_repositories.hpp"
 
 #include <memory>
+#include <utility>
 
 namespace sanguinius::persistence {
 
@@ -43,7 +44,21 @@ public:
                std::string event_id, std::string_view instance_id,
                std::string model_status,
                std::optional<AppearanceModelResult> model_result,
+               const AppearanceDeliveryIds &delivery_ids,
                std::int64_t now_ms) override;
+  [[nodiscard]] bool
+  record_final(const AppearancePolicy &policy, AppearanceMode mode,
+               const AppearanceCandidate &candidate,
+               const AppearanceEvaluation &evaluation, std::string decision_id,
+               std::string event_id, std::string_view instance_id,
+               std::string model_status,
+               std::optional<AppearanceModelResult> model_result,
+               std::int64_t now_ms) {
+    return record_final(policy, mode, candidate, evaluation,
+                        std::move(decision_id), std::move(event_id),
+                        instance_id, std::move(model_status),
+                        std::move(model_result), {}, now_ms);
+  }
   [[nodiscard]] bool
   prepare_model(const AppearancePolicy &policy, AppearanceMode mode,
                 const AppearanceCandidate &candidate,
@@ -57,7 +72,36 @@ public:
                  std::string_view decision_id, std::string event_id,
                  std::string model_status,
                  std::optional<AppearanceModelResult> result,
+                 const AppearanceDeliveryIds &delivery_ids,
                  std::int64_t now_ms) override;
+  [[nodiscard]] bool
+  complete_model(const AppearancePolicy &policy, AppearanceMode mode,
+                 const AppearanceCandidate &candidate,
+                 const AppearanceEvaluation &fresh_evaluation,
+                 std::string_view decision_id, std::string event_id,
+                 std::string model_status,
+                 std::optional<AppearanceModelResult> result,
+                 std::int64_t now_ms) {
+    return complete_model(policy, mode, candidate, fresh_evaluation,
+                          decision_id, std::move(event_id),
+                          std::move(model_status), std::move(result), {},
+                          now_ms);
+  }
+  [[nodiscard]] AppearanceMutationResult
+  set_quiet(const AppearanceQuietMutation &request) override;
+  [[nodiscard]] AppearanceMutationResult
+  set_global_disabled(DiscordSnowflake actor_user_id, bool disabled,
+                      std::int64_t now_ms, std::string event_id,
+                      std::string idempotency_key,
+                      std::string correlation_id) override;
+  [[nodiscard]] AppearanceMutationResult
+  record_feedback(const AppearanceFeedbackMutation &request) override;
+  [[nodiscard]] AppearanceControlSummary
+  control_summary(std::int64_t now_ms) override;
+  [[nodiscard]] std::vector<AppearanceFailureAlert>
+  claim_failure_alerts(std::int64_t now_ms) override;
+  [[nodiscard]] std::optional<VerifiedAppearanceDelivery>
+  verify_public_delivery(const ContextMessageSnapshot &message) override;
   [[nodiscard]] std::optional<AppearanceDecisionRecord>
   decision(std::string_view reference) override;
   [[nodiscard]] std::vector<AppearanceDecisionRecord>

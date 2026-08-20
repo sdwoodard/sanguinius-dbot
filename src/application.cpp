@@ -94,10 +94,10 @@ public:
     }
     ai_work_ = std::make_unique<AiWorkService>(options_.ai_queue_capacity,
                                                options_.ai_worker_count);
-    if (options_.features.appearances_mode == AppearanceMode::dry_run &&
+    if (options_.features.appearances_mode != AppearanceMode::off &&
         (!appearance_repository_ || !appearance_policy_)) {
       throw std::invalid_argument{
-          "Appearance persistence is required in dry_run mode."};
+          "Appearance persistence is required when appearances are enabled."};
     }
     if (appearance_repository_ && appearance_policy_) {
       appearance_service_ = std::make_unique<AppearanceService>(
@@ -113,7 +113,8 @@ public:
                             queue.queued >= queue.capacity ||
                             discord_status.command_registration ==
                                 CommandRegistrationState::failed};
-          });
+          },
+          [this] { outbox_->wake(); });
     }
     if (options_.features.chronicle_enabled && !relationship_repository_) {
       throw std::invalid_argument{"Relationship persistence is required when "
@@ -156,6 +157,16 @@ public:
                      {}});
               }
             }
+          },
+          [this](const ContextMessageSnapshot &message)
+              -> std::optional<std::pair<std::string, bool>> {
+            if (!appearance_service_)
+              return std::nullopt;
+            const auto verified =
+                appearance_service_->verify_public_delivery(message);
+            if (!verified)
+              return std::nullopt;
+            return std::pair{verified->decision_id, verified->test_delivery};
           });
     }
     if (options_.features.chronicle_enabled && chronicle_session_repository_) {

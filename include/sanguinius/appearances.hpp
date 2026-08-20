@@ -10,6 +10,7 @@
 #include "sanguinius/persistent_id.hpp"
 #include "sanguinius/work_queue.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -25,6 +26,7 @@ inline constexpr std::string_view appearance_scan_job_type{
 inline constexpr std::string_view appearance_purge_job_type{
     "appearance.purge.v1"};
 inline constexpr std::int64_t appearance_maximum_purge_interval_ms{60'000};
+inline constexpr std::string_view appearance_feedback_component_prefix{"sga:1:"};
 
 enum class AppearanceCandidateType {
   conversation,
@@ -65,6 +67,7 @@ struct AppearanceCandidate {
   AppearanceCandidateType type{AppearanceCandidateType::conversation};
   std::int64_t created_at_ms{};
   std::int64_t expires_at_ms{};
+  std::int64_t mode_activated_at_ms{};
   std::vector<DiscordSnowflake> actors;
   std::vector<std::string> excerpts;
   std::vector<std::string> source_context;
@@ -77,6 +80,9 @@ struct AppearanceCandidate {
   bool correct_scope{true};
   bool manual_quiet{};
   bool configured_quiet{};
+  bool globally_disabled{};
+  bool global_quiet{};
+  bool mode_epoch_valid{true};
   bool bot_last_meaningful_speaker{};
   bool operational{true};
   bool degraded{};
@@ -98,6 +104,90 @@ struct AppearanceCandidate {
   std::optional<std::int64_t> repetition_age_ms;
   int uncertainty_penalty{};
   std::optional<std::string> deterministic_serious_category;
+};
+
+struct AppearanceDeliveryIds {
+  std::string reservation_id;
+  std::string outbox_id;
+  std::array<std::string, 4> feedback_control_ids;
+};
+
+enum class AppearanceFeedbackAction {
+  more,
+  less,
+  not_relevant,
+  quiet_tonight,
+};
+
+[[nodiscard]] std::string_view
+appearance_feedback_action_name(AppearanceFeedbackAction action) noexcept;
+[[nodiscard]] std::optional<AppearanceFeedbackAction>
+parse_appearance_feedback_action(std::string_view value) noexcept;
+
+struct AppearanceControlSummary {
+  AppearanceMode persisted_mode{AppearanceMode::off};
+  bool globally_disabled{};
+  std::optional<std::int64_t> quiet_until_ms;
+  std::size_t active_reservations{};
+  std::size_t pending_outbox{};
+  std::size_t failed_outbox{};
+  std::size_t ambiguous_outbox{};
+  std::size_t recent_model_failures{};
+  std::size_t recent_delivery_failures{};
+  std::optional<std::int64_t> last_queued_at_ms;
+  std::optional<std::int64_t> last_delivered_at_ms;
+  std::size_t feedback_more{};
+  std::size_t feedback_less{};
+  std::size_t feedback_not_relevant{};
+  std::string recommendation{"collect_more_feedback"};
+  std::vector<std::string> theme_review_keys;
+};
+
+struct AppearanceFailureAlert {
+  std::string category;
+  std::size_t occurrences{};
+};
+
+struct AppearanceQuietMutation {
+  DiscordSnowflake actor_user_id;
+  std::optional<std::int64_t> quiet_until_ms;
+  std::string reason;
+  std::string request_value;
+  std::string event_id;
+  std::string idempotency_key;
+  std::string correlation_id;
+  std::int64_t now_ms{};
+};
+
+struct AppearanceFeedbackMutation {
+  DiscordSnowflake actor_user_id;
+  DiscordSnowflake guild_id;
+  DiscordSnowflake channel_id;
+  AppearanceFeedbackAction action{AppearanceFeedbackAction::more};
+  std::optional<std::string> control_id;
+  std::optional<std::string> reference;
+  std::optional<std::int64_t> quiet_until_ms;
+  std::string feedback_id;
+  std::string event_id;
+  std::string idempotency_key;
+  std::string correlation_id;
+  std::int64_t now_ms{};
+};
+
+enum class AppearanceMutationResult {
+  applied,
+  quiet_applied,
+  unchanged,
+  unauthorized,
+  invalid,
+  not_found,
+  expired,
+  conflict,
+};
+
+struct VerifiedAppearanceDelivery {
+  std::string decision_id;
+  bool test_delivery{};
 };
 
 struct AppearanceGate {
@@ -137,6 +227,9 @@ struct AppearanceModelResult {
 [[nodiscard]] AppearanceModelResult parse_appearance_model_result(
     const AppearancePolicy &policy, std::string_view json,
     const std::vector<std::string> &supplied_memory_ids);
+[[nodiscard]] bool validate_appearance_model_result(
+    const AppearancePolicy &policy, const AppearanceModelResult &result,
+    const std::vector<std::string> &supplied_memory_ids) noexcept;
 [[nodiscard]] AiRequest
 appearance_ai_request(const AppearancePolicy &policy,
                       const AppearanceCandidate &candidate,
@@ -216,6 +309,7 @@ public:
                std::string event_id, std::string_view instance_id,
                std::string model_status,
                std::optional<AppearanceModelResult> model_result,
+               const AppearanceDeliveryIds &delivery_ids,
                std::int64_t now_ms) = 0;
   [[nodiscard]] virtual bool
   prepare_model(const AppearancePolicy &policy, AppearanceMode mode,
@@ -230,7 +324,39 @@ public:
                  std::string_view decision_id, std::string event_id,
                  std::string model_status,
                  std::optional<AppearanceModelResult> result,
+                 const AppearanceDeliveryIds &delivery_ids,
                  std::int64_t now_ms) = 0;
+  [[nodiscard]] virtual AppearanceMutationResult
+  set_quiet(const AppearanceQuietMutation &) {
+    return AppearanceMutationResult::invalid;
+  }
+  [[nodiscard]] virtual AppearanceMutationResult
+  set_global_disabled(DiscordSnowflake actor_user_id, bool disabled,
+                      std::int64_t now_ms, std::string event_id,
+                      std::string idempotency_key,
+                      std::string correlation_id) {
+    static_cast<void>(actor_user_id);
+    static_cast<void>(disabled);
+    static_cast<void>(now_ms);
+    static_cast<void>(event_id);
+    static_cast<void>(idempotency_key);
+    static_cast<void>(correlation_id);
+    return AppearanceMutationResult::invalid;
+  }
+  [[nodiscard]] virtual AppearanceMutationResult
+  record_feedback(const AppearanceFeedbackMutation &) {
+    return AppearanceMutationResult::invalid;
+  }
+  [[nodiscard]] virtual AppearanceControlSummary
+  control_summary(std::int64_t) { return {}; }
+  [[nodiscard]] virtual std::vector<AppearanceFailureAlert>
+  claim_failure_alerts(std::int64_t) {
+    return {};
+  }
+  [[nodiscard]] virtual std::optional<VerifiedAppearanceDelivery>
+  verify_public_delivery(const ContextMessageSnapshot &) {
+    return std::nullopt;
+  }
   [[nodiscard]] virtual std::optional<AppearanceDecisionRecord>
   decision(std::string_view reference) = 0;
   [[nodiscard]] virtual std::vector<AppearanceDecisionRecord>
@@ -247,7 +373,8 @@ public:
                     AiClient *ai_client, AiWorkService *ai_work,
                     Diagnostics &diagnostics, std::string persona = {},
                     std::string timezone = "America/New_York",
-                    AppearanceRuntimeStateProvider runtime_state = {});
+                    AppearanceRuntimeStateProvider runtime_state = {},
+                    std::function<void()> outbox_wake = {});
 
   void start();
   void observe_message(const AppearanceMessageObservation &observation);
@@ -255,10 +382,29 @@ public:
   simulate(const AppearanceSimulationRequest &request);
   [[nodiscard]] std::string preview(std::string_view reference);
   [[nodiscard]] std::string recent();
+  [[nodiscard]] std::string member_status_summary();
+  [[nodiscard]] std::string status_summary();
   [[nodiscard]] std::string set_callback_consent(DiscordSnowflake user_id,
                                                  bool enabled,
                                                  std::string idempotency_key,
                                                  std::string correlation_id);
+  [[nodiscard]] std::string set_quiet(DiscordSnowflake actor_user_id,
+                                      std::optional<std::int64_t> until_ms,
+                                      std::string reason,
+                                      std::string request_value,
+                                      std::string idempotency_key,
+                                      std::string correlation_id);
+  [[nodiscard]] std::optional<std::int64_t>
+  quiet_deadline(std::string_view kind,
+                 std::string_view local_time = {}) const;
+  [[nodiscard]] std::string set_global_disabled(
+      DiscordSnowflake actor_user_id, bool disabled,
+      std::string idempotency_key, std::string correlation_id);
+  [[nodiscard]] std::string feedback(const AppearanceFeedbackMutation &request);
+  [[nodiscard]] std::string
+  trigger_owner_live_safe(const AppearanceSimulationRequest &request);
+  [[nodiscard]] std::optional<VerifiedAppearanceDelivery>
+  verify_public_delivery(const ContextMessageSnapshot &message);
   [[nodiscard]] bool scan_events();
   void purge();
   [[nodiscard]] std::int64_t purge_interval_ms() const noexcept;
@@ -271,10 +417,14 @@ private:
                       std::string_view decision_id, std::string event_id,
                       std::string model_status,
                       std::optional<AppearanceModelResult> result,
+                      AppearanceDeliveryIds delivery_ids,
                       std::int64_t prepared_at_ms) noexcept;
   void decorate_runtime(AppearanceCandidate &candidate,
                         const AppearancePolicy &policy) const;
   [[nodiscard]] std::int64_t now_ms() const;
+  [[nodiscard]] AppearanceDeliveryIds delivery_ids();
+  void emit_failure_alerts() noexcept;
+  void wake_outbox() const;
 
   AppearanceRepository &repository_;
   const Clock &clock_;
@@ -288,6 +438,12 @@ private:
   std::string persona_;
   std::string timezone_;
   AppearanceRuntimeStateProvider runtime_state_;
+  std::function<void()> outbox_wake_;
 };
+
+[[nodiscard]] std::optional<std::int64_t>
+appearance_quiet_deadline(std::int64_t now_ms, std::string_view timezone,
+                          std::string_view kind,
+                          std::string_view local_time = {});
 
 } // namespace sanguinius

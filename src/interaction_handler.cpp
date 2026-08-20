@@ -22,14 +22,18 @@ namespace {
 
 [[nodiscard]] InteractionMessage
 status_message(const FeatureConfiguration &features,
-               const std::size_t pending_notices) {
+               const std::size_t pending_notices,
+               const std::string_view appearance_status,
+               const bool appearance_callbacks_enabled) {
   std::ostringstream output;
   output << "Sanguinius is ready.\n"
          << "Unopened sealed notices: " << pending_notices << "\n"
          << "Chronicle: " << enabled(features.chronicle_enabled) << "\n"
          << "Tarot: " << enabled(features.tarot_enabled) << "\n"
          << "Appearances: " << appearance_mode_name(features.appearances_mode)
-         << "\n"
+         << "\nYour appearance callbacks: "
+         << enabled(appearance_callbacks_enabled)
+         << "\nAppearance controls: " << appearance_status << "\n"
          << "Vox: " << enabled(features.vox_enabled);
   return text_message(output.str());
 }
@@ -37,7 +41,8 @@ status_message(const FeatureConfiguration &features,
 [[nodiscard]] InteractionMessage
 privacy_message(const FeatureConfiguration &features,
                 const UserPreferences &preferences,
-                const std::size_t pending_notices) {
+                const std::size_t pending_notices,
+                const std::string_view appearance_status) {
   std::ostringstream output;
   output << "Your Sanguinius privacy summary\n"
          << "Discord identity cache: stored for stable account identity\n"
@@ -49,6 +54,7 @@ privacy_message(const FeatureConfiguration &features,
                     preferences.anniversary_reminders_enabled)
          << "\nAppearance callbacks: "
          << enabled(preferences.appearance_callback_opt_in)
+         << "\nServer-wide appearance controls: " << appearance_status
          << "\nVoice input globally: " << enabled(features.voice_input_enabled)
          << "\nYour voice-input opt-in: "
          << enabled(preferences.voice_input_opt_in)
@@ -140,12 +146,20 @@ QueueSnapshot InteractionHandler::queue_snapshot() const {
 void InteractionHandler::process(const RoutedInteraction &request) {
   ensure_user(request.interaction);
   switch (request.operation) {
-  case InteractionOperation::status:
+  case InteractionOperation::status: {
+    const auto preferences =
+        identities_.load_preferences(request.interaction.user_id);
+    if (!preferences.has_value())
+      throw std::runtime_error{"User preferences were not initialized."};
     edit(request.interaction,
          status_message(features_,
-                        notices_.pending_count(request.interaction.user_id)),
+                        notices_.pending_count(request.interaction.user_id),
+                        appearances_ ? appearances_->member_status_summary()
+                                     : "unavailable",
+                        preferences->appearance_callback_opt_in),
          "interaction.status");
     return;
+  }
   case InteractionOperation::privacy: {
     const auto preferences =
         identities_.load_preferences(request.interaction.user_id);
@@ -154,7 +168,9 @@ void InteractionHandler::process(const RoutedInteraction &request) {
     }
     edit(request.interaction,
          privacy_message(features_, *preferences,
-                         notices_.pending_count(request.interaction.user_id)),
+                         notices_.pending_count(request.interaction.user_id),
+                         appearances_ ? appearances_->member_status_summary()
+                                      : "unavailable"),
          "interaction.privacy");
     return;
   }
@@ -174,6 +190,102 @@ void InteractionHandler::process(const RoutedInteraction &request) {
              "appearance.callbacks:" + request.interaction.interaction_id.str(),
              request.interaction.correlation_id)),
          "interaction.appearance_callbacks");
+    return;
+  }
+  case InteractionOperation::appearance_quiet_for:
+  case InteractionOperation::appearance_quiet_tonight:
+  case InteractionOperation::appearance_quiet_until:
+  case InteractionOperation::appearance_quiet_off: {
+    if (!appearances_)
+      throw std::runtime_error{"Appearance service is unavailable."};
+    std::string kind;
+    std::string local_time;
+    std::string request_value;
+    if (request.operation == InteractionOperation::appearance_quiet_for) {
+      kind = "duration";
+      const auto found =
+          std::ranges::find(request.interaction.command_options, "duration",
+                            &InteractionOption::name);
+      if (found == request.interaction.command_options.end() ||
+          std::get_if<std::string>(&found->value) == nullptr ||
+          *std::get_if<std::string>(&found->value) != "2h")
+        throw std::invalid_argument{"The quiet duration is invalid."};
+      request_value = "2h";
+    } else if (request.operation ==
+               InteractionOperation::appearance_quiet_tonight)
+      kind = "tonight";
+    else if (request.operation ==
+             InteractionOperation::appearance_quiet_until) {
+      kind = "until";
+      const auto found = std::ranges::find(request.interaction.command_options,
+                                           "time", &InteractionOption::name);
+      if (found == request.interaction.command_options.end() ||
+          std::get_if<std::string>(&found->value) == nullptr)
+        throw std::invalid_argument{"A local HH:MM time is required."};
+      local_time = *std::get_if<std::string>(&found->value);
+      request_value = local_time;
+    }
+    std::optional<std::int64_t> deadline;
+    if (request.operation != InteractionOperation::appearance_quiet_off) {
+      deadline = appearances_->quiet_deadline(kind, local_time);
+      if (!deadline) {
+        edit(request.interaction,
+             text_message("That local quiet deadline is invalid or does not "
+                          "exist because of daylight saving time."),
+             "interaction.appearance_quiet");
+        return;
+      }
+    }
+    edit(request.interaction,
+         text_message(appearances_->set_quiet(
+             request.interaction.user_id, deadline, kind, request_value,
+             "appearance.quiet:" + request.interaction.interaction_id.str(),
+             request.interaction.correlation_id)),
+         "interaction.appearance_quiet");
+    return;
+  }
+  case InteractionOperation::appearance_feedback:
+  case InteractionOperation::appearance_feedback_component: {
+    if (!appearances_)
+      throw std::runtime_error{"Appearance service is unavailable."};
+    AppearanceFeedbackMutation feedback{
+        .actor_user_id = request.interaction.user_id,
+        .guild_id = request.interaction.guild_id,
+        .channel_id = request.interaction.channel_id,
+        .action = AppearanceFeedbackAction::more,
+        .control_id = std::nullopt,
+        .reference = std::nullopt,
+        .quiet_until_ms = std::nullopt,
+        .feedback_id = {},
+        .event_id = {},
+        .idempotency_key =
+            "appearance.feedback:" + request.interaction.interaction_id.str(),
+        .correlation_id = request.interaction.correlation_id};
+    if (request.operation ==
+        InteractionOperation::appearance_feedback_component) {
+      feedback.control_id = request.interaction.custom_id.substr(
+          appearance_feedback_component_prefix.size());
+    } else {
+      bool response_found = false;
+      for (const auto &option : request.interaction.command_options) {
+        const auto *value = std::get_if<std::string>(&option.value);
+        if (value == nullptr)
+          continue;
+        if (option.name == "response") {
+          const auto parsed = parse_appearance_feedback_action(*value);
+          if (!parsed || *parsed == AppearanceFeedbackAction::quiet_tonight)
+            throw std::invalid_argument{"Appearance feedback is invalid."};
+          feedback.action = *parsed;
+          response_found = true;
+        } else if (option.name == "reference") {
+          feedback.reference = *value;
+        }
+      }
+      if (!response_found)
+        throw std::invalid_argument{"Appearance feedback is required."};
+    }
+    edit(request.interaction, text_message(appearances_->feedback(feedback)),
+         "interaction.appearance_feedback");
     return;
   }
   case InteractionOperation::inbox:
@@ -377,7 +489,11 @@ void InteractionHandler::process(const RoutedInteraction &request) {
   case InteractionOperation::admin_health: {
     const auto snapshot =
         health_service_.snapshot(message_queue_(), ai_queue_(), true);
-    edit(request.interaction, text_message(render_health(snapshot)),
+    auto rendered = render_health(snapshot);
+    if (appearances_)
+      rendered += "\nAppearances: " + appearances_->status_summary();
+    edit(request.interaction,
+         text_message(bounded_health_message(std::move(rendered))),
          "interaction.health");
     return;
   }
@@ -470,6 +586,45 @@ void InteractionHandler::process(const RoutedInteraction &request) {
       throw std::runtime_error{"Appearance service is unavailable."};
     edit(request.interaction, text_message(appearances_->recent()),
          "interaction.appearance_recent");
+    return;
+  case InteractionOperation::appearance_trigger: {
+    if (!appearances_)
+      throw std::runtime_error{"Appearance service is unavailable."};
+    const auto found = std::ranges::find(request.interaction.command_options,
+                                         "fixture", &InteractionOption::name);
+    if (found == request.interaction.command_options.end() ||
+        std::get_if<std::string>(&found->value) == nullptr ||
+        *std::get_if<std::string>(&found->value) != "owner_live_safe")
+      throw std::invalid_argument{"Owner live fixture is invalid."};
+    const auto timestamp =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            clock_.now().time_since_epoch())
+            .count();
+    edit(request.interaction,
+         text_message(
+             appearances_->trigger_owner_live_safe(AppearanceSimulationRequest{
+                 .fixture = "owner_live_safe",
+                 .idempotency_key = "appearance.trigger:" +
+                                    request.interaction.interaction_id.str(),
+                 .correlation_id = request.interaction.correlation_id,
+                 .owner_user_id = request.interaction.user_id,
+                 .now_ms = timestamp,
+                 .candidate_id = {},
+                 .event_id = {}})),
+         "interaction.appearance_trigger");
+    return;
+  }
+  case InteractionOperation::appearance_disable:
+  case InteractionOperation::appearance_enable:
+    if (!appearances_)
+      throw std::runtime_error{"Appearance service is unavailable."};
+    edit(request.interaction,
+         text_message(appearances_->set_global_disabled(
+             request.interaction.user_id,
+             request.operation == InteractionOperation::appearance_disable,
+             "appearance.kill:" + request.interaction.interaction_id.str(),
+             request.interaction.correlation_id)),
+         "interaction.appearance_kill_switch");
     return;
   }
 }

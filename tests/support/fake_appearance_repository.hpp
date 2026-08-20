@@ -87,6 +87,8 @@ public:
     candidate.recurrence_matches = 2;
     candidate.human_messages_since_bot = 8;
     const std::scoped_lock lock{mutex_};
+    candidate.globally_disabled = globally_disabled_;
+    candidate.global_quiet = quiet_until_ms_ && *quiet_until_ms_ > request.now_ms;
     candidates_.push_back(candidate);
     return candidate;
   }
@@ -95,14 +97,15 @@ public:
                                                std::string_view) override {
     return {};
   }
-  bool record_final(const AppearancePolicy &, AppearanceMode,
+  bool record_final(const AppearancePolicy &, const AppearanceMode mode,
                     const AppearanceCandidate &candidate,
                     const AppearanceEvaluation &evaluation,
                     std::string decision_id, std::string, std::string_view,
                     std::string model_status,
                     std::optional<AppearanceModelResult> result,
+                    const AppearanceDeliveryIds &,
                     std::int64_t now_ms) override {
-    store(candidate, evaluation, std::move(decision_id),
+    store(candidate, evaluation, mode, std::move(decision_id),
           std::move(model_status), std::move(result), now_ms);
     return true;
   }
@@ -132,12 +135,13 @@ public:
          .serious_categories = {}});
     return true;
   }
-  bool complete_model(const AppearancePolicy &, AppearanceMode,
+  bool complete_model(const AppearancePolicy &, const AppearanceMode mode,
                       const AppearanceCandidate &candidate,
                       const AppearanceEvaluation &evaluation,
                       std::string_view decision_id, std::string,
                       std::string model_status,
                       std::optional<AppearanceModelResult> result,
+                      const AppearanceDeliveryIds &,
                       std::int64_t now_ms) override {
     const std::scoped_lock lock{mutex_};
     auto found = std::ranges::find(decisions_, decision_id,
@@ -146,15 +150,89 @@ public:
       return false;
     found->state = "final";
     found->model_status = std::move(model_status);
-    const bool hypothetical = evaluation.eligible_for_model && result &&
-                              result->should_speak && !result->serious_context;
-    found->action = hypothetical ? "hypothetical" : "reject";
-    found->reason = hypothetical ? "hypothetical" : found->model_status;
-    if (hypothetical)
+    const bool accepted = evaluation.eligible_for_model && result &&
+                          result->should_speak && !result->serious_context;
+    found->action = accepted ? (mode == AppearanceMode::live ? "live_queued"
+                                                              : "hypothetical")
+                             : "reject";
+    found->reason = accepted ? found->action : found->model_status;
+    if (accepted && mode != AppearanceMode::live)
       found->preview = result->text;
     found->created_at_ms = now_ms;
     static_cast<void>(candidate);
     return true;
+  }
+  AppearanceMutationResult
+  set_quiet(const AppearanceQuietMutation &request) override {
+    const std::scoped_lock lock{mutex_};
+    const auto replay = std::ranges::find(quiet_requests_,
+                                          request.idempotency_key,
+                                          &QuietRequest::idempotency_key);
+    if (replay != quiet_requests_.end()) {
+      if (replay->actor_user_id != request.actor_user_id ||
+          replay->reason != request.reason ||
+          replay->request_value != request.request_value)
+        throw std::runtime_error{"Fake appearance quiet replay conflicts."};
+      return replay->result;
+    }
+    const auto finish = [&](const AppearanceMutationResult result) {
+      quiet_requests_.push_back(
+          {.idempotency_key = request.idempotency_key,
+           .actor_user_id = request.actor_user_id,
+           .reason = request.reason,
+           .request_value = request.request_value,
+           .result = result});
+      return result;
+    };
+    if (!request.quiet_until_ms) {
+      if (quiet_until_ms_ && request.actor_user_id != quiet_setter_ &&
+          request.actor_user_id != DiscordSnowflake{30})
+        return finish(AppearanceMutationResult::unauthorized);
+      if (!quiet_until_ms_)
+        return finish(AppearanceMutationResult::unchanged);
+      quiet_until_ms_.reset();
+      quiet_setter_ = {};
+      return finish(AppearanceMutationResult::applied);
+    }
+    if (quiet_until_ms_ && *request.quiet_until_ms <= *quiet_until_ms_)
+      return finish(AppearanceMutationResult::unchanged);
+    quiet_until_ms_ = request.quiet_until_ms;
+    quiet_setter_ = request.actor_user_id;
+    return finish(AppearanceMutationResult::applied);
+  }
+  AppearanceMutationResult
+  set_global_disabled(const DiscordSnowflake actor_user_id,
+                      const bool disabled, std::int64_t, std::string,
+                      std::string, std::string) override {
+    const std::scoped_lock lock{mutex_};
+    if (actor_user_id != DiscordSnowflake{30})
+      return AppearanceMutationResult::unauthorized;
+    if (globally_disabled_ == disabled)
+      return AppearanceMutationResult::unchanged;
+    globally_disabled_ = disabled;
+    return AppearanceMutationResult::applied;
+  }
+  AppearanceMutationResult
+  record_feedback(const AppearanceFeedbackMutation &request) override {
+    const std::scoped_lock lock{mutex_};
+    if (std::ranges::find(feedback_keys_, request.idempotency_key) !=
+        feedback_keys_.end())
+      return AppearanceMutationResult::unchanged;
+    feedback_keys_.push_back(request.idempotency_key);
+    ++feedback_count_;
+    return request.action == AppearanceFeedbackAction::quiet_tonight
+               ? AppearanceMutationResult::quiet_applied
+               : AppearanceMutationResult::applied;
+  }
+  AppearanceControlSummary control_summary(std::int64_t now_ms) override {
+    const std::scoped_lock lock{mutex_};
+    AppearanceControlSummary result;
+    result.persisted_mode = active_mode_;
+    result.globally_disabled = globally_disabled_;
+    result.quiet_until_ms = quiet_until_ms_ && *quiet_until_ms_ > now_ms
+                                ? quiet_until_ms_
+                                : std::nullopt;
+    return result;
   }
   std::optional<AppearanceDecisionRecord>
   decision(const std::string_view reference) override {
@@ -210,6 +288,10 @@ public:
     const std::scoped_lock lock{mutex_};
     return mode_activation_count_;
   }
+  [[nodiscard]] std::size_t feedback_count() const {
+    const std::scoped_lock lock{mutex_};
+    return feedback_count_;
+  }
   [[nodiscard]] AppearanceMode active_mode() const {
     const std::scoped_lock lock{mutex_};
     return active_mode_;
@@ -223,13 +305,22 @@ public:
   bool throw_on_observe{};
 
 private:
+  struct QuietRequest {
+    std::string idempotency_key;
+    DiscordSnowflake actor_user_id;
+    std::string reason;
+    std::string request_value;
+    AppearanceMutationResult result{AppearanceMutationResult::invalid};
+  };
+
   void store(const AppearanceCandidate &candidate,
-             const AppearanceEvaluation &evaluation, std::string decision_id,
+             const AppearanceEvaluation &evaluation, AppearanceMode mode,
+             std::string decision_id,
              std::string model_status,
              std::optional<AppearanceModelResult> result,
              const std::int64_t now_ms) {
-    const bool hypothetical = evaluation.eligible_for_model && result &&
-                              result->should_speak && !result->serious_context;
+    const bool accepted = evaluation.eligible_for_model && result &&
+                          result->should_speak && !result->serious_context;
     const std::scoped_lock lock{mutex_};
     decisions_.push_back(
         {.decision_id = std::move(decision_id),
@@ -239,12 +330,17 @@ private:
              std::string{appearance_candidate_type_name(candidate.type)},
          .safe_summary = candidate.safe_summary,
          .state = "final",
-         .action = hypothetical ? "hypothetical" : "reject",
-         .reason = hypothetical ? "hypothetical" : evaluation.reason,
+         .action = accepted ? (mode == AppearanceMode::live ? "live_queued"
+                                                             : "hypothetical")
+                            : "reject",
+         .reason = accepted ? (mode == AppearanceMode::live ? "live_queued"
+                                                            : "hypothetical")
+                            : evaluation.reason,
          .score = evaluation.score,
          .model_status = std::move(model_status),
-         .preview = hypothetical ? std::optional<std::string>{result->text}
-                                 : std::nullopt,
+         .preview = accepted && mode != AppearanceMode::live
+                        ? std::optional<std::string>{result->text}
+                        : std::nullopt,
          .created_at_ms = now_ms,
          .gates = evaluation.gates,
          .score_components = evaluation.score_components,
@@ -255,6 +351,12 @@ private:
   mutable std::mutex mutex_;
   bool registered_{};
   bool callback_enabled_{};
+  bool globally_disabled_{};
+  std::optional<std::int64_t> quiet_until_ms_;
+  DiscordSnowflake quiet_setter_{};
+  std::vector<QuietRequest> quiet_requests_;
+  std::size_t feedback_count_{};
+  std::vector<std::string> feedback_keys_;
   AppearanceMode active_mode_{AppearanceMode::off};
   std::size_t mode_activation_count_{};
   std::size_t observation_count_{};

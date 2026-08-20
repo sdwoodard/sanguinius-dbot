@@ -156,8 +156,11 @@ request_timeout(const ConfigSource &source, ConfigurationOrigin &origin) {
   if (*value == "dry_run") {
     return AppearanceMode::dry_run;
   }
+  if (*value == "live") {
+    return AppearanceMode::live;
+  }
   throw std::runtime_error{std::string{variable} +
-                           " must be exactly off or dry_run; live is unavailable in Milestone 9."};
+                           " must be exactly off, dry_run, or live."};
 }
 
 [[nodiscard]] std::string enabled(const bool value) {

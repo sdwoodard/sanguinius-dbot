@@ -15,6 +15,8 @@ namespace sanguinius {
 
 inline constexpr std::size_t maximum_health_message_size = 1'900;
 
+[[nodiscard]] std::string bounded_health_message(std::string message);
+
 struct PersistenceHealth {
   bool ready{};
   std::int64_t schema_version{};

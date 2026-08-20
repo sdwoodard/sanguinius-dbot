@@ -710,12 +710,16 @@ ChronicleService::ChronicleService(
     PersistentIdGenerator &ids, ServerScopeConfiguration scope,
     ControlConfiguration controls, std::function<void()> outbox_wakeup,
     std::function<void()> scheduler_wakeup, const std::size_t draft_capacity,
-    std::function<void()> canon_observer)
+    std::function<void()> canon_observer,
+    std::function<std::optional<std::pair<std::string, bool>>(
+        const ContextMessageSnapshot &)>
+        appearance_verifier)
     : repository_{repository}, clock_{clock}, ids_{ids},
       scope_{std::move(scope)}, controls_{controls},
       outbox_wakeup_{std::move(outbox_wakeup)},
       scheduler_wakeup_{std::move(scheduler_wakeup)},
       canon_observer_{std::move(canon_observer)},
+      appearance_verifier_{std::move(appearance_verifier)},
       volatile_actions_{draft_capacity, [clock_pointer = &clock] {
                           return unix_milliseconds(*clock_pointer);
                         }} {}
@@ -732,6 +736,18 @@ ChronicleService::canonize_message(const IncomingInteraction &interaction) {
     return {.code = ChronicleResultCode::unauthorized,
             .entry = std::nullopt,
             .actions = std::nullopt};
+  }
+  std::optional<std::pair<std::string, bool>> verified_appearance;
+  if (source.author.is_bot) {
+    if (!appearance_verifier_ || !source.attachments.empty() ||
+        !source.mentioned_users.empty())
+      return {.code = ChronicleResultCode::unauthorized};
+    verified_appearance = appearance_verifier_(source);
+    if (!verified_appearance)
+      return {.code = ChronicleResultCode::unauthorized};
+    if (verified_appearance->second &&
+        (!controls_.test_mode || interaction.user_id != scope_.owner_user_id))
+      return {.code = ChronicleResultCode::unauthorized};
   }
   const auto actions =
       ProposalActionIds{ids_.next_id(), ids_.next_id(), ids_.next_id()};
@@ -760,7 +776,14 @@ ChronicleService::canonize_message(const IncomingInteraction &interaction) {
       .type = ChronicleEntryType::quote,
       .visibility = ChronicleVisibility::shared,
       .owner_test =
-          controls_.test_mode && interaction.user_id == scope_.owner_user_id,
+          verified_appearance
+              ? verified_appearance->second
+              : controls_.test_mode &&
+                    interaction.user_id == scope_.owner_user_id,
+      .appearance_decision_id =
+          verified_appearance
+              ? std::optional<std::string>{verified_appearance->first}
+              : std::nullopt,
       .correlation_id = interaction.correlation_id,
       .idempotency_key =
           "chronicle:proposal:" + source.reference.message_id.str(),

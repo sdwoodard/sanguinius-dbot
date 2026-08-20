@@ -3,6 +3,7 @@
 #include "sanguinius/chronicle.hpp"
 #include "sanguinius/command_registry.hpp"
 #include "sanguinius/pending_notice.hpp"
+#include "sanguinius/persistent_id.hpp"
 
 #include <algorithm>
 #include <mutex>
@@ -23,6 +24,16 @@ void reply_ephemeral(const IncomingInteraction &interaction,
 [[nodiscard]] std::optional<InteractionOperation>
 slash_operation(const IncomingInteraction &interaction) {
   if (interaction.command_name == "sanguinius") {
+    if (interaction.subcommand_group_name == "quiet") {
+      if (interaction.subcommand_name == "for")
+        return InteractionOperation::appearance_quiet_for;
+      if (interaction.subcommand_name == "tonight")
+        return InteractionOperation::appearance_quiet_tonight;
+      if (interaction.subcommand_name == "until")
+        return InteractionOperation::appearance_quiet_until;
+      if (interaction.subcommand_name == "off")
+        return InteractionOperation::appearance_quiet_off;
+    }
     if (interaction.subcommand_name == "status") {
       return InteractionOperation::status;
     }
@@ -35,6 +46,8 @@ slash_operation(const IncomingInteraction &interaction) {
     if (interaction.subcommand_name == "appearance-callbacks") {
       return InteractionOperation::appearance_callbacks;
     }
+    if (interaction.subcommand_name == "appearance-feedback")
+      return InteractionOperation::appearance_feedback;
   }
   if (interaction.command_name == "sang-admin") {
     if (interaction.subcommand_name == "health") {
@@ -64,6 +77,12 @@ slash_operation(const IncomingInteraction &interaction) {
         return InteractionOperation::appearance_preview;
       if (interaction.subcommand_name == "recent")
         return InteractionOperation::appearance_recent;
+      if (interaction.subcommand_name == "trigger")
+        return InteractionOperation::appearance_trigger;
+      if (interaction.subcommand_name == "disable")
+        return InteractionOperation::appearance_disable;
+      if (interaction.subcommand_name == "enable")
+        return InteractionOperation::appearance_enable;
     }
   }
   if (interaction.command_name == "chronicle") {
@@ -318,6 +337,11 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       }
       if (parse_component_token(interaction.custom_id)) {
         operation = InteractionOperation::open_component;
+      } else if (interaction.custom_id.starts_with(
+                     appearance_feedback_component_prefix) &&
+                 valid_uuid_v4(interaction.custom_id.substr(
+                     appearance_feedback_component_prefix.size()))) {
+        operation = InteractionOperation::appearance_feedback_component;
       } else if (parse_chronicle_component(interaction.custom_id,
                                            chronicle_search_component_prefix)) {
         operation = InteractionOperation::chronicle_search_component;
@@ -388,14 +412,20 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::test_public_retry ||
       *operation == InteractionOperation::appearance_simulate ||
       *operation == InteractionOperation::appearance_preview ||
-      *operation == InteractionOperation::appearance_recent;
+      *operation == InteractionOperation::appearance_recent ||
+      *operation == InteractionOperation::appearance_trigger;
+  const bool appearance_safety_operation =
+      *operation == InteractionOperation::appearance_disable ||
+      *operation == InteractionOperation::appearance_enable;
   const bool test_operation =
       *operation == InteractionOperation::test_notice ||
       *operation == InteractionOperation::test_schedule_notice ||
       *operation == InteractionOperation::test_public_retry ||
-      *operation == InteractionOperation::appearance_simulate;
-  if (admin_operation || anniversary_test) {
-    if (!state_->controls.admin_commands_enabled) {
+      *operation == InteractionOperation::appearance_simulate ||
+      *operation == InteractionOperation::appearance_trigger;
+  if (admin_operation || anniversary_test || appearance_safety_operation) {
+    if (!appearance_safety_operation &&
+        !state_->controls.admin_commands_enabled) {
       state_->diagnostics.emit(
           {DiagnosticSeverity::warning, "interaction.admin_rejected",
            "Owner interaction was rejected because administration is disabled.",
@@ -427,6 +457,12 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
         state_->features.appearances_mode != AppearanceMode::dry_run) {
       reply_ephemeral(interaction,
                       "Appearance simulation requires dry_run mode.");
+      return;
+    }
+    if (*operation == InteractionOperation::appearance_trigger &&
+        state_->features.appearances_mode != AppearanceMode::live) {
+      reply_ephemeral(interaction,
+                      "Owner live trigger requires configured live mode.");
       return;
     }
   }

@@ -3,6 +3,7 @@
 #include "sanguinius/persistence/database.hpp"
 #include "sanguinius/persistence/migrator.hpp"
 #include "sanguinius/persistence/sqlite_appearance_repository.hpp"
+#include "sanguinius/persistence/sqlite_chronicle_repository.hpp"
 #include "sanguinius/persistence/sqlite_durable_work_repository.hpp"
 #include "sanguinius/persistence/sqlite_repositories.hpp"
 
@@ -14,7 +15,10 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <barrier>
 #include <chrono>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -66,7 +70,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 7);
+      REQUIRE(migrator.apply(database.connection()).current_version == 8);
     }
     context = std::make_shared<SqliteRepositoryContext>(
         Database::open_runtime(temporary.path(), 25ms));
@@ -90,9 +94,37 @@ public:
   std::unique_ptr<SqliteAppearanceRepository> repository;
 };
 
+[[nodiscard]] std::vector<sanguinius::AppearanceCandidate>
+conversation_candidates(AppearanceFixture &fixture,
+                        const std::size_t message_count,
+                        const std::uint64_t first_message_id,
+                        const std::int64_t first_observed_at_ms,
+                        const std::size_t first_uuid) {
+  std::vector<sanguinius::AppearanceCandidate> result;
+  for (std::size_t index = 0; index < message_count; ++index) {
+    auto candidate = fixture.repository->observe_message(
+        fixture.policy,
+        {.message_id = first_message_id + index,
+         .guild_id = 10,
+         .channel_id = 20,
+         .author_user_id = index % 2 == 0 ? sanguinius::DiscordSnowflake{31}
+                                          : sanguinius::DiscordSnowflake{32},
+         .author_is_bot = false,
+         .excerpt =
+             "ordinary lively game-night banter " + std::to_string(index),
+         .observed_at_ms =
+             first_observed_at_ms + static_cast<std::int64_t>(index),
+         .correlation_id = "live-conversation"},
+        uuid(first_uuid + index), uuid(first_uuid + 100 + index));
+    if (candidate)
+      result.push_back(std::move(*candidate));
+  }
+  return result;
+}
+
 } // namespace
 
-TEST_CASE("schema v7 policy snapshots are immutable and version collision safe",
+TEST_CASE("schema v8 policy snapshots are immutable and version collision safe",
           "[appearance][repository][migration]") {
   AppearanceFixture fixture;
   REQUIRE(scalar(*fixture.context,
@@ -125,8 +157,7 @@ TEST_CASE("schema v7 policy snapshots are immutable and version collision safe",
   next_json["scoring"]["threshold"] = 61;
   const auto next = sanguinius::parse_appearance_policy(next_json.dump());
   fixture.repository->register_policy(next, 400);
-  REQUIRE(fixture.repository->load_policy("m9-initial-1").score_threshold ==
-          60);
+  REQUIRE(fixture.repository->load_policy("m10-live-1").score_threshold == 60);
   REQUIRE(fixture.repository->load_policy("m9-test-2").score_threshold == 61);
   auto scheduled = fixture.context->connection().prepare(
       "SELECT payload_json FROM scheduled_job WHERE job_type=?");
@@ -139,14 +170,14 @@ TEST_CASE("schema v7 policy snapshots are immutable and version collision safe",
       "UPDATE appearance_policy_snapshot SET schema_version=1"));
 }
 
-TEST_CASE("schema v7 candidate references reject dangling identifiers",
+TEST_CASE("schema v8 candidate references reject dangling identifiers",
           "[appearance][repository][migration][foreign-key]") {
   AppearanceFixture fixture;
   fixture.context->connection().execute(
       "INSERT INTO appearance_message_activity(message_id,guild_id,channel_id,"
       "policy_version,author_user_id,author_is_bot,excerpt,observed_at_ms,"
       "expires_at_ms,correlation_id) VALUES('5000','10','20',"
-      "'m9-initial-1','31',0,'ordinary activity',100,1800100,'fk-activity')");
+      "'m10-live-1','31',0,'ordinary activity',100,1800100,'fk-activity')");
   REQUIRE_THROWS(fixture.context->connection().execute(
       "UPDATE appearance_message_activity SET consumed_candidate_id='"
       "00000000-0000-4000-8000-000000009999' WHERE message_id='5000'"));
@@ -548,7 +579,9 @@ TEST_CASE("owner simulations preserve hard gates and final hypotheticals are "
   REQUIRE(stored->preview == model.text);
   REQUIRE(scalar(*fixture.context,
                  "SELECT count(*) FROM sqlite_schema WHERE "
-                 "name='appearance_budget_reservation'") == 0);
+                 "name='appearance_budget_reservation'") == 1);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_budget_reservation") == 0);
   REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM outbox_message") == 0);
 
   const auto stale = fixture.repository->simulate(
@@ -797,12 +830,13 @@ TEST_CASE("event triggers observe enabled Chronicle sources and audit Tarot as "
       "policy_version,author_user_id,author_is_bot,excerpt,observed_at_ms,"
       "expires_at_ms,correlation_id) "
       "VALUES"
-      "('730','10','20','m9-initial-1','31',0,'ordinary game "
+      "('730','10','20','m10-live-1','31',0,'ordinary game "
       "night',29990,1829990,"
       "'event-active-1'),"
-      "('731','10','20','m9-initial-1','32',0,'ordinary shared "
+      "('731','10','20','m10-live-1','32',0,'ordinary shared "
       "victory',29991,1829991,'event-active-2')");
-  const auto event = [&](const std::string &id, const std::string &type) {
+  const auto event = [&](const std::string &id, const std::string &type,
+                         const std::string &payload = "{}") {
     return sanguinius::EventJournalEntry{.event_id = id,
                                          .event_type = type,
                                          .aggregate_type = "chronicle_entry",
@@ -817,7 +851,7 @@ TEST_CASE("event triggers observe enabled Chronicle sources and audit Tarot as "
                                          .correlation_id = "event",
                                          .causation_id = std::nullopt,
                                          .idempotency_key = "event:" + id,
-                                         .payload_json = "{}"};
+                                         .payload_json = payload};
   };
   REQUIRE(
       durable.append_event(event(uuid(701), "chronicle.entry_canonized.v1")));
@@ -842,6 +876,23 @@ TEST_CASE("event triggers observe enabled Chronicle sources and audit Tarot as "
                  "SELECT recorded_at_ms FROM event_journal WHERE event_type="
                  "'appearance.candidate_created.v1' ORDER BY rowid LIMIT 1") ==
           30'001);
+  REQUIRE(durable.append_event(
+      event(uuid(704), "chronicle.entry_canonized.v1", R"({"test":true})")));
+  REQUIRE(fixture.repository->scan_events(fixture.policy, 30'001, "instance")
+              .empty());
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT extraction_result='source_not_enabled' FROM "
+                 "appearance_event_observation WHERE source_event_id="
+                 "'00000000-0000-4000-8000-000000000704'") == 1);
+  REQUIRE(durable.append_event(event(uuid(705),
+                                     "chronicle.anniversary_delivered.v1",
+                                     R"({"test_run":true})")));
+  REQUIRE(fixture.repository->scan_events(fixture.policy, 30'001, "instance")
+              .empty());
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT extraction_result='source_not_enabled' FROM "
+                 "appearance_event_observation WHERE source_event_id="
+                 "'00000000-0000-4000-8000-000000000705'") == 1);
   fixture.context->connection().execute(
       "UPDATE chronicle_entry SET visibility='participant_only' WHERE "
       "entry_id='00000000-0000-4000-8000-000000000700'");
@@ -1145,13 +1196,13 @@ TEST_CASE("event activity excludes future rows after wall clock rollback",
       "INSERT INTO appearance_message_activity(message_id,guild_id,channel_id,"
       "policy_version,author_user_id,author_is_bot,excerpt,observed_at_ms,"
       "expires_at_ms,correlation_id) VALUES"
-      "('2701','10','20','m9-initial-1','31',0,'ordinary current "
+      "('2701','10','20','m10-live-1','31',0,'ordinary current "
       "activity',89990,1889990,"
       "'rollback-1'),"
-      "('2702','10','20','m9-initial-1','32',0,'ordinary current "
+      "('2702','10','20','m10-live-1','32',0,'ordinary current "
       "reply',89991,1889991,"
       "'rollback-2'),"
-      "('2703','10','20','m9-initial-1','31',0,'A serious medical "
+      "('2703','10','20','m10-live-1','31',0,'A serious medical "
       "emergency.',100000,1900000,"
       "'rollback-future')");
   SqliteDurableWorkRepository durable{fixture.context};
@@ -1381,6 +1432,250 @@ TEST_CASE("post-model channel activity is revalidated before finalization",
   REQUIRE(stored->reason == "bot_last_meaningful_speaker");
 }
 
+TEST_CASE(
+    "post-model active humans use the candidate policy and current window",
+    "[appearance][repository][activity][recheck][privacy]") {
+  AppearanceFixture fixture;
+  auto policy_json = nlohmann::json::parse(fixture.policy.canonical_json);
+  policy_json["policy_version"] = "m10-active-window-recheck";
+  policy_json["scoring"]["threshold"] = 1;
+  fixture.policy = sanguinius::parse_appearance_policy(policy_json.dump());
+  fixture.repository->register_policy(fixture.policy, 900);
+  std::optional<sanguinius::AppearanceCandidate> candidate;
+  for (std::size_t index = 0; index < 8; ++index) {
+    candidate = fixture.repository->observe_message(
+        fixture.policy,
+        {.message_id = sanguinius::DiscordSnowflake{37'000 + index},
+         .guild_id = 10,
+         .channel_id = 20,
+         .author_user_id = index == 0 ? sanguinius::DiscordSnowflake{31}
+                                      : sanguinius::DiscordSnowflake{32},
+         .author_is_bot = false,
+         .excerpt =
+             "ordinary active-window conversation " + std::to_string(index),
+         .observed_at_ms =
+             index == 0 ? 1'000 : 590'000 + static_cast<std::int64_t>(index),
+         .correlation_id = "active-window-recheck"},
+        uuid(37'100 + index), uuid(37'200 + index));
+  }
+  REQUIRE(candidate);
+  REQUIRE(candidate->actors ==
+          std::vector<sanguinius::DiscordSnowflake>{31, 32});
+  const auto evaluation = sanguinius::evaluate_appearance(
+      fixture.policy, sanguinius::AppearanceMode::dry_run, *candidate, 590'008);
+  INFO("preparation reason: " << evaluation.reason);
+  REQUIRE(evaluation.eligible_for_model);
+  REQUIRE(fixture.repository->prepare_model(
+      fixture.policy, sanguinius::AppearanceMode::dry_run, *candidate,
+      evaluation, uuid(37'300), uuid(37'301), "active-window", 590'008));
+
+  auto next_policy_json = nlohmann::json::parse(fixture.policy.canonical_json);
+  next_policy_json["policy_version"] = "m10-active-window-next-policy";
+  const auto next_policy =
+      sanguinius::parse_appearance_policy(next_policy_json.dump());
+  fixture.repository->register_policy(next_policy, 600'999);
+  REQUIRE_FALSE(fixture.repository->observe_message(
+      next_policy,
+      {.message_id = 37'050,
+       .guild_id = 10,
+       .channel_id = 20,
+       .author_user_id = 31,
+       .author_is_bot = false,
+       .excerpt = "ordinary activity under the next policy",
+       .observed_at_ms = 601'000,
+       .correlation_id = "active-window-next-policy"},
+      uuid(37'350), uuid(37'351)));
+
+  REQUIRE(fixture.repository->complete_model(
+      fixture.policy, sanguinius::AppearanceMode::dry_run, *candidate,
+      evaluation, uuid(37'300), uuid(37'302), "model_accepted",
+      sanguinius::AppearanceModelResult{.serious_context = false,
+                                        .serious_categories = {},
+                                        .should_speak = true,
+                                        .text = "This must remain silent.",
+                                        .tone = "warm",
+                                        .memory_ids_used = {},
+                                        .confidence = .95},
+      601'001));
+  const auto stored = fixture.repository->decision(uuid(37'300));
+  REQUIRE(stored);
+  REQUIRE(stored->action == "reject");
+  REQUIRE(stored->reason == "active_humans");
+  const auto active_gate =
+      std::ranges::find(stored->gates, std::string{"active_humans"},
+                        &sanguinius::AppearanceGate::name);
+  REQUIRE(active_gate != stored->gates.end());
+  REQUIRE_FALSE(active_gate->passed);
+  REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM outbox_message") == 0);
+}
+
+TEST_CASE("newly active opted-out humans suppress finalization",
+          "[appearance][repository][activity][recheck][privacy][consent]") {
+  AppearanceFixture fixture;
+  auto policy_json = nlohmann::json::parse(fixture.policy.canonical_json);
+  policy_json["policy_version"] = "m10-new-active-opt-out";
+  policy_json["scoring"]["threshold"] = 1;
+  fixture.policy = sanguinius::parse_appearance_policy(policy_json.dump());
+  fixture.repository->register_policy(fixture.policy, 900);
+  const auto candidates =
+      conversation_candidates(fixture, 8, 39'000, 1'000, 39'100);
+  REQUIRE(candidates.size() == 1);
+  const auto &candidate = candidates.front();
+  const auto evaluation = sanguinius::evaluate_appearance(
+      fixture.policy, sanguinius::AppearanceMode::dry_run, candidate, 1'008);
+  REQUIRE(evaluation.eligible_for_model);
+  REQUIRE(fixture.repository->prepare_model(
+      fixture.policy, sanguinius::AppearanceMode::dry_run, candidate,
+      evaluation, uuid(39'300), uuid(39'301), "new-active-opt-out", 1'008));
+
+  SqliteCoreIdentityRepository identities{fixture.context};
+  identities.ensure_user({33, "Third", "third", false, 1'009});
+  REQUIRE_FALSE(fixture.repository->observe_message(
+      fixture.policy,
+      {.message_id = 39'010,
+       .guild_id = 10,
+       .channel_id = 20,
+       .author_user_id = 33,
+       .author_is_bot = false,
+       .excerpt = "ordinary newly active conversation",
+       .observed_at_ms = 1'009,
+       .correlation_id = "new-active-opt-out"},
+      uuid(39'302), uuid(39'303)));
+
+  REQUIRE(fixture.repository->complete_model(
+      fixture.policy, sanguinius::AppearanceMode::dry_run, candidate,
+      evaluation, uuid(39'300), uuid(39'304), "model_accepted",
+      sanguinius::AppearanceModelResult{.serious_context = false,
+                                        .serious_categories = {},
+                                        .should_speak = true,
+                                        .text = "This must remain silent.",
+                                        .tone = "warm",
+                                        .memory_ids_used = {},
+                                        .confidence = .95},
+      1'010));
+  const auto stored = fixture.repository->decision(uuid(39'300));
+  REQUIRE(stored);
+  REQUIRE(stored->action == "reject");
+  REQUIRE(stored->reason == "callback_consent");
+  REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM outbox_message") == 0);
+}
+
+TEST_CASE("newly active humans remain durable opt-out dependencies after queue",
+          "[appearance][repository][activity][live][privacy][consent]") {
+  AppearanceFixture fixture;
+  auto policy_json = nlohmann::json::parse(fixture.policy.canonical_json);
+  policy_json["policy_version"] = "m10-new-active-delivery-participant";
+  policy_json["scoring"]["threshold"] = 1;
+  fixture.policy = sanguinius::parse_appearance_policy(policy_json.dump());
+  fixture.repository->register_policy(fixture.policy, 900);
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 901);
+  const auto candidates =
+      conversation_candidates(fixture, 8, 39'500, 1'000, 39'600);
+  REQUIRE(candidates.size() == 1);
+  const auto &candidate = candidates.front();
+  const auto evaluation = sanguinius::evaluate_appearance(
+      fixture.policy, sanguinius::AppearanceMode::live, candidate, 1'008);
+  REQUIRE(evaluation.eligible_for_model);
+  const auto decision_id = uuid(39'800);
+  REQUIRE(fixture.repository->prepare_model(
+      fixture.policy, sanguinius::AppearanceMode::live, candidate, evaluation,
+      decision_id, uuid(39'801), "new-active-delivery", 1'008));
+
+  SqliteCoreIdentityRepository identities{fixture.context};
+  identities.ensure_user({33, "Third", "third", false, 1'009});
+  fixture.context->connection().execute(
+      "UPDATE user_preference SET appearance_callback_opt_in=1,"
+      "updated_at_ms=1009 WHERE user_id='33'");
+  REQUIRE_FALSE(fixture.repository->observe_message(
+      fixture.policy,
+      {.message_id = 39'510,
+       .guild_id = 10,
+       .channel_id = 20,
+       .author_user_id = 33,
+       .author_is_bot = false,
+       .excerpt = "ordinary newly active live conversation",
+       .observed_at_ms = 1'009,
+       .correlation_id = "new-active-delivery"},
+      uuid(39'802), uuid(39'803)));
+
+  const sanguinius::AppearanceDeliveryIds delivery{
+      .reservation_id = uuid(39'804),
+      .outbox_id = uuid(39'805),
+      .feedback_control_ids = {uuid(39'806), uuid(39'807), uuid(39'808),
+                               uuid(39'809)}};
+  REQUIRE(fixture.repository->complete_model(
+      fixture.policy, sanguinius::AppearanceMode::live, candidate, evaluation,
+      decision_id, uuid(39'810), "model_accepted",
+      sanguinius::AppearanceModelResult{
+          .serious_context = false,
+          .serious_categories = {},
+          .should_speak = true,
+          .text = "A safe final-participant dependency check.",
+          .tone = "warm",
+          .memory_ids_used = {},
+          .confidence = .95},
+      delivery, 1'010));
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_delivery_participant WHERE "
+                 "decision_id='" +
+                     decision_id + "'") == 3);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_delivery_participant WHERE "
+                 "decision_id='" +
+                     decision_id + "' AND user_id='33'") == 1);
+  REQUIRE_THROWS(fixture.context->connection().execute(
+      "UPDATE appearance_delivery_participant SET created_at_ms=1011 WHERE "
+      "decision_id='" +
+      decision_id + "'"));
+  REQUIRE_THROWS(fixture.context->connection().execute(
+      "DELETE FROM appearance_delivery_participant WHERE decision_id='" +
+      decision_id + "'"));
+
+  fixture.context->connection().execute(
+      "UPDATE user_preference SET appearance_callback_opt_in=0,"
+      "updated_at_ms=1011 WHERE user_id='33'");
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT state='cancelled' AND last_error_code='appearance_opt_"
+                 "out' FROM outbox_message WHERE outbox_id='" +
+                     delivery.outbox_id + "'") == 1);
+}
+
+TEST_CASE("post-model runtime degradation suppresses final delivery",
+          "[appearance][repository][runtime][recheck]") {
+  AppearanceFixture fixture;
+  auto candidate = fixture.repository->simulate(
+      fixture.policy, {.fixture = "lively_game_night_banter",
+                       .idempotency_key = "runtime-recheck",
+                       .correlation_id = "runtime-recheck",
+                       .owner_user_id = 30,
+                       .now_ms = 60'000,
+                       .candidate_id = uuid(33'000),
+                       .event_id = uuid(33'001)});
+  const auto evaluation = sanguinius::evaluate_appearance(
+      fixture.policy, sanguinius::AppearanceMode::dry_run, candidate, 60'001);
+  REQUIRE(fixture.repository->prepare_model(
+      fixture.policy, sanguinius::AppearanceMode::dry_run, candidate,
+      evaluation, uuid(33'002), uuid(33'003), "runtime-recheck", 60'001));
+  candidate.operational = false;
+  candidate.degraded = true;
+  REQUIRE(fixture.repository->complete_model(
+      fixture.policy, sanguinius::AppearanceMode::dry_run, candidate,
+      evaluation, uuid(33'002), uuid(33'004), "model_accepted",
+      sanguinius::AppearanceModelResult{.serious_context = false,
+                                        .serious_categories = {},
+                                        .should_speak = true,
+                                        .text = "This must remain private.",
+                                        .tone = "warm",
+                                        .memory_ids_used = {},
+                                        .confidence = .95},
+      60'002));
+  const auto stored = fixture.repository->decision(uuid(33'002));
+  REQUIRE(stored);
+  REQUIRE(stored->action == "reject");
+  REQUIRE(stored->reason == "operational");
+  REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM outbox_message") == 0);
+}
+
 TEST_CASE("post-model serious human activity irrevocably suppresses a preview",
           "[appearance][repository][activity][safety]") {
   AppearanceFixture fixture;
@@ -1595,7 +1890,7 @@ TEST_CASE("approved Chronicle tags ground recurrence candidates",
   REQUIRE(candidate->recurrence_matches == 8);
 }
 
-TEST_CASE("schema v7 dry-run trigger makes appearance public outbox impossible",
+TEST_CASE("schema v8 off and dry-run trigger make appearance outbox impossible",
           "[appearance][repository][outbox]") {
   AppearanceFixture fixture;
   const auto candidate = fixture.repository->simulate(
@@ -1653,7 +1948,141 @@ TEST_CASE("schema v7 dry-run trigger makes appearance public outbox impossible",
                   "chronicle_entry", uuid(806),
                   "appearance-decision-id-forbidden",
                   "0000000000000000000000003");
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::dry_run, 1'002);
+  rejected_insert(uuid(8'010), sanguinius::public_discord_outbox_kind,
+                  "appearance_decision", uuid(806),
+                  "appearance-dry-run-forbidden", "0000000000000000000000005");
   REQUIRE(fixture.repository->public_outbox_violation_count() == 0);
+  REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM outbox_message") == 0);
+}
+
+TEST_CASE("schema v8 rejects fully linked off dry-run and wrong-channel rows",
+          "[appearance][repository][live][outbox][scope]") {
+  AppearanceFixture fixture;
+  auto mode = sanguinius::AppearanceMode::live;
+  std::string target_channel{"21"};
+  SECTION("off mode") {
+    mode = sanguinius::AppearanceMode::off;
+    target_channel = "20";
+  }
+  SECTION("dry-run mode") {
+    mode = sanguinius::AppearanceMode::dry_run;
+    target_channel = "20";
+  }
+  SECTION("wrong primary-channel scope") {}
+  fixture.repository->activate_mode(mode, 500);
+  const auto candidate = fixture.repository->simulate(
+      fixture.policy, {.fixture = "owner_live_safe",
+                       .idempotency_key = "wrong-scope-candidate",
+                       .correlation_id = "wrong-scope",
+                       .owner_user_id = 30,
+                       .now_ms = 1'000,
+                       .candidate_id = uuid(34'000),
+                       .event_id = uuid(34'001)});
+  const auto decision_id = uuid(34'002);
+  const auto live_event_id = uuid(34'003);
+  const auto reservation_id = uuid(34'004);
+  const auto outbox_id = uuid(34'005);
+  auto decision = fixture.context->connection().prepare(
+      "INSERT INTO appearance_decision(decision_id,candidate_id,"
+      "policy_version,application_instance_id,revision,state,action,reason,"
+      "gate_json,score_json,score,human_message_count,model_status,"
+      "serious_categories_json,created_at_ms,finalized_at_ms) VALUES("
+      "?,?,?,'wrong-scope-proof',1,'final','live_queued','live_queued','[]',"
+      "'[]',80,0,'owner_fixture','[]',1001,1001)");
+  decision.bind(1, decision_id);
+  decision.bind(2, candidate.candidate_id);
+  decision.bind(3, fixture.policy.policy_version);
+  decision.execute();
+  SqliteDurableWorkRepository durable{fixture.context};
+  REQUIRE(durable.append_event(
+      {.event_id = live_event_id,
+       .event_type = "appearance.live_queued.v1",
+       .aggregate_type = "appearance_decision",
+       .aggregate_id = decision_id,
+       .actor_user_id = 30,
+       .guild_id = 10,
+       .channel_id = 20,
+       .source_message_id = std::nullopt,
+       .occurred_at_ms = 1'001,
+       .recorded_at_ms = 1'001,
+       .correlation_id = "wrong-scope",
+       .causation_id = std::nullopt,
+       .idempotency_key = "wrong-scope-live-event",
+       .payload_json = R"({"action":"live_queued","reason":"live_queued"})"}));
+  auto &connection = fixture.context->connection();
+  connection.execute("BEGIN IMMEDIATE");
+  try {
+    auto reservation = connection.prepare(
+        "INSERT INTO appearance_budget_reservation VALUES(?,?,?,?,?,1001,0,1)");
+    reservation.bind(1, reservation_id);
+    reservation.bind(2, decision_id);
+    reservation.bind(3, candidate.candidate_id);
+    reservation.bind(4, outbox_id);
+    reservation.bind(5, "appearance.reservation:" + decision_id);
+    reservation.execute();
+    constexpr std::array<std::string_view, 4> control_actions{
+        "more", "less", "not_relevant", "quiet_tonight"};
+    for (std::size_t index = 0; index < control_actions.size(); ++index) {
+      auto control = connection.prepare(
+          "INSERT INTO appearance_feedback_control(control_id,decision_id,"
+          "action,created_at_ms,expires_at_ms) VALUES(?,?,?,?,?)");
+      control.bind(1, uuid(34'010 + index));
+      control.bind(2, decision_id);
+      control.bind(3, control_actions[index]);
+      control.bind(4, 1'001);
+      control.bind(5, 3'000'000);
+      control.execute();
+    }
+    const auto payload =
+        nlohmann::json{{"payload_version", 1},
+                       {"guild_id", "10"},
+                       {"channel_id", target_channel},
+                       {"content", "[TEST] Wrong channel must fail."},
+                       {"embed", nullptr},
+                       {"buttons",
+                        {{{"custom_id", "sga:1:" + uuid(34'010)},
+                          {"label", "More like this"},
+                          {"disabled", false},
+                          {"style", "secondary"}},
+                         {{"custom_id", "sga:1:" + uuid(34'011)},
+                          {"label", "Less like this"},
+                          {"disabled", false},
+                          {"style", "secondary"}},
+                         {{"custom_id", "sga:1:" + uuid(34'012)},
+                          {"label", "Not relevant"},
+                          {"disabled", false},
+                          {"style", "secondary"}},
+                         {{"custom_id", "sga:1:" + uuid(34'013)},
+                          {"label", "Quiet for tonight"},
+                          {"disabled", false},
+                          {"style", "secondary"}}}},
+                       {"allowed_user_mentions", nlohmann::json::array()},
+                       {"fail_before_first_send", false},
+                       {"correlation_id", "wrong-scope"},
+                       {"causation_event_id", live_event_id}};
+    auto outbox = connection.prepare(
+        "INSERT INTO outbox_message(outbox_id,kind,aggregate_type,aggregate_id,"
+        "target_guild_id,target_channel_id,payload_json,state,attempt_count,"
+        "max_attempts,idempotency_key,provider_nonce,created_at_ms,"
+        "available_at_ms,updated_at_ms) VALUES(?,?,?,?,'10',?,?,'pending',"
+        "0,5,?,?,1001,1001,1001)");
+    outbox.bind(1, outbox_id);
+    outbox.bind(2, sanguinius::public_discord_outbox_kind);
+    outbox.bind(3, "appearance_decision");
+    outbox.bind(4, decision_id);
+    outbox.bind(5, target_channel);
+    outbox.bind(6, payload.dump());
+    outbox.bind(7, "appearance.public:" + decision_id);
+    outbox.bind(8, sanguinius::discord_nonce_from_uuid(outbox_id));
+    REQUIRE_THROWS(outbox.execute());
+  } catch (...) {
+    connection.execute("ROLLBACK");
+    throw;
+  }
+  connection.execute("ROLLBACK");
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_budget_reservation") == 0);
   REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM outbox_message") == 0);
 }
 
@@ -1669,7 +2098,7 @@ TEST_CASE("appearance outbox inspection recognizes aggregate ID violations",
                        .candidate_id = uuid(810),
                        .event_id = uuid(811)});
   fixture.context->connection().execute(
-      "DROP TRIGGER appearance_dry_run_outbox_guard");
+      "DROP TRIGGER appearance_live_outbox_guard");
   auto insert = fixture.context->connection().prepare(
       "INSERT INTO outbox_message(outbox_id,kind,aggregate_type,aggregate_id,"
       "target_guild_id,target_channel_id,payload_json,state,attempt_count,max_"
@@ -1690,6 +2119,160 @@ TEST_CASE("appearance outbox inspection recognizes aggregate ID violations",
   insert.execute();
 
   REQUIRE(fixture.repository->public_outbox_violation_count() == 1);
+}
+
+TEST_CASE("appearance reservations cannot adopt existing unrelated outbox rows",
+          "[appearance][repository][outbox][migration][provenance]") {
+  AppearanceFixture fixture;
+  const auto candidate = fixture.repository->simulate(
+      fixture.policy, {.fixture = "owner_dry_run",
+                       .idempotency_key = "reverse-reservation-candidate",
+                       .correlation_id = "reverse-reservation",
+                       .owner_user_id = 30,
+                       .now_ms = 1'000,
+                       .candidate_id = uuid(38'000),
+                       .event_id = uuid(38'001)});
+  const auto decision_id = uuid(38'002);
+  const auto outbox_id = uuid(38'003);
+  auto decision = fixture.context->connection().prepare(
+      "INSERT INTO appearance_decision(decision_id,candidate_id,policy_version,"
+      "application_instance_id,revision,state,action,reason,gate_json,score_"
+      "json,score,human_message_count,model_status,serious_categories_json,"
+      "created_at_ms,finalized_at_ms) VALUES(?,?,?,'reverse-reservation',1,"
+      "'final','live_queued','live_queued','[]','[]',80,0,'owner_fixture',"
+      "'[]',1001,1001)");
+  decision.bind(1, decision_id);
+  decision.bind(2, candidate.candidate_id);
+  decision.bind(3, fixture.policy.policy_version);
+  decision.execute();
+
+  auto outbox = fixture.context->connection().prepare(
+      "INSERT INTO outbox_message(outbox_id,kind,aggregate_type,aggregate_id,"
+      "target_guild_id,target_channel_id,payload_json,state,attempt_count,max_"
+      "attempts,idempotency_key,provider_nonce,provider_message_id,created_at_"
+      "ms,available_at_ms,first_attempt_at_ms,first_attempt_elapsed_ms,first_"
+      "attempt_boot_id,delivered_at_ms,terminal_at_ms,updated_at_ms) VALUES("
+      "?,'discord.public.v1','chronicle_entry',?,'10','20',?,'delivered',1,5,"
+      "'unrelated-public-row','0000000000000000000000038','9010',1001,1001,"
+      "1001,1,'reverse-test-boot',1002,1002,1002)");
+  outbox.bind(1, outbox_id);
+  outbox.bind(2, uuid(38'999));
+  outbox.bind(3, R"({"content":"Unrelated bot output."})");
+  outbox.execute();
+
+  const auto insert_reservation = [&] {
+    auto reservation = fixture.context->connection().prepare(
+        "INSERT INTO appearance_budget_reservation(reservation_id,decision_id,"
+        "candidate_id,outbox_id,idempotency_key,reserved_at_ms,human_message_"
+        "count,is_test) VALUES(?,?,?,?,?,1001,0,1)");
+    reservation.bind(1, uuid(38'004));
+    reservation.bind(2, decision_id);
+    reservation.bind(3, candidate.candidate_id);
+    reservation.bind(4, outbox_id);
+    reservation.bind(5, "appearance.reservation:" + decision_id);
+    reservation.execute();
+  };
+  REQUIRE_THROWS(insert_reservation());
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_budget_reservation") == 0);
+
+  fixture.context->connection().execute(
+      "DROP TRIGGER appearance_budget_reservation_requires_new_outbox");
+  insert_reservation();
+  REQUIRE(fixture.repository->public_outbox_violation_count() == 1);
+  REQUIRE_FALSE(fixture.repository->verify_public_delivery(
+      {.reference = {.message_id = 9'010, .guild_id = 10, .channel_id = 20},
+       .author = {.user_id = 42,
+                  .username = "sanguinius",
+                  .display_name = "Sanguinius",
+                  .is_bot = true},
+       .content = "Unrelated bot output."}));
+
+  sanguinius::persistence::SqliteChronicleRepository chronicle{fixture.context};
+  REQUIRE(chronicle
+              .create_or_get_proposal(
+                  {.entry_id = uuid(38'010),
+                   .event_id = uuid(38'011),
+                   .actions = {.edit_token_id = uuid(38'012),
+                               .submit_token_id = uuid(38'013),
+                               .retract_token_id = uuid(38'014)},
+                   .source = {.reference = {.message_id = 9'010,
+                                            .guild_id = 10,
+                                            .channel_id = 20},
+                              .author = {.user_id = 42,
+                                         .username = "sanguinius",
+                                         .display_name = "Sanguinius",
+                                         .is_bot = true},
+                              .content = "Unrelated bot output.",
+                              .occurred_at_ms = 1'002},
+                   .proposer_user_id = 30,
+                   .owner_user_id = 30,
+                   .title = "Invalid appearance source",
+                   .body = "Unrelated bot output.",
+                   .owner_test = true,
+                   .appearance_decision_id = decision_id,
+                   .correlation_id = "reverse-reservation",
+                   .idempotency_key = "reverse-reservation-proposal",
+                   .now_ms = 1'003,
+                   .action_expires_at_ms = 10'000,
+                   .notice_expires_at_ms = 20'000})
+              .code == sanguinius::ChronicleResultCode::unauthorized);
+}
+
+TEST_CASE("reservation-linked unrelated outbox rows fail in forward order",
+          "[appearance][repository][outbox][migration][provenance]") {
+  AppearanceFixture fixture;
+  const auto candidate = fixture.repository->simulate(
+      fixture.policy, {.fixture = "owner_dry_run",
+                       .idempotency_key = "forward-reservation-candidate",
+                       .correlation_id = "forward-reservation",
+                       .owner_user_id = 30,
+                       .now_ms = 1'000,
+                       .candidate_id = uuid(38'100),
+                       .event_id = uuid(38'101)});
+  const auto decision_id = uuid(38'102);
+  const auto outbox_id = uuid(38'103);
+  auto &connection = fixture.context->connection();
+  auto decision = connection.prepare(
+      "INSERT INTO appearance_decision(decision_id,candidate_id,policy_version,"
+      "application_instance_id,revision,state,action,reason,gate_json,score_"
+      "json,score,human_message_count,model_status,serious_categories_json,"
+      "created_at_ms,finalized_at_ms) VALUES(?,?,?,'forward-reservation',1,"
+      "'final','live_queued','live_queued','[]','[]',80,0,'owner_fixture',"
+      "'[]',1001,1001)");
+  decision.bind(1, decision_id);
+  decision.bind(2, candidate.candidate_id);
+  decision.bind(3, fixture.policy.policy_version);
+  decision.execute();
+
+  connection.execute("BEGIN IMMEDIATE");
+  auto reservation = connection.prepare(
+      "INSERT INTO appearance_budget_reservation(reservation_id,decision_id,"
+      "candidate_id,outbox_id,idempotency_key,reserved_at_ms,human_message_"
+      "count,is_test) VALUES(?,?,?,?,?,1001,0,1)");
+  reservation.bind(1, uuid(38'104));
+  reservation.bind(2, decision_id);
+  reservation.bind(3, candidate.candidate_id);
+  reservation.bind(4, outbox_id);
+  reservation.bind(5, "appearance.reservation:" + decision_id);
+  reservation.execute();
+
+  auto outbox = connection.prepare(
+      "INSERT INTO outbox_message(outbox_id,kind,aggregate_type,aggregate_id,"
+      "target_guild_id,target_channel_id,payload_json,state,attempt_count,max_"
+      "attempts,idempotency_key,provider_nonce,created_at_ms,available_at_ms,"
+      "updated_at_ms) VALUES(?,'discord.public.v1','chronicle_entry',?,"
+      "'10','20',?,'pending',0,5,'unrelated-forward-public-row',"
+      "'0000000000000000000000039',1001,1001,1001)");
+  outbox.bind(1, outbox_id);
+  outbox.bind(2, uuid(38'999));
+  outbox.bind(3, R"({"content":"Unrelated forward bot output."})");
+  REQUIRE_THROWS(outbox.execute());
+  connection.execute("ROLLBACK");
+
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_budget_reservation") == 0);
+  REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM outbox_message") == 0);
 }
 
 TEST_CASE(
@@ -1925,9 +2508,9 @@ TEST_CASE("recovered memory references fail closed at their stored revision",
   REQUIRE(recovered.front().memory_context.size() == 1);
   REQUIRE(recovered.front().memory_context.front().revision == 1);
   REQUIRE(recovered.front().memory_context.front().text.empty());
-  REQUIRE_FALSE(recovered.front().memory_available);
+  REQUIRE(recovered.front().memory_available);
   REQUIRE_FALSE(recovered.front().consented);
-  REQUIRE_FALSE(recovered.front().visible);
+  REQUIRE(recovered.front().visible);
   const auto evaluation = sanguinius::evaluate_appearance(
       fixture.policy, sanguinius::AppearanceMode::dry_run, recovered.front(),
       3'010);
@@ -1953,9 +2536,9 @@ TEST_CASE("recovered memory references fail closed at their stored revision",
   REQUIRE(memory_gate != stored->gates.end());
   REQUIRE(consent_gate != stored->gates.end());
   REQUIRE(visibility_gate != stored->gates.end());
-  REQUIRE_FALSE(memory_gate->passed);
+  REQUIRE(memory_gate->passed);
   REQUIRE_FALSE(consent_gate->passed);
-  REQUIRE_FALSE(visibility_gate->passed);
+  REQUIRE(visibility_gate->passed);
 }
 
 TEST_CASE("recurrence extraction persists novelty and repetition history",
@@ -2008,34 +2591,58 @@ TEST_CASE("recurrence extraction persists novelty and repetition history",
     REQUIRE(candidate.has_value());
     return *candidate;
   };
-  const auto first = extract(100'000, 1'300);
-  const auto first_evaluation = sanguinius::evaluate_appearance(
-      fixture.policy, sanguinius::AppearanceMode::dry_run, first, 100'010);
-  REQUIRE(fixture.repository->record_final(
-      fixture.policy, sanguinius::AppearanceMode::dry_run, first,
-      first_evaluation, uuid(1'500), uuid(1'501), "history-instance",
-      "model_accepted",
-      sanguinius::AppearanceModelResult{.serious_context = false,
-                                        .serious_categories = {},
-                                        .should_speak = true,
-                                        .text = "A remembered victory.",
-                                        .tone = "warm",
-                                        .memory_ids_used = {uuid(1'201)},
-                                        .confidence = .95},
-      100'010));
   constexpr std::int64_t eight_days = 8LL * 24 * 60 * 60 * 1'000;
-  const auto second = extract(100'000 + eight_days, 1'600);
-  REQUIRE(second.novelty_age_ms.has_value());
-  REQUIRE(second.repetition_age_ms.has_value());
-  REQUIRE(*second.novelty_age_ms >= eight_days - 20);
-  REQUIRE(*second.repetition_age_ms >= eight_days - 20);
-  const auto second_evaluation = sanguinius::evaluate_appearance(
-      fixture.policy, sanguinius::AppearanceMode::dry_run, second,
-      100'010 + eight_days);
-  REQUIRE(std::ranges::any_of(
-      second_evaluation.score_components, [](const auto &component) {
-        return component.name == "repetition" && component.points == -25;
-      }));
+  const sanguinius::AppearanceModelResult model{
+      .serious_context = false,
+      .serious_categories = {},
+      .should_speak = true,
+      .text = "A remembered victory.",
+      .tone = "warm",
+      .memory_ids_used = {uuid(1'201)},
+      .confidence = .95};
+  const auto require_history = [&](const sanguinius::AppearanceMode mode) {
+    const auto second = extract(100'000 + eight_days, 1'600);
+    REQUIRE(second.novelty_age_ms.has_value());
+    REQUIRE(second.repetition_age_ms.has_value());
+    REQUIRE(*second.novelty_age_ms >= eight_days - 20);
+    REQUIRE(*second.repetition_age_ms >= eight_days - 20);
+    const auto second_evaluation = sanguinius::evaluate_appearance(
+        fixture.policy, mode, second, 100'010 + eight_days);
+    REQUIRE(std::ranges::any_of(
+        second_evaluation.score_components, [](const auto &component) {
+          return component.name == "repetition" && component.points == -25;
+        }));
+  };
+
+  SECTION("dry-run decisions supply recurrence history") {
+    const auto first = extract(100'000, 1'300);
+    const auto first_evaluation = sanguinius::evaluate_appearance(
+        fixture.policy, sanguinius::AppearanceMode::dry_run, first, 100'010);
+    REQUIRE(fixture.repository->record_final(
+        fixture.policy, sanguinius::AppearanceMode::dry_run, first,
+        first_evaluation, uuid(1'500), uuid(1'501), "history-instance",
+        "model_accepted", model, 100'010));
+    require_history(sanguinius::AppearanceMode::dry_run);
+  }
+
+  SECTION("live reservations supply recurrence history") {
+    fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 90'000);
+    const auto first = extract(100'000, 1'300);
+    const auto first_evaluation = sanguinius::evaluate_appearance(
+        fixture.policy, sanguinius::AppearanceMode::live, first, 100'010);
+    REQUIRE(fixture.repository->record_final(
+        fixture.policy, sanguinius::AppearanceMode::live, first,
+        first_evaluation, uuid(1'500), uuid(1'501), "history-instance",
+        "model_accepted", model,
+        {.reservation_id = uuid(1'502),
+         .outbox_id = uuid(1'503),
+         .feedback_control_ids = {uuid(1'504), uuid(1'505), uuid(1'506),
+                                  uuid(1'507)}},
+        100'010));
+    REQUIRE(scalar(*fixture.context,
+                   "SELECT count(*) FROM appearance_budget_reservation") == 1);
+    require_history(sanguinius::AppearanceMode::live);
+  }
 }
 
 TEST_CASE("preview retention purges prose but preserves decision audit",
@@ -2178,16 +2785,1344 @@ TEST_CASE("two concurrent candidates can produce only one hypothetical",
                                    "WHERE action='hypothetical'") == 1);
   REQUIRE(scalar(*fixture.context,
                  "SELECT count(*) FROM appearance_decision WHERE "
-                 "reason='hypothetical_daily_budget'") == 1);
+                 "reason='daily_budget'") == 1);
   const auto decisions = fixture.repository->recent(10);
   const auto rejected =
-      std::ranges::find(decisions, std::string{"hypothetical_daily_budget"},
+      std::ranges::find(decisions, std::string{"daily_budget"},
                         &sanguinius::AppearanceDecisionRecord::reason);
   REQUIRE(rejected != decisions.end());
-  const auto budget_gate = std::ranges::find(
-      rejected->gates, std::string{"hypothetical_daily_budget"},
-      &sanguinius::AppearanceGate::name);
+  const auto budget_gate =
+      std::ranges::find(rejected->gates, std::string{"daily_budget"},
+                        &sanguinius::AppearanceGate::name);
   REQUIRE(budget_gate != rejected->gates.end());
   REQUIRE_FALSE(budget_gate->passed);
   REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM outbox_message") == 0);
+}
+
+TEST_CASE("independent SQLite connections reserve one automatic live budget",
+          "[appearance][repository][live][concurrency]") {
+  AppearanceFixture fixture;
+  auto race_policy = nlohmann::json::parse(fixture.policy.canonical_json);
+  race_policy["policy_version"] = "m10-live-race";
+  race_policy["scoring"]["threshold"] = 1;
+  fixture.policy = sanguinius::parse_appearance_policy(race_policy.dump());
+  fixture.repository->register_policy(fixture.policy, 39'000);
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 40'000);
+  const auto candidates =
+      conversation_candidates(fixture, 16, 10'000, 50'000, 10'000);
+  REQUIRE(candidates.size() == 2);
+  const sanguinius::AppearanceModelResult model{
+      .serious_context = false,
+      .serious_categories = {},
+      .should_speak = true,
+      .text = "A safe automatic live appearance.",
+      .tone = "warm",
+      .memory_ids_used = {},
+      .confidence = .95};
+  const auto evaluation = [&](const auto &candidate) {
+    return sanguinius::evaluate_appearance(
+        fixture.policy, sanguinius::AppearanceMode::live, candidate, 50'020);
+  };
+  const auto first_prepared = evaluation(candidates[0]);
+  const auto second_prepared = evaluation(candidates[1]);
+  INFO("first reason: " << first_prepared.reason);
+  INFO("second reason: " << second_prepared.reason);
+  REQUIRE(first_prepared.eligible_for_model);
+  REQUIRE(second_prepared.eligible_for_model);
+  std::barrier start{3};
+  std::atomic_bool first_created{};
+  std::atomic_bool second_created{};
+  std::exception_ptr first_error;
+  std::exception_ptr second_error;
+  const auto finish = [&](const std::size_t index, const std::size_t base,
+                          std::atomic_bool &created,
+                          std::exception_ptr &error) {
+    try {
+      auto context = std::make_shared<SqliteRepositoryContext>(
+          Database::open_runtime(fixture.temporary.path(), 2s));
+      SqliteAppearanceRepository repository{context};
+      start.arrive_and_wait();
+      created = repository.record_final(
+          fixture.policy, sanguinius::AppearanceMode::live, candidates[index],
+          evaluation(candidates[index]), uuid(base), uuid(base + 1),
+          "live-race", "model_accepted", model,
+          {.reservation_id = uuid(base + 2),
+           .outbox_id = uuid(base + 3),
+           .feedback_control_ids = {uuid(base + 4), uuid(base + 5),
+                                    uuid(base + 6), uuid(base + 7)}},
+          50'020);
+    } catch (...) {
+      error = std::current_exception();
+    }
+  };
+  std::thread first{finish, 0, 11'000, std::ref(first_created),
+                    std::ref(first_error)};
+  std::thread second{finish, 1, 12'000, std::ref(second_created),
+                     std::ref(second_error)};
+  start.arrive_and_wait();
+  first.join();
+  second.join();
+  if (first_error)
+    std::rethrow_exception(first_error);
+  if (second_error)
+    std::rethrow_exception(second_error);
+  REQUIRE(first_created.load());
+  REQUIRE(second_created.load());
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_budget_reservation WHERE "
+                 "is_test=0") == 1);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_decision WHERE "
+                 "action='live_queued'") == 1);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_decision WHERE "
+                 "reason='daily_budget'") == 1);
+  REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM outbox_message") == 1);
+}
+
+TEST_CASE(
+    "a mode change invalidates old candidates but a same-mode restart does not",
+    "[appearance][repository][live][epoch][restart]") {
+  AppearanceFixture fixture;
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::dry_run, 1'000);
+  const auto stale = fixture.repository->simulate(
+      fixture.policy, {.fixture = "owner_live_safe",
+                       .idempotency_key = "old-epoch",
+                       .correlation_id = "old-epoch",
+                       .owner_user_id = 30,
+                       .now_ms = 2'000,
+                       .candidate_id = uuid(13'000),
+                       .event_id = uuid(13'001)});
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 3'000);
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 4'000);
+  const sanguinius::AppearanceModelResult model{
+      .serious_context = false,
+      .serious_categories = {},
+      .should_speak = true,
+      .text = "An old epoch must remain silent.",
+      .tone = "warm",
+      .memory_ids_used = {},
+      .confidence = .95};
+  REQUIRE(fixture.repository->record_final(
+      fixture.policy, sanguinius::AppearanceMode::live, stale,
+      sanguinius::evaluate_appearance(
+          fixture.policy, sanguinius::AppearanceMode::live, stale, 4'001),
+      uuid(13'002), uuid(13'003), "epoch-restart", "model_accepted", model,
+      {.reservation_id = uuid(13'004),
+       .outbox_id = uuid(13'005),
+       .feedback_control_ids = {uuid(13'006), uuid(13'007), uuid(13'008),
+                                uuid(13'009)}},
+      4'001));
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_decision WHERE "
+                 "reason='mode_epoch'") == 1);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_budget_reservation") == 0);
+  REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM outbox_message") == 0);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT activated_at_ms FROM appearance_mode_state") == 3'000);
+
+  const auto current = fixture.repository->simulate(
+      fixture.policy, {.fixture = "owner_live_safe",
+                       .idempotency_key = "same-epoch-restart",
+                       .correlation_id = "same-epoch-restart",
+                       .owner_user_id = 30,
+                       .now_ms = 4'002,
+                       .candidate_id = uuid(13'010),
+                       .event_id = uuid(13'011)});
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 4'003);
+  REQUIRE(fixture.repository->record_final(
+      fixture.policy, sanguinius::AppearanceMode::live, current,
+      sanguinius::evaluate_appearance(
+          fixture.policy, sanguinius::AppearanceMode::live, current, 4'004),
+      uuid(13'012), uuid(13'013), "same-epoch-restart", "owner_fixture", model,
+      {.reservation_id = uuid(13'014),
+       .outbox_id = uuid(13'015),
+       .feedback_control_ids = {uuid(13'016), uuid(13'017), uuid(13'018),
+                                uuid(13'019)}},
+      4'004));
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_decision WHERE "
+                 "reason='live_queued'") == 1);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_budget_reservation") == 1);
+  REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM outbox_message") == 1);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT activated_at_ms FROM appearance_mode_state") == 3'000);
+}
+
+TEST_CASE("mode epochs advance despite duplicate or backward wall time",
+          "[appearance][repository][epoch][restart][clock]") {
+  AppearanceFixture fixture;
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::dry_run, 1'000);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT activated_at_ms FROM appearance_mode_state") == 1'000);
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 1'000);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT activated_at_ms FROM appearance_mode_state") == 1'001);
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::dry_run, 500);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT activated_at_ms FROM appearance_mode_state") == 1'002);
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::dry_run, 200);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT activated_at_ms=1002 AND updated_at_ms>=1002 "
+                 "FROM appearance_mode_state") == 1);
+}
+
+TEST_CASE("rollback dry-run gates retain recent live reservation history",
+          "[appearance][repository][live][dry-run][rollback][budget]") {
+  AppearanceFixture fixture;
+  auto rollback_policy = nlohmann::json::parse(fixture.policy.canonical_json);
+  rollback_policy["policy_version"] = "m10-live-rollback-budget";
+  rollback_policy["scoring"]["threshold"] = 1;
+  fixture.policy = sanguinius::parse_appearance_policy(rollback_policy.dump());
+  fixture.repository->register_policy(fixture.policy, 90'000);
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 90'001);
+  const auto first =
+      conversation_candidates(fixture, 8, 40'000, 100'000, 40'000);
+  REQUIRE(first.size() == 1);
+  const sanguinius::AppearanceModelResult model{
+      .serious_context = false,
+      .serious_categories = {},
+      .should_speak = true,
+      .text = "A rollback budget history fixture.",
+      .tone = "warm",
+      .memory_ids_used = {},
+      .confidence = .95};
+  REQUIRE(fixture.repository->record_final(
+      fixture.policy, sanguinius::AppearanceMode::live, first.front(),
+      sanguinius::evaluate_appearance(fixture.policy,
+                                      sanguinius::AppearanceMode::live,
+                                      first.front(), 100'010),
+      uuid(40'200), uuid(40'201), "rollback-budget", "model_accepted", model,
+      {.reservation_id = uuid(40'202),
+       .outbox_id = uuid(40'203),
+       .feedback_control_ids = {uuid(40'204), uuid(40'205), uuid(40'206),
+                                uuid(40'207)}},
+      100'010));
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_budget_reservation WHERE "
+                 "is_test=0") == 1);
+
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::dry_run,
+                                    100'020);
+  const auto rollback =
+      conversation_candidates(fixture, 8, 41'000, 100'030, 41'000);
+  REQUIRE(rollback.size() == 1);
+  REQUIRE_FALSE(rollback.front().budget_available);
+  REQUIRE_FALSE(rollback.front().gap_available);
+  REQUIRE(rollback.front().messages_after_previous);
+  REQUIRE(sanguinius::evaluate_appearance(fixture.policy,
+                                          sanguinius::AppearanceMode::dry_run,
+                                          rollback.front(), 100'040)
+              .reason == "daily_budget");
+}
+
+TEST_CASE(
+    "live finalization atomically reserves queues and creates opaque feedback",
+    "[appearance][repository][live][outbox]") {
+  AppearanceFixture fixture;
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 1'000);
+  const auto candidate = fixture.repository->simulate(
+      fixture.policy, {.fixture = "owner_live_safe",
+                       .idempotency_key = "live-safe-one",
+                       .correlation_id = "live-safe",
+                       .owner_user_id = 30,
+                       .now_ms = 2'000,
+                       .candidate_id = uuid(3'001),
+                       .event_id = uuid(3'002)});
+  const auto evaluation = sanguinius::evaluate_appearance(
+      fixture.policy, sanguinius::AppearanceMode::live, candidate, 2'001);
+  REQUIRE(evaluation.eligible_for_model);
+  const sanguinius::AppearanceModelResult model{
+      .serious_context = false,
+      .serious_categories = {},
+      .should_speak = true,
+      .text = "[TEST] A safe live appearance.",
+      .tone = "warm",
+      .memory_ids_used = {},
+      .confidence = 1.0};
+  const sanguinius::AppearanceDeliveryIds delivery{
+      .reservation_id = uuid(3'003),
+      .outbox_id = uuid(3'004),
+      .feedback_control_ids = {uuid(3'005), uuid(3'006), uuid(3'007),
+                               uuid(3'008)}};
+  REQUIRE(fixture.repository->record_final(
+      fixture.policy, sanguinius::AppearanceMode::live, candidate, evaluation,
+      uuid(3'009), uuid(3'010), "instance-live", "owner_fixture", model,
+      delivery, 2'001));
+  REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM appearance_decision "
+                                   "WHERE action='live_queued'") == 1);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_budget_reservation WHERE "
+                 "is_test=1") == 1);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_feedback_control") == 4);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM outbox_message WHERE "
+                 "kind='discord.public.v1' AND state='pending'") == 1);
+  auto payload = fixture.context->connection().prepare(
+      "SELECT payload_json,provider_nonce FROM outbox_message");
+  REQUIRE(payload.step());
+  const auto json = nlohmann::json::parse(payload.column_text(0));
+  REQUIRE(json.at("content") == model.text);
+  REQUIRE(json.at("correlation_id") == "appearance-live");
+  REQUIRE(payload.column_text(0).find(candidate.candidate_id) ==
+          std::string::npos);
+  REQUIRE(payload.column_text(0).find(candidate.safe_summary) ==
+          std::string::npos);
+  REQUIRE(payload.column_text(0).find(candidate.excerpts.front()) ==
+          std::string::npos);
+  REQUIRE(json.at("embed").is_null());
+  REQUIRE(json.at("allowed_user_mentions").empty());
+  REQUIRE(json.at("buttons").size() == 4);
+  for (const auto &button : json.at("buttons")) {
+    REQUIRE(button.at("style") == "secondary");
+    REQUIRE(button.at("custom_id").get<std::string>().starts_with("sga:1:"));
+  }
+  REQUIRE(payload.column_text(1) ==
+          sanguinius::discord_nonce_from_uuid(delivery.outbox_id));
+  REQUIRE(fixture.repository->public_outbox_violation_count() == 0);
+  REQUIRE_THROWS(fixture.context->connection().execute(
+      "UPDATE outbox_message SET payload_json='{}' WHERE outbox_id='" +
+      delivery.outbox_id + "'"));
+  REQUIRE_THROWS(fixture.context->connection().execute(
+      "UPDATE outbox_message SET provider_nonce='0000000000000000000000000' "
+      "WHERE outbox_id='" +
+      delivery.outbox_id + "'"));
+}
+
+TEST_CASE("delivered appearance nonce and provider receipt survive restart",
+          "[appearance][repository][live][outbox][restart]") {
+  AppearanceFixture fixture;
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 1'000);
+  const auto candidate = fixture.repository->simulate(
+      fixture.policy, {.fixture = "owner_live_safe",
+                       .idempotency_key = "live-receipt-restart",
+                       .correlation_id = "live-receipt-restart",
+                       .owner_user_id = 30,
+                       .now_ms = 2'000,
+                       .candidate_id = uuid(35'000),
+                       .event_id = uuid(35'001)});
+  const sanguinius::AppearanceModelResult model{
+      .serious_context = false,
+      .serious_categories = {},
+      .should_speak = true,
+      .text = "[TEST] A restart-safe delivered appearance.",
+      .tone = "warm",
+      .memory_ids_used = {},
+      .confidence = 1.0};
+  const sanguinius::AppearanceDeliveryIds delivery{
+      .reservation_id = uuid(35'002),
+      .outbox_id = uuid(35'003),
+      .feedback_control_ids = {uuid(35'004), uuid(35'005), uuid(35'006),
+                               uuid(35'007)}};
+  REQUIRE(fixture.repository->record_final(
+      fixture.policy, sanguinius::AppearanceMode::live, candidate,
+      sanguinius::evaluate_appearance(
+          fixture.policy, sanguinius::AppearanceMode::live, candidate, 2'001),
+      uuid(35'008), uuid(35'009), "receipt-restart", "owner_fixture", model,
+      delivery, 2'001));
+  SqliteDurableWorkRepository durable{fixture.context};
+  const auto claimed = durable.claim_due_outbox(2'001, 3'000, "receipt-worker",
+                                                uuid(35'010), true);
+  REQUIRE(claimed);
+  REQUIRE(claimed->provider_nonce ==
+          sanguinius::discord_nonce_from_uuid(delivery.outbox_id));
+  REQUIRE(durable.mark_public_outbox_submitted(
+              *claimed,
+              {.wall_time_ms = 2'002,
+               .elapsed_realtime_ms = 400,
+               .boot_session_id = "appearance-receipt-boot"},
+              3'000) == sanguinius::WorkMutationStatus::applied);
+  REQUIRE(durable.complete_public_outbox(*claimed, 9'002, 2'003) ==
+          sanguinius::WorkMutationStatus::applied);
+
+  auto restarted_context = std::make_shared<SqliteRepositoryContext>(
+      Database::open_runtime(fixture.temporary.path(), 2s));
+  SqliteDurableWorkRepository restarted_durable{restarted_context};
+  SqliteAppearanceRepository restarted_appearance{restarted_context};
+  REQUIRE_FALSE(restarted_durable.claim_due_outbox(
+      4'000, 5'000, "restart-worker", uuid(35'011), true));
+  REQUIRE(restarted_appearance.verify_public_delivery(
+      {.reference = {.message_id = 9'002, .guild_id = 10, .channel_id = 20},
+       .author = {.user_id = 42,
+                  .username = "sanguinius",
+                  .display_name = "Sanguinius",
+                  .is_bot = true},
+       .content = model.text}));
+  REQUIRE(scalar(*restarted_context,
+                 "SELECT provider_message_id='9002' AND state='delivered' "
+                 "FROM outbox_message WHERE outbox_id='" +
+                     delivery.outbox_id + "'") == 1);
+  REQUIRE(scalar(*restarted_context,
+                 "SELECT count(*) FROM appearance_budget_reservation") == 1);
+}
+
+TEST_CASE("live feedback is private replay safe and quiet is independent",
+          "[appearance][repository][live][feedback][privacy]") {
+  AppearanceFixture fixture;
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 1'000);
+  const auto candidate = fixture.repository->simulate(
+      fixture.policy, {.fixture = "owner_live_safe",
+                       .idempotency_key = "feedback-live",
+                       .correlation_id = "feedback-live",
+                       .owner_user_id = 30,
+                       .now_ms = 2'000,
+                       .candidate_id = uuid(3'101),
+                       .event_id = uuid(3'102)});
+  const auto evaluation = sanguinius::evaluate_appearance(
+      fixture.policy, sanguinius::AppearanceMode::live, candidate, 2'001);
+  const sanguinius::AppearanceModelResult model{
+      .serious_context = false,
+      .serious_categories = {},
+      .should_speak = true,
+      .text = "[TEST] Feedback provenance.",
+      .tone = "warm",
+      .memory_ids_used = {},
+      .confidence = 1.0};
+  const sanguinius::AppearanceDeliveryIds delivery{
+      .reservation_id = uuid(3'103),
+      .outbox_id = uuid(3'104),
+      .feedback_control_ids = {uuid(3'105), uuid(3'106), uuid(3'107),
+                               uuid(3'108)}};
+  REQUIRE(fixture.repository->record_final(
+      fixture.policy, sanguinius::AppearanceMode::live, candidate, evaluation,
+      uuid(3'109), uuid(3'110), "instance-live", "owner_fixture", model,
+      delivery, 2'001));
+  fixture.context->connection().execute(
+      "UPDATE outbox_message SET state='delivered',provider_message_id='9001',"
+      "delivered_at_ms=2100,terminal_at_ms=2100,updated_at_ms=2100");
+
+  auto feedback = sanguinius::AppearanceFeedbackMutation{
+      .actor_user_id = 31,
+      .guild_id = 10,
+      .channel_id = 20,
+      .action = sanguinius::AppearanceFeedbackAction::more,
+      .control_id = delivery.feedback_control_ids[0],
+      .reference = std::nullopt,
+      .quiet_until_ms = 10'000,
+      .feedback_id = uuid(3'111),
+      .event_id = uuid(3'112),
+      .idempotency_key = "feedback-click-one",
+      .correlation_id = "feedback",
+      .now_ms = 3'000};
+  REQUIRE(fixture.repository->record_feedback(feedback) ==
+          sanguinius::AppearanceMutationResult::applied);
+  REQUIRE(fixture.repository->record_feedback(feedback) ==
+          sanguinius::AppearanceMutationResult::unchanged);
+  auto replay_conflict = feedback;
+  replay_conflict.control_id = delivery.feedback_control_ids[1];
+  REQUIRE_THROWS(fixture.repository->record_feedback(replay_conflict));
+  feedback.control_id = delivery.feedback_control_ids[1];
+  feedback.feedback_id = uuid(3'113);
+  feedback.event_id = uuid(3'114);
+  feedback.idempotency_key = "feedback-click-conflict";
+  REQUIRE(fixture.repository->record_feedback(feedback) ==
+          sanguinius::AppearanceMutationResult::conflict);
+
+  feedback.control_id = std::nullopt;
+  feedback.action = sanguinius::AppearanceFeedbackAction::more;
+  feedback.feedback_id = uuid(3'117);
+  feedback.event_id = uuid(3'118);
+  feedback.idempotency_key = "feedback-slash-fallback-duplicate";
+  REQUIRE(fixture.repository->record_feedback(feedback) ==
+          sanguinius::AppearanceMutationResult::unchanged);
+
+  feedback.control_id = delivery.feedback_control_ids[3];
+  feedback.feedback_id = uuid(3'115);
+  feedback.event_id = uuid(3'116);
+  feedback.idempotency_key = "feedback-click-quiet";
+  REQUIRE(fixture.repository->record_feedback(feedback) ==
+          sanguinius::AppearanceMutationResult::quiet_applied);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_feedback") == 2);
+  REQUIRE(scalar(*fixture.context, "SELECT quiet_until_ms FROM "
+                                   "appearance_control_state") == 10'000);
+  REQUIRE(fixture.repository
+              ->verify_public_delivery(sanguinius::ContextMessageSnapshot{
+                  .reference = {.message_id = 9'001,
+                                .guild_id = 10,
+                                .channel_id = 20},
+                  .author = {.user_id = 42,
+                             .username = {},
+                             .display_name = {},
+                             .is_bot = true},
+                  .content = model.text})
+              .has_value());
+  REQUIRE_FALSE(fixture.repository->verify_public_delivery(
+      sanguinius::ContextMessageSnapshot{
+          .reference = {.message_id = 9'001, .guild_id = 10, .channel_id = 20},
+          .author = {.user_id = 42,
+                     .username = {},
+                     .display_name = {},
+                     .is_bot = true},
+          .content = "mismatched public text"}));
+
+  sanguinius::persistence::SqliteChronicleRepository chronicle{fixture.context};
+  const auto proposal = [&](const std::size_t base, std::string content) {
+    return sanguinius::CreateProposalRequest{
+        .entry_id = uuid(base),
+        .event_id = uuid(base + 1),
+        .actions = {.edit_token_id = uuid(base + 2),
+                    .submit_token_id = uuid(base + 3),
+                    .retract_token_id = uuid(base + 4)},
+        .source = {.reference = {.message_id = 9'001,
+                                 .guild_id = 10,
+                                 .channel_id = 20},
+                   .author = {.user_id = 42,
+                              .username = "sanguinius",
+                              .display_name = "Sanguinius",
+                              .is_bot = true},
+                   .content = std::move(content),
+                   .occurred_at_ms = 2'100},
+        .proposer_user_id = 30,
+        .owner_user_id = 30,
+        .title = "A delivered appearance",
+        .body = model.text,
+        .owner_test = true,
+        .appearance_decision_id = uuid(3'109),
+        .correlation_id = "appearance-chronicle",
+        .idempotency_key = "appearance-chronicle:" + std::to_string(base),
+        .now_ms = 3'100,
+        .action_expires_at_ms = 10'000,
+        .notice_expires_at_ms = 20'000};
+  };
+  const auto accepted =
+      chronicle.create_or_get_proposal(proposal(26'000, model.text));
+  REQUIRE(accepted.code == sanguinius::ChronicleResultCode::created);
+  REQUIRE(accepted.entry);
+  REQUIRE(accepted.entry->status == sanguinius::ChronicleEntryStatus::proposed);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM chronicle_entry WHERE status='canon'") ==
+          0);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM chronicle_appearance_source") == 1);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM chronicle_participant WHERE "
+                 "user_id='42'") == 0);
+  REQUIRE_THROWS(fixture.context->connection().execute(
+      "DELETE FROM chronicle_appearance_source WHERE entry_id='" +
+      uuid(26'000) + "'"));
+  REQUIRE_THROWS(fixture.context->connection().execute(
+      "DELETE FROM chronicle_entry WHERE entry_id='" + uuid(26'000) + "'"));
+  REQUIRE(
+      chronicle
+          .create_or_get_proposal(proposal(27'000, "mismatched public text"))
+          .code == sanguinius::ChronicleResultCode::unauthorized);
+
+  auto restarted_context = std::make_shared<SqliteRepositoryContext>(
+      Database::open_runtime(fixture.temporary.path(), 2s));
+  SqliteAppearanceRepository restarted{restarted_context};
+  REQUIRE(restarted.control_summary(3'100).quiet_until_ms ==
+          std::optional<std::int64_t>{10'000});
+  REQUIRE(restarted.record_feedback(feedback) ==
+          sanguinius::AppearanceMutationResult::unchanged);
+  REQUIRE(restarted.verify_public_delivery(sanguinius::ContextMessageSnapshot{
+      .reference = {.message_id = 9'001, .guild_id = 10, .channel_id = 20},
+      .author = {.user_id = 42,
+                 .username = "sanguinius",
+                 .display_name = "Sanguinius",
+                 .is_bot = true},
+      .content = model.text}));
+  auto expired_slash = feedback;
+  expired_slash.actor_user_id = 32;
+  expired_slash.control_id = std::nullopt;
+  expired_slash.reference = std::nullopt;
+  expired_slash.action = sanguinius::AppearanceFeedbackAction::more;
+  expired_slash.feedback_id = uuid(3'119);
+  expired_slash.event_id = uuid(3'120);
+  expired_slash.idempotency_key = "feedback-slash-expired";
+  expired_slash.now_ms = 3'000'000'000;
+  REQUIRE(restarted.record_feedback(expired_slash) ==
+          sanguinius::AppearanceMutationResult::not_found);
+}
+
+TEST_CASE("server quiet authorization and kill switch cancel only unsent work",
+          "[appearance][repository][live][quiet][kill]") {
+  AppearanceFixture fixture;
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 1'000);
+  const auto start =
+      fixture.repository->set_quiet({.actor_user_id = 31,
+                                     .quiet_until_ms = 10'000,
+                                     .reason = "duration",
+                                     .request_value = "2h",
+                                     .event_id = uuid(3'201),
+                                     .idempotency_key = "quiet-start",
+                                     .correlation_id = "quiet",
+                                     .now_ms = 2'000});
+  REQUIRE(start == sanguinius::AppearanceMutationResult::applied);
+  auto restarted_context = std::make_shared<SqliteRepositoryContext>(
+      Database::open_runtime(fixture.temporary.path(), 2s));
+  SqliteAppearanceRepository restarted{restarted_context};
+  REQUIRE(restarted.set_quiet({.actor_user_id = 31,
+                               .quiet_until_ms = 11'000,
+                               .reason = "duration",
+                               .request_value = "2h",
+                               .event_id = uuid(3'207),
+                               .idempotency_key = "quiet-start",
+                               .correlation_id = "quiet",
+                               .now_ms = 2'001}) ==
+          sanguinius::AppearanceMutationResult::applied);
+  REQUIRE_THROWS(
+      fixture.repository->set_quiet({.actor_user_id = 31,
+                                     .quiet_until_ms = 11'000,
+                                     .reason = "tonight",
+                                     .request_value = {},
+                                     .event_id = uuid(3'208),
+                                     .idempotency_key = "quiet-start",
+                                     .correlation_id = "quiet",
+                                     .now_ms = 2'002}));
+  auto replay_context = std::make_shared<SqliteRepositoryContext>(
+      Database::open_runtime(fixture.temporary.path(), 2s));
+  SqliteAppearanceRepository replayed{replay_context};
+  REQUIRE(replayed.set_quiet({.actor_user_id = 32,
+                              .quiet_until_ms = 9'000,
+                              .reason = "duration",
+                              .request_value = "2h",
+                              .event_id = uuid(3'209),
+                              .idempotency_key = "quiet-noop",
+                              .correlation_id = "quiet",
+                              .now_ms = 2'050}) ==
+          sanguinius::AppearanceMutationResult::unchanged);
+  REQUIRE(replayed.set_quiet({.actor_user_id = 32,
+                              .quiet_until_ms = std::nullopt,
+                              .reason = {},
+                              .request_value = {},
+                              .event_id = uuid(3'202),
+                              .idempotency_key = "quiet-clear-other",
+                              .correlation_id = "quiet",
+                              .now_ms = 2'100}) ==
+          sanguinius::AppearanceMutationResult::unauthorized);
+  REQUIRE(
+      fixture.repository->set_quiet({.actor_user_id = 31,
+                                     .quiet_until_ms = std::nullopt,
+                                     .reason = {},
+                                     .request_value = {},
+                                     .event_id = uuid(3'203),
+                                     .idempotency_key = "quiet-clear-setter",
+                                     .correlation_id = "quiet",
+                                     .now_ms = 2'200}) ==
+      sanguinius::AppearanceMutationResult::applied);
+  auto outcome_replay_context = std::make_shared<SqliteRepositoryContext>(
+      Database::open_runtime(fixture.temporary.path(), 2s));
+  SqliteAppearanceRepository outcome_replay{outcome_replay_context};
+  REQUIRE(outcome_replay.set_quiet({.actor_user_id = 32,
+                                    .quiet_until_ms = 9'500,
+                                    .reason = "duration",
+                                    .request_value = "2h",
+                                    .event_id = uuid(3'210),
+                                    .idempotency_key = "quiet-noop",
+                                    .correlation_id = "quiet",
+                                    .now_ms = 2'201}) ==
+          sanguinius::AppearanceMutationResult::unchanged);
+  REQUIRE(outcome_replay.set_quiet({.actor_user_id = 32,
+                                    .quiet_until_ms = std::nullopt,
+                                    .reason = {},
+                                    .request_value = {},
+                                    .event_id = uuid(3'211),
+                                    .idempotency_key = "quiet-clear-other",
+                                    .correlation_id = "quiet",
+                                    .now_ms = 2'202}) ==
+          sanguinius::AppearanceMutationResult::unauthorized);
+  REQUIRE_FALSE(
+      fixture.repository->control_summary(2'203).quiet_until_ms.has_value());
+  REQUIRE(fixture.repository->set_global_disabled(31, true, 2'300, uuid(3'204),
+                                                  "kill-not-owner", "kill") ==
+          sanguinius::AppearanceMutationResult::unauthorized);
+  REQUIRE(fixture.repository->set_global_disabled(30, true, 2'400, uuid(3'205),
+                                                  "kill-owner", "kill") ==
+          sanguinius::AppearanceMutationResult::applied);
+  const auto state = fixture.repository->control_summary(2'500);
+  REQUIRE(state.globally_disabled);
+  REQUIRE(state.persisted_mode == sanguinius::AppearanceMode::live);
+  REQUIRE(fixture.repository->set_global_disabled(30, false, 2'600, uuid(3'206),
+                                                  "kill-owner-clear", "kill") ==
+          sanguinius::AppearanceMutationResult::applied);
+  REQUIRE_FALSE(fixture.repository->control_summary(2'700).globally_disabled);
+}
+
+TEST_CASE("quiet cancels unsubmitted claims while submitted work reconciles",
+          "[appearance][repository][live][quiet][outbox]") {
+  AppearanceFixture fixture;
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 1'000);
+  const sanguinius::AppearanceModelResult model{
+      .serious_context = false,
+      .serious_categories = {},
+      .should_speak = true,
+      .text = "[TEST] A cancellation boundary fixture.",
+      .tone = "warm",
+      .memory_ids_used = {},
+      .confidence = 1.0};
+  const auto finalize = [&](const std::int64_t candidate_time,
+                            const std::int64_t final_time,
+                            const std::size_t base) {
+    const auto candidate = fixture.repository->simulate(
+        fixture.policy,
+        {.fixture = "owner_live_safe",
+         .idempotency_key = "cancel-boundary-" + std::to_string(base),
+         .correlation_id = "cancel-boundary",
+         .owner_user_id = 30,
+         .now_ms = candidate_time,
+         .candidate_id = uuid(base),
+         .event_id = uuid(base + 1)});
+    REQUIRE(fixture.repository->record_final(
+        fixture.policy, sanguinius::AppearanceMode::live, candidate,
+        sanguinius::evaluate_appearance(fixture.policy,
+                                        sanguinius::AppearanceMode::live,
+                                        candidate, final_time),
+        uuid(base + 2), uuid(base + 3), "cancel-boundary", "owner_fixture",
+        model,
+        {.reservation_id = uuid(base + 4),
+         .outbox_id = uuid(base + 5),
+         .feedback_control_ids = {uuid(base + 6), uuid(base + 7),
+                                  uuid(base + 8), uuid(base + 9)}},
+        final_time));
+    return uuid(base + 5);
+  };
+  SqliteDurableWorkRepository durable{fixture.context};
+  const auto cancellable_id = finalize(2'000, 2'001, 24'000);
+  const auto cancellable = durable.claim_due_outbox(
+      2'001, 3'000, "cancel-worker", uuid(24'100), true);
+  REQUIRE(cancellable);
+  REQUIRE(cancellable->outbox_id == cancellable_id);
+  REQUIRE_FALSE(cancellable->submission_started_at_ms);
+  REQUIRE(
+      fixture.repository->set_quiet({.actor_user_id = 31,
+                                     .quiet_until_ms = 10'000,
+                                     .reason = "duration",
+                                     .request_value = "2h",
+                                     .event_id = uuid(24'101),
+                                     .idempotency_key = "quiet-cancel-claim",
+                                     .correlation_id = "cancel-boundary",
+                                     .now_ms = 2'100}) ==
+      sanguinius::AppearanceMutationResult::applied);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT state='cancelled' FROM outbox_message WHERE "
+                 "outbox_id='" +
+                     cancellable_id + "'") == 1);
+  REQUIRE(fixture.repository->set_quiet(
+              {.actor_user_id = 31,
+               .quiet_until_ms = std::nullopt,
+               .reason = {},
+               .request_value = {},
+               .event_id = uuid(24'102),
+               .idempotency_key = "quiet-clear-for-submit",
+               .correlation_id = "cancel-boundary",
+               .now_ms = 2'200}) ==
+          sanguinius::AppearanceMutationResult::applied);
+
+  constexpr std::int64_t later = 90'000'000;
+  const auto submitted_id = finalize(later, later + 1, 25'000);
+  const auto submitted = durable.claim_due_outbox(
+      later + 1, later + 10'000, "submit-worker", uuid(25'100), true);
+  REQUIRE(submitted);
+  REQUIRE(submitted->outbox_id == submitted_id);
+  REQUIRE(durable.mark_public_outbox_submitted(
+              *submitted,
+              {.wall_time_ms = later + 2,
+               .elapsed_realtime_ms = 500,
+               .boot_session_id = "appearance-test-boot"},
+              later + 10'000) == sanguinius::WorkMutationStatus::applied);
+  REQUIRE(durable.fail_outbox(*submitted, later + 3, later + 1'000,
+                              "discord_unknown_outcome",
+                              sanguinius::OutboxFailureMode::retryable) ==
+          sanguinius::WorkMutationStatus::applied);
+  REQUIRE(fixture.repository->set_global_disabled(
+              30, true, later + 4, uuid(25'101), "kill-after-submission",
+              "cancel-boundary") ==
+          sanguinius::AppearanceMutationResult::applied);
+  REQUIRE(
+      scalar(*fixture.context,
+             "SELECT state='pending' AND first_attempt_at_ms IS NOT NULL "
+             "AND submission_started_at_ms IS NULL AND last_error_code="
+             "'discord_unknown_outcome' FROM outbox_message WHERE outbox_id='" +
+                 submitted_id + "'") == 1);
+  REQUIRE(fixture.repository->control_summary(later + 5).ambiguous_outbox == 1);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_budget_reservation") == 2);
+}
+
+TEST_CASE(
+    "preference memory and Chronicle withdrawals cancel unsent appearances",
+    "[appearance][repository][live][privacy][outbox]") {
+  AppearanceFixture fixture;
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 1'000);
+  struct QueuedAppearance {
+    std::string candidate_id;
+    std::string decision_id;
+    std::string outbox_id;
+  };
+  const auto queue = [&](const std::size_t base) {
+    const auto candidate = fixture.repository->simulate(
+        fixture.policy,
+        {.fixture = "owner_live_safe",
+         .idempotency_key = "withdrawal-candidate-" + std::to_string(base),
+         .correlation_id = "withdrawal",
+         .owner_user_id = 30,
+         .now_ms = 2'000,
+         .candidate_id = uuid(base),
+         .event_id = uuid(base + 1)});
+    const auto decision_id = uuid(base + 2);
+    const auto outbox_id = uuid(base + 4);
+    REQUIRE(fixture.repository->record_final(
+        fixture.policy, sanguinius::AppearanceMode::live, candidate,
+        sanguinius::evaluate_appearance(
+            fixture.policy, sanguinius::AppearanceMode::live, candidate, 2'001),
+        decision_id, uuid(base + 3), "withdrawal", "owner_fixture",
+        sanguinius::AppearanceModelResult{
+            .serious_context = false,
+            .serious_categories = {},
+            .should_speak = true,
+            .text = "[TEST] An unsent privacy-withdrawal fixture.",
+            .tone = "warm",
+            .memory_ids_used = {},
+            .confidence = 1.0},
+        {.reservation_id = uuid(base + 5),
+         .outbox_id = outbox_id,
+         .feedback_control_ids = {uuid(base + 6), uuid(base + 7),
+                                  uuid(base + 8), uuid(base + 9)}},
+        2'001));
+    return QueuedAppearance{candidate.candidate_id, decision_id, outbox_id};
+  };
+  const auto cancelled = [&](const QueuedAppearance &queued,
+                             const std::string_view reason) {
+    auto state = fixture.context->connection().prepare(
+        "SELECT state,last_error_code FROM outbox_message WHERE outbox_id=?");
+    state.bind(1, queued.outbox_id);
+    REQUIRE(state.step());
+    REQUIRE(state.column_text(0) == "cancelled");
+    REQUIRE(state.column_text(1) == reason);
+  };
+
+  SECTION("appearance callback opt-out") {
+    const auto queued = queue(36'000);
+    REQUIRE(fixture.repository->set_callback_consent(
+        30, false, 2'100, uuid(36'100), "withdrawal-callback", "withdrawal"));
+    cancelled(queued, "appearance_opt_out");
+  }
+
+  SECTION("unrelated memory callback withdrawal preserves conversation work") {
+    const auto queued = queue(36'200);
+    fixture.context->connection().execute(
+        "UPDATE user_preference SET memory_callback_opt_in=0,"
+        "updated_at_ms=2100 WHERE user_id='30'");
+    REQUIRE(
+        scalar(*fixture.context,
+               "SELECT state='pending' FROM outbox_message WHERE outbox_id='" +
+                   queued.outbox_id + "'") == 1);
+  }
+
+  SECTION("memory callback withdrawal cancels memory-dependent work") {
+    const auto queued = queue(36'300);
+    SqliteDurableWorkRepository durable{fixture.context};
+    REQUIRE(durable.append_event(
+        {.event_id = uuid(36'400),
+         .event_type = "chronicle.memory_confirmed.v1",
+         .aggregate_type = "memory",
+         .aggregate_id = uuid(36'401),
+         .actor_user_id = 31,
+         .guild_id = 10,
+         .channel_id = 20,
+         .source_message_id = std::nullopt,
+         .occurred_at_ms = 1'500,
+         .recorded_at_ms = 1'500,
+         .correlation_id = "withdrawal",
+         .causation_id = std::nullopt,
+         .idempotency_key = "withdrawal-memory-callback-event",
+         .payload_json = "{}"}));
+    auto &connection = fixture.context->connection();
+    connection.execute_script(
+        "INSERT INTO memory(memory_id,memory_type,text,visibility,"
+        "sensitivity,status,confidence_basis,source_event_id,"
+        "created_by_user_id,confirmed_by_user_id,created_at_ms,"
+        "confirmed_at_ms,revision,creation_idempotency_key) VALUES("
+        "'00000000-0000-4000-8000-000000036401','explicit',"
+        "'A callback-dependent shared memory.','shared','ordinary','confirmed',"
+        "'user_confirmed','00000000-0000-4000-8000-000000036400','31',"
+        "'31',1500,1500,1,'withdrawal-memory-callback');"
+        "INSERT INTO memory_subject(memory_id,subject_type,subject_id) VALUES("
+        "'00000000-0000-4000-8000-000000036401','user','31');");
+    auto link = connection.prepare(
+        "INSERT INTO appearance_decision_memory VALUES(?,?,1,0,1)");
+    link.bind(1, queued.decision_id);
+    link.bind(2, uuid(36'401));
+    link.execute();
+    connection.execute("UPDATE user_preference SET memory_callback_opt_in=0,"
+                       "updated_at_ms=2100 WHERE user_id='31'");
+    cancelled(queued, "appearance_opt_out");
+  }
+
+  SECTION("memory retraction") {
+    const auto queued = queue(37'000);
+    SqliteDurableWorkRepository durable{fixture.context};
+    REQUIRE(durable.append_event({.event_id = uuid(37'100),
+                                  .event_type = "chronicle.memory_confirmed.v1",
+                                  .aggregate_type = "memory",
+                                  .aggregate_id = uuid(37'101),
+                                  .actor_user_id = 30,
+                                  .guild_id = 10,
+                                  .channel_id = 20,
+                                  .source_message_id = std::nullopt,
+                                  .occurred_at_ms = 1'500,
+                                  .recorded_at_ms = 1'500,
+                                  .correlation_id = "withdrawal",
+                                  .causation_id = std::nullopt,
+                                  .idempotency_key = "withdrawal-memory-event",
+                                  .payload_json = "{}"}));
+    auto &connection = fixture.context->connection();
+    connection.execute_script(
+        "INSERT INTO memory(memory_id,memory_type,text,visibility,"
+        "sensitivity,status,confidence_basis,source_event_id,"
+        "created_by_user_id,confirmed_by_user_id,created_at_ms,"
+        "confirmed_at_ms,revision,creation_idempotency_key) VALUES("
+        "'00000000-0000-4000-8000-000000037101','explicit',"
+        "'A retractable shared memory.','shared','ordinary','confirmed',"
+        "'user_confirmed','00000000-0000-4000-8000-000000037100','30',"
+        "'30',1500,1500,1,'withdrawal-memory');");
+    auto link = connection.prepare(
+        "INSERT INTO appearance_decision_memory VALUES(?,?,1,0,1)");
+    link.bind(1, queued.decision_id);
+    link.bind(2, uuid(37'101));
+    link.execute();
+    connection.execute(
+        "UPDATE memory SET status='retracted',revision=2,retracted_at_ms=2100 "
+        "WHERE memory_id='00000000-0000-4000-8000-000000037101'");
+    cancelled(queued, "appearance_memory_withdrawn");
+  }
+
+  SECTION("Chronicle callback withdrawal") {
+    const auto queued = queue(38'000);
+    auto &connection = fixture.context->connection();
+    connection.execute_script(
+        "INSERT INTO chronicle_entry(entry_id,entry_type,title,body,"
+        "visibility,status,occurred_at_ms,created_at_ms,created_by_user_id,"
+        "submitted_at_ms,approved_at_ms,approved_by_user_id,source_guild_id,"
+        "source_channel_id,source_message_id,source_author_user_id,source_text,"
+        "revision,source_kind) VALUES("
+        "'00000000-0000-4000-8000-000000038100','incident','Withdrawal',"
+        "'A callback source.','shared','canon',1500,1500,'31',1500,1500,'30',"
+        "'10','20','38100','31','A callback source.',1,'discord_message');"
+        "INSERT INTO chronicle_participant(entry_id,user_id,role) VALUES("
+        "'00000000-0000-4000-8000-000000038100','31','source_author');");
+    auto link =
+        connection.prepare("INSERT INTO appearance_candidate_source VALUES(?,"
+                           "'chronicle_entry',?,1)");
+    link.bind(1, queued.candidate_id);
+    link.bind(2, uuid(38'100));
+    link.execute();
+    connection.execute(
+        "UPDATE user_preference SET chronicle_opt_in=0,updated_at_ms=2100 "
+        "WHERE user_id='31'");
+    cancelled(queued, "appearance_opt_out");
+  }
+}
+
+TEST_CASE("event-backed Chronicle withdrawals cancel unsent appearances",
+          "[appearance][repository][events][live][privacy][outbox]") {
+  AppearanceFixture fixture;
+  auto policy_json = nlohmann::json::parse(fixture.policy.canonical_json);
+  policy_json["policy_version"] = "m10-event-withdrawal";
+  policy_json["scoring"]["threshold"] = 1;
+  fixture.policy = sanguinius::parse_appearance_policy(policy_json.dump());
+  fixture.repository->register_policy(fixture.policy, 900);
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 901);
+
+  SqliteCoreIdentityRepository identities{fixture.context};
+  identities.ensure_user({33, "Source", "source", false, 902});
+  fixture.context->connection().execute(
+      "UPDATE user_preference SET chronicle_opt_in=1,memory_callback_opt_in=1,"
+      "appearance_callback_opt_in=1 WHERE user_id='33'");
+  fixture.context->connection().execute_script(
+      "INSERT INTO chronicle_entry(entry_id,entry_type,title,body,visibility,"
+      "status,occurred_at_ms,created_at_ms,created_by_user_id,submitted_at_ms,"
+      "approved_at_ms,approved_by_user_id,source_guild_id,source_channel_id,"
+      "source_message_id,source_author_user_id,source_text,revision,source_"
+      "kind) "
+      "VALUES('00000000-0000-4000-8000-000000040000','incident','Shared "
+      "source',"
+      "'An ordinary shared Chronicle "
+      "source.','shared','canon',500,500,'33',500,"
+      "500,'30','10','20','40000','33','An ordinary shared Chronicle "
+      "source.',1,"
+      "'discord_message');"
+      "INSERT INTO chronicle_participant(entry_id,user_id,role) VALUES("
+      "'00000000-0000-4000-8000-000000040000','33','source_author');");
+
+  const auto activity =
+      conversation_candidates(fixture, 8, 40'010, 1'000, 40'020);
+  REQUIRE(activity.size() == 1);
+  SqliteDurableWorkRepository durable{fixture.context};
+  REQUIRE(durable.append_event({.event_id = uuid(40'100),
+                                .event_type = "chronicle.entry_canonized.v1",
+                                .aggregate_type = "chronicle_entry",
+                                .aggregate_id = uuid(40'000),
+                                .actor_user_id = 33,
+                                .guild_id = 10,
+                                .channel_id = 20,
+                                .source_message_id = std::nullopt,
+                                .occurred_at_ms = 1'010,
+                                .recorded_at_ms = 1'010,
+                                .correlation_id = "event-withdrawal",
+                                .causation_id = std::nullopt,
+                                .idempotency_key = "event-withdrawal-source",
+                                .payload_json = "{}"}));
+  const auto candidates =
+      fixture.repository->scan_events(fixture.policy, 1'010, "instance");
+  REQUIRE(candidates.size() == 1);
+  const auto evaluation = sanguinius::evaluate_appearance(
+      fixture.policy, sanguinius::AppearanceMode::live, candidates.front(),
+      1'011);
+  REQUIRE(evaluation.eligible_for_model);
+  const auto decision_id = uuid(40'101);
+  const sanguinius::AppearanceDeliveryIds delivery{
+      .reservation_id = uuid(40'102),
+      .outbox_id = uuid(40'103),
+      .feedback_control_ids = {uuid(40'104), uuid(40'105), uuid(40'106),
+                               uuid(40'107)}};
+  REQUIRE(fixture.repository->record_final(
+      fixture.policy, sanguinius::AppearanceMode::live, candidates.front(),
+      evaluation, decision_id, uuid(40'108), "event-withdrawal",
+      "model_accepted",
+      sanguinius::AppearanceModelResult{
+          .serious_context = false,
+          .serious_categories = {},
+          .should_speak = true,
+          .text = "A safe event-backed Chronicle observation.",
+          .tone = "warm",
+          .memory_ids_used = {},
+          .confidence = .95},
+      delivery, 1'011));
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_candidate_source WHERE "
+                 "candidate_id='" +
+                     candidates.front().candidate_id +
+                     "' AND source_kind='event'") == 1);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_candidate_source_user WHERE "
+                 "candidate_id='" +
+                     candidates.front().candidate_id + "' AND user_id='33'") ==
+          1);
+  const auto require_cancelled = [&](const std::string_view reason) {
+    auto state = fixture.context->connection().prepare(
+        "SELECT state,last_error_code FROM outbox_message WHERE outbox_id=?");
+    state.bind(1, delivery.outbox_id);
+    REQUIRE(state.step());
+    REQUIRE(state.column_text(0) == "cancelled");
+    REQUIRE(state.column_text(1) == reason);
+  };
+
+  SECTION("appearance callback withdrawal") {
+    REQUIRE(fixture.repository->set_callback_consent(
+        33, false, 1'012, uuid(40'109), "event-source-opt-out",
+        "event-withdrawal"));
+    require_cancelled("appearance_opt_out");
+  }
+
+  SECTION("Chronicle callback withdrawal") {
+    fixture.context->connection().execute(
+        "UPDATE user_preference SET chronicle_opt_in=0,updated_at_ms=1012 "
+        "WHERE user_id='33'");
+    require_cancelled("appearance_opt_out");
+  }
+
+  SECTION("Chronicle source retraction") {
+    fixture.context->connection().execute(
+        "UPDATE chronicle_entry SET status='retracted',revision=2,"
+        "retracted_at_ms=1012,retracted_by_user_id='30' WHERE entry_id='"
+        "00000000-0000-4000-8000-000000040000'");
+    require_cancelled("appearance_chronicle_withdrawn");
+  }
+}
+
+TEST_CASE("model failure alerts are thresholded hourly and restart safe",
+          "[appearance][repository][alerts][restart]") {
+  AppearanceFixture fixture;
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::dry_run, 1'000);
+  for (std::size_t index = 0; index < 3; ++index) {
+    const auto candidate = fixture.repository->simulate(
+        fixture.policy,
+        {.fixture = "owner_dry_run",
+         .idempotency_key = "alert-model-" + std::to_string(index),
+         .correlation_id = "alert-model",
+         .owner_user_id = 30,
+         .now_ms = 2'000,
+         .candidate_id = uuid(14'000 + index),
+         .event_id = uuid(14'100 + index)});
+    REQUIRE(fixture.repository->record_final(
+        fixture.policy, sanguinius::AppearanceMode::dry_run, candidate,
+        sanguinius::evaluate_appearance(fixture.policy,
+                                        sanguinius::AppearanceMode::dry_run,
+                                        candidate, 3'000),
+        uuid(14'200 + index), uuid(14'300 + index), "alert-instance",
+        "model_timeout", std::nullopt, 3'000));
+  }
+  REQUIRE(fixture.repository->control_summary(3'000).recent_model_failures ==
+          3);
+  const auto first = fixture.repository->claim_failure_alerts(3'000);
+  REQUIRE(first.size() == 1);
+  REQUIRE(first.front().category == "model");
+  REQUIRE(first.front().occurrences == 3);
+  REQUIRE(fixture.repository->claim_failure_alerts(3'001).empty());
+
+  auto restarted_context = std::make_shared<SqliteRepositoryContext>(
+      Database::open_runtime(fixture.temporary.path(), 2s));
+  SqliteAppearanceRepository restarted{restarted_context};
+  REQUIRE(restarted.claim_failure_alerts(3'600'000 + 3'000).size() == 1);
+}
+
+TEST_CASE("test and automatic namespaces independently reach delivery alert "
+          "threshold",
+          "[appearance][repository][live][alerts]") {
+  AppearanceFixture fixture;
+  auto alert_policy = nlohmann::json::parse(fixture.policy.canonical_json);
+  alert_policy["policy_version"] = "m10-live-alert";
+  alert_policy["scoring"]["threshold"] = 1;
+  fixture.policy = sanguinius::parse_appearance_policy(alert_policy.dump());
+  fixture.repository->register_policy(fixture.policy, 90'000);
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 90'001);
+  const auto automatic =
+      conversation_candidates(fixture, 8, 20'000, 100'000, 20'000);
+  REQUIRE(automatic.size() == 1);
+  const auto owner = fixture.repository->simulate(
+      fixture.policy, {.fixture = "owner_live_safe",
+                       .idempotency_key = "alert-owner-live",
+                       .correlation_id = "alert-delivery",
+                       .owner_user_id = 30,
+                       .now_ms = 100'010,
+                       .candidate_id = uuid(21'000),
+                       .event_id = uuid(21'001)});
+  const sanguinius::AppearanceModelResult model{
+      .serious_context = false,
+      .serious_categories = {},
+      .should_speak = true,
+      .text = "A safe alert delivery fixture.",
+      .tone = "warm",
+      .memory_ids_used = {},
+      .confidence = .95};
+  const auto finalize = [&](const sanguinius::AppearanceCandidate &candidate,
+                            const std::size_t base) {
+    return fixture.repository->record_final(
+        fixture.policy, sanguinius::AppearanceMode::live, candidate,
+        sanguinius::evaluate_appearance(fixture.policy,
+                                        sanguinius::AppearanceMode::live,
+                                        candidate, 100'020),
+        uuid(base), uuid(base + 1), "alert-delivery", "model_accepted", model,
+        {.reservation_id = uuid(base + 2),
+         .outbox_id = uuid(base + 3),
+         .feedback_control_ids = {uuid(base + 4), uuid(base + 5),
+                                  uuid(base + 6), uuid(base + 7)}},
+        100'020);
+  };
+  REQUIRE(finalize(automatic.front(), 22'000));
+  REQUIRE(finalize(owner, 23'000));
+  REQUIRE(scalar(*fixture.context, "SELECT count(DISTINCT is_test) FROM "
+                                   "appearance_budget_reservation") == 2);
+  fixture.context->connection().execute(
+      "UPDATE outbox_message SET state='failed',terminal_at_ms=100030,"
+      "updated_at_ms=100030,last_error_code='discord_delivery_failed'");
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_budget_reservation") == 2);
+  const auto health = fixture.repository->control_summary(100'040);
+  REQUIRE(health.recent_delivery_failures == 2);
+  const auto alerts = fixture.repository->claim_failure_alerts(100'040);
+  const auto delivery =
+      std::ranges::find(alerts, std::string{"delivery"},
+                        &sanguinius::AppearanceFailureAlert::category);
+  REQUIRE(delivery != alerts.end());
+  REQUIRE(delivery->occurrences == 2);
+  REQUIRE(fixture.repository->claim_failure_alerts(100'041).empty());
+}
+
+TEST_CASE(
+    "non-test feedback produces conservative policy and theme recommendations",
+    "[appearance][repository][live][feedback][metrics]") {
+  AppearanceFixture fixture;
+  auto feedback_policy = nlohmann::json::parse(fixture.policy.canonical_json);
+  feedback_policy["policy_version"] = "m10-live-feedback-metrics";
+  feedback_policy["scoring"]["threshold"] = 1;
+  fixture.policy = sanguinius::parse_appearance_policy(feedback_policy.dump());
+  fixture.repository->register_policy(fixture.policy, 90'000);
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 90'001);
+  const auto candidates =
+      conversation_candidates(fixture, 8, 30'000, 100'000, 30'000);
+  REQUIRE(candidates.size() == 1);
+  fixture.context->connection().execute(
+      "UPDATE appearance_candidate SET theme_key='theme-review-fixture' "
+      "WHERE candidate_id='" +
+      candidates.front().candidate_id + "'");
+  const sanguinius::AppearanceModelResult model{
+      .serious_context = false,
+      .serious_categories = {},
+      .should_speak = true,
+      .text = "A safe feedback metrics fixture.",
+      .tone = "warm",
+      .memory_ids_used = {},
+      .confidence = .95};
+  const sanguinius::AppearanceDeliveryIds delivery{
+      .reservation_id = uuid(31'000),
+      .outbox_id = uuid(31'001),
+      .feedback_control_ids = {uuid(31'002), uuid(31'003), uuid(31'004),
+                               uuid(31'005)}};
+  REQUIRE(fixture.repository->record_final(
+      fixture.policy, sanguinius::AppearanceMode::live, candidates.front(),
+      sanguinius::evaluate_appearance(fixture.policy,
+                                      sanguinius::AppearanceMode::live,
+                                      candidates.front(), 100'020),
+      uuid(31'006), uuid(31'007), "feedback-metrics", "model_accepted", model,
+      delivery, 100'020));
+  fixture.context->connection().execute(
+      "UPDATE outbox_message SET state='delivered',"
+      "provider_message_id='31001',delivered_at_ms=100030,"
+      "terminal_at_ms=100030,updated_at_ms=100030");
+  const auto add_feedback = [&](const sanguinius::DiscordSnowflake user,
+                                const std::string &control,
+                                const std::size_t base) {
+    return fixture.repository->record_feedback(
+        {.actor_user_id = user,
+         .guild_id = 10,
+         .channel_id = 20,
+         .action = sanguinius::AppearanceFeedbackAction::more,
+         .control_id = control,
+         .reference = std::nullopt,
+         .quiet_until_ms = std::nullopt,
+         .feedback_id = uuid(base),
+         .event_id = uuid(base + 1),
+         .idempotency_key = "feedback-metric-" + std::to_string(base),
+         .correlation_id = "feedback-metrics",
+         .now_ms = 100'040});
+  };
+  REQUIRE(add_feedback(30, delivery.feedback_control_ids[1], 32'000) ==
+          sanguinius::AppearanceMutationResult::applied);
+  REQUIRE(add_feedback(31, delivery.feedback_control_ids[2], 32'010) ==
+          sanguinius::AppearanceMutationResult::applied);
+  REQUIRE(add_feedback(32, delivery.feedback_control_ids[2], 32'020) ==
+          sanguinius::AppearanceMutationResult::applied);
+  const auto summary = fixture.repository->control_summary(100'050);
+  REQUIRE(summary.feedback_more == 0);
+  REQUIRE(summary.feedback_less == 1);
+  REQUIRE(summary.feedback_not_relevant == 2);
+  REQUIRE(summary.recommendation == "return_to_dry_run");
+  REQUIRE(summary.theme_review_keys ==
+          std::vector<std::string>{"theme-review-fixture"});
+}
+
+TEST_CASE(
+    "owner-submitted non-test appearance proposals require explicit approval",
+    "[appearance][repository][live][chronicle][approval]") {
+  AppearanceFixture fixture;
+  auto chronicle_policy = nlohmann::json::parse(fixture.policy.canonical_json);
+  chronicle_policy["policy_version"] = "m10-live-chronicle-approval";
+  chronicle_policy["scoring"]["threshold"] = 1;
+  fixture.policy = sanguinius::parse_appearance_policy(chronicle_policy.dump());
+  fixture.repository->register_policy(fixture.policy, 90'000);
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 90'001);
+  const auto candidates =
+      conversation_candidates(fixture, 8, 36'000, 100'000, 36'000);
+  REQUIRE(candidates.size() == 1);
+  const sanguinius::AppearanceModelResult model{
+      .serious_context = false,
+      .serious_categories = {},
+      .should_speak = true,
+      .text = "A safe non-test Chronicle appearance fixture.",
+      .tone = "warm",
+      .memory_ids_used = {},
+      .confidence = .95};
+  const auto decision_id = uuid(37'100);
+  const sanguinius::AppearanceDeliveryIds delivery{
+      .reservation_id = uuid(37'101),
+      .outbox_id = uuid(37'102),
+      .feedback_control_ids = {uuid(37'103), uuid(37'104), uuid(37'105),
+                               uuid(37'106)}};
+  REQUIRE(fixture.repository->record_final(
+      fixture.policy, sanguinius::AppearanceMode::live, candidates.front(),
+      sanguinius::evaluate_appearance(fixture.policy,
+                                      sanguinius::AppearanceMode::live,
+                                      candidates.front(), 100'020),
+      decision_id, uuid(37'107), "chronicle-approval", "model_accepted", model,
+      delivery, 100'020));
+  fixture.context->connection().execute(
+      "UPDATE outbox_message SET state='delivered',"
+      "provider_message_id='37102',delivered_at_ms=100030,"
+      "terminal_at_ms=100030,updated_at_ms=100030 WHERE outbox_id='" +
+      delivery.outbox_id + "'");
+
+  sanguinius::persistence::SqliteChronicleRepository chronicle{fixture.context};
+  const auto proposal = sanguinius::CreateProposalRequest{
+      .entry_id = uuid(37'200),
+      .event_id = uuid(37'201),
+      .actions = {.edit_token_id = uuid(37'202),
+                  .submit_token_id = uuid(37'203),
+                  .retract_token_id = uuid(37'204)},
+      .source = {.reference = {.message_id = 37'102,
+                               .guild_id = 10,
+                               .channel_id = 20},
+                 .author = {.user_id = 42,
+                            .username = "sanguinius",
+                            .display_name = "Sanguinius",
+                            .is_bot = true},
+                 .content = model.text,
+                 .occurred_at_ms = 100'030},
+      .proposer_user_id = 30,
+      .owner_user_id = 30,
+      .title = "A delivered appearance",
+      .body = model.text,
+      .owner_test = false,
+      .appearance_decision_id = decision_id,
+      .correlation_id = "appearance-chronicle-approval",
+      .idempotency_key = "appearance-chronicle-approval:create",
+      .now_ms = 100'040,
+      .action_expires_at_ms = 200'000,
+      .notice_expires_at_ms = 300'000};
+  const auto created = chronicle.create_or_get_proposal(proposal);
+  REQUIRE(created.code == sanguinius::ChronicleResultCode::created);
+
+  const auto approval_id = uuid(37'210);
+  const auto approve_token_id = uuid(37'213);
+  const auto submitted = chronicle.submit_proposal(
+      {.token_id = proposal.actions.submit_token_id,
+       .guild_id = 10,
+       .channel_id = 20,
+       .actor_user_id = 30,
+       .owner_user_id = 30,
+       .proposer_approval_id = uuid(37'205),
+       .submit_event_id = uuid(37'206),
+       .immediate_canon_event_id = uuid(37'207),
+       .reviewer_dispatches = {{.approval_id = approval_id,
+                                .notice_id = uuid(37'211),
+                                .notice_open_token_id = uuid(37'212),
+                                .approve_token_id = approve_token_id,
+                                .decline_token_id = uuid(37'214),
+                                .notice_event_id = uuid(37'215),
+                                .notice_outbox_id = uuid(37'216)}},
+       .correlation_id = "appearance-chronicle-approval",
+       .interaction_idempotency_key = "appearance-chronicle-approval:submit",
+       .now_ms = 100'050,
+       .notice_expires_at_ms = 300'000});
+  REQUIRE(submitted.code == sanguinius::ChronicleResultCode::updated);
+  REQUIRE_FALSE(submitted.became_canon);
+  REQUIRE(submitted.entry->status ==
+          sanguinius::ChronicleEntryStatus::proposed);
+  REQUIRE(
+      scalar(*fixture.context, "SELECT count(*) FROM chronicle_approval WHERE "
+                               "approval_id='" +
+                                   approval_id +
+                                   "' AND approval_role='owner' AND "
+                                   "state='pending'") == 1);
+
+  const auto approved = chronicle.apply_approval(
+      {.token_id = approve_token_id,
+       .guild_id = 10,
+       .channel_id = 20,
+       .actor_user_id = 30,
+       .owner_user_id = 30,
+       .action_event_id = uuid(37'217),
+       .canon_event_id = uuid(37'218),
+       .public_outbox_id = uuid(37'219),
+       .correlation_id = "appearance-chronicle-approval",
+       .interaction_idempotency_key = "appearance-chronicle-approval:approve",
+       .now_ms = 100'060});
+  REQUIRE(approved.code == sanguinius::ChronicleResultCode::updated);
+  REQUIRE(approved.became_canon);
+  REQUIRE(approved.entry->status == sanguinius::ChronicleEntryStatus::canon);
 }

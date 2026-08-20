@@ -139,7 +139,9 @@ void invoke_callback(const std::shared_ptr<CallbackFence> &callbacks,
       }
       dpp::component button;
       button.set_type(dpp::cot_button)
-          .set_style(dpp::cos_primary)
+          .set_style(source_button.style == ButtonStyle::secondary
+                         ? dpp::cos_secondary
+                         : dpp::cos_primary)
           .set_label(source_button.label)
           .set_id(source_button.custom_id)
           .set_disabled(source_button.disabled);

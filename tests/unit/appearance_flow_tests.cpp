@@ -99,6 +99,7 @@ public:
                     std::string, std::string, std::string_view,
                     std::string status_value,
                     std::optional<sanguinius::AppearanceModelResult>,
+                    const sanguinius::AppearanceDeliveryIds &,
                     std::int64_t) override {
     finish(std::move(status_value), evaluation.reason, candidate.candidate_id);
     return true;
@@ -117,6 +118,7 @@ public:
                       const sanguinius::AppearanceEvaluation &evaluation,
                       std::string_view, std::string, std::string status_value,
                       std::optional<sanguinius::AppearanceModelResult> result,
+                      const sanguinius::AppearanceDeliveryIds &,
                       std::int64_t) override {
     if (fail_next_completion.exchange(false))
       throw std::runtime_error{"injected completion failure"};
@@ -239,6 +241,56 @@ public:
 }
 
 } // namespace
+
+TEST_CASE("server quiet deadlines honor New York calendar and DST rules",
+          "[appearance][quiet][timezone]") {
+  const auto epoch_ms = [](const auto value) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               value.time_since_epoch())
+        .count();
+  };
+  const auto before_spring =
+      std::chrono::sys_days{std::chrono::year{2026} / std::chrono::March / 8} +
+      std::chrono::hours{1};
+  const auto tonight = sanguinius::appearance_quiet_deadline(
+      epoch_ms(before_spring), "America/New_York", "tonight");
+  const auto spring_ten_am =
+      std::chrono::sys_days{std::chrono::year{2026} / std::chrono::March / 8} +
+      std::chrono::hours{14};
+  REQUIRE(tonight == epoch_ms(spring_ten_am));
+
+  const auto spring_midnight_thirty =
+      std::chrono::sys_days{std::chrono::year{2026} / std::chrono::March / 8} +
+      std::chrono::hours{5} + std::chrono::minutes{30};
+  REQUIRE_FALSE(sanguinius::appearance_quiet_deadline(
+      epoch_ms(spring_midnight_thirty), "America/New_York", "until",
+      "02:30"));
+
+  const auto spring_after_gap =
+      std::chrono::sys_days{std::chrono::year{2026} / std::chrono::March / 8} +
+      std::chrono::hours{8};
+  const auto next_day_two_thirty =
+      std::chrono::sys_days{std::chrono::year{2026} / std::chrono::March / 9} +
+      std::chrono::hours{6} + std::chrono::minutes{30};
+  REQUIRE(sanguinius::appearance_quiet_deadline(
+              epoch_ms(spring_after_gap), "America/New_York", "until",
+              "02:30") == epoch_ms(next_day_two_thirty));
+
+  const auto fall_midnight_thirty =
+      std::chrono::sys_days{std::chrono::year{2026} / std::chrono::November /
+                            1} +
+      std::chrono::hours{4} + std::chrono::minutes{30};
+  const auto earlier_fall_one_thirty =
+      std::chrono::sys_days{std::chrono::year{2026} / std::chrono::November /
+                            1} +
+      std::chrono::hours{5} + std::chrono::minutes{30};
+  REQUIRE(sanguinius::appearance_quiet_deadline(
+              epoch_ms(fall_midnight_thirty), "America/New_York", "until",
+              "01:30") == epoch_ms(earlier_fall_one_thirty));
+  REQUIRE(sanguinius::appearance_quiet_deadline(
+              epoch_ms(fall_midnight_thirty), "America/New_York", "duration") ==
+          epoch_ms(fall_midnight_thirty) + 2h / 1ms);
+}
 
 TEST_CASE("appearance model failures are single-attempt audited rejections",
           "[appearance][flow][model-failure]") {
@@ -403,7 +455,7 @@ TEST_CASE("appearance owner preview is UTF-8 safe and Discord bounded",
   repository.shown_decision = sanguinius::AppearanceDecisionRecord{
       .decision_id = "00000000-0000-4000-8000-000000000901",
       .candidate_id = "00000000-0000-4000-8000-000000000902",
-      .policy_version = "m9-initial-1",
+      .policy_version = "m10-live-1",
       .candidate_type = "conversation",
       .safe_summary = "Conversation activity across eight bounded messages.",
       .state = "final",
@@ -433,7 +485,7 @@ TEST_CASE("appearance owner preview is UTF-8 safe and Discord bounded",
   REQUIRE(rendered.size() <= 1'900);
   REQUIRE(sanguinius::valid_utf8(rendered));
   REQUIRE(rendered.find("callback_consent") != std::string::npos);
-  REQUIRE(rendered.find("Policy: m9-initial-1") != std::string::npos);
+  REQUIRE(rendered.find("Policy: m10-live-1") != std::string::npos);
   REQUIRE(rendered.find("Conversation activity") != std::string::npos);
 }
 
@@ -443,7 +495,7 @@ TEST_CASE("appearance recent renders references accepted by preview",
   repository.recent_decisions.push_back(
       {.decision_id = "00000000-0000-4000-8000-000000000911",
        .candidate_id = "00000000-0000-4000-8000-000000000912",
-       .policy_version = "m9-initial-1",
+       .policy_version = "m10-live-1",
        .candidate_type = "conversation",
        .safe_summary = "Conversation activity.",
        .state = "final",

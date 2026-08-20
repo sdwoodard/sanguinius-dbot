@@ -74,6 +74,52 @@ TEST_CASE("Chronicle source-derived bodies preserve UTF-8 boundaries",
       result.entry->body, sanguinius::maximum_chronicle_body_size));
 }
 
+TEST_CASE("Chronicle accepts only verifier-backed delivered bot appearances",
+          "[chronicle][unit][appearance][privacy]") {
+  sanguinius::test::FakeChronicleRepository repository;
+  sanguinius::test::FakeClock clock{
+      std::chrono::sys_seconds{std::chrono::seconds{1}}};
+  sanguinius::test::FakePersistentIdGenerator ids;
+  auto responder =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto interaction = sanguinius::test::interaction(
+      responder, sanguinius::InteractionKind::message_context_command, 60, 10,
+      20, 31);
+  interaction.context_message = sanguinius::ContextMessageSnapshot{
+      .reference = {.message_id = 61, .guild_id = 10, .channel_id = 20},
+      .author = {.user_id = 42,
+                 .username = "sanguinius",
+                 .display_name = "Sanguinius",
+                 .is_bot = true},
+      .content = "The exact delivered public appearance.",
+      .occurred_at_ms = 500};
+
+  sanguinius::ChronicleService unverified{repository, clock, ids, {10, 20, 30},
+                                           {}, [] {}, [] {}};
+  REQUIRE(unverified.canonize_message(interaction).code ==
+          sanguinius::ChronicleResultCode::unauthorized);
+  REQUIRE(repository.proposal_count() == 0);
+
+  const std::string decision_id{
+      "00000000-0000-4000-8000-000000009901"};
+  sanguinius::ChronicleService verified{
+      repository, clock, ids, {10, 20, 30}, {}, [] {}, [] {}, 64, [] {},
+      [&](const sanguinius::ContextMessageSnapshot &message) {
+        REQUIRE(message.content == interaction.context_message->content);
+        return std::optional<std::pair<std::string, bool>>{
+            std::pair{decision_id, false}};
+      }};
+  const auto result = verified.canonize_message(interaction);
+  REQUIRE(result.code == sanguinius::ChronicleResultCode::created);
+  REQUIRE(result.entry);
+  REQUIRE(result.entry->body == interaction.context_message->content);
+  REQUIRE(result.entry->participants.empty());
+  const auto request = repository.latest_proposal();
+  REQUIRE(request);
+  REQUIRE(request->appearance_decision_id == decision_id);
+  REQUIRE_FALSE(request->owner_test);
+}
+
 TEST_CASE(
     "Chronicle proposal rendering exposes bounded provenance and test data",
     "[chronicle][unit][privacy][rendering]") {

@@ -215,9 +215,12 @@ void add_trace(Json &value, const std::string_view correlation_id,
     const std::optional<std::string> &causation_event_id = std::nullopt) {
   Json buttons = Json::array();
   for (const auto &button : payload.request.message.buttons) {
-    buttons.push_back({{"custom_id", button.custom_id},
-                       {"label", button.label},
-                       {"disabled", button.disabled}});
+    Json encoded{{"custom_id", button.custom_id},
+                 {"label", button.label},
+                 {"disabled", button.disabled}};
+    if (button.style != ButtonStyle::primary)
+      encoded["style"] = "secondary";
+    buttons.push_back(std::move(encoded));
   }
   Json mentions = Json::array();
   for (const auto mention : payload.request.message.allowed_user_mentions) {
@@ -258,10 +261,15 @@ void add_trace(Json &value, const std::string_view correlation_id,
     };
   }
   for (const auto &button : value.at("buttons")) {
+    const auto style = button.value("style", std::string{"primary"});
+    if (style != "primary" && style != "secondary")
+      throw std::runtime_error{"Unsupported public button style."};
     message.buttons.push_back(ButtonPayload{
         .custom_id = button.at("custom_id").get<std::string>(),
         .label = button.at("label").get<std::string>(),
         .disabled = button.at("disabled").get<bool>(),
+        .style = style == "secondary" ? ButtonStyle::secondary
+                                        : ButtonStyle::primary,
     });
   }
   for (const auto &mention : value.at("allowed_user_mentions")) {

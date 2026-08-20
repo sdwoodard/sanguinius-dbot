@@ -56,7 +56,7 @@ TEST_CASE("DPP translates Chronicle context commands and typed options",
   const auto translated =
       sanguinius::dpp_adapter_detail::translate_command_catalog(
           sanguinius::command_catalog(false, true), 42);
-  REQUIRE(translated.size() == 3);
+  REQUIRE(translated.size() == 4);
   const auto context =
       std::find_if(translated.begin(), translated.end(),
                    [](const dpp::slashcommand &command) {
@@ -97,17 +97,13 @@ TEST_CASE("DPP translates Chronicle context commands and typed options",
   REQUIRE(session->type == dpp::co_sub_command_group);
   REQUIRE(session->options.size() == 6);
   REQUIRE(session->options[0].type == dpp::co_sub_command);
-  const auto title =
-      std::find_if(chronicle->options.begin(), chronicle->options.end(),
-                   [](const dpp::command_option &option) {
-                     return option.name == "title";
-                   });
+  const auto title = std::find_if(
+      chronicle->options.begin(), chronicle->options.end(),
+      [](const dpp::command_option &option) { return option.name == "title"; });
   REQUIRE(title != chronicle->options.end());
-  const auto title_list =
-      std::find_if(title->options.begin(), title->options.end(),
-                   [](const dpp::command_option &option) {
-                     return option.name == "list";
-                   });
+  const auto title_list = std::find_if(
+      title->options.begin(), title->options.end(),
+      [](const dpp::command_option &option) { return option.name == "list"; });
   REQUIRE(title_list != title->options.end());
   REQUIRE(title_list->options.size() == 2);
   REQUIRE(title_list->options[1].name == "page");
@@ -131,14 +127,31 @@ TEST_CASE("DPP translates owner appearance controls as one nested group",
                    });
   REQUIRE(appearance != admin->options.end());
   REQUIRE(appearance->type == dpp::co_sub_command_group);
-  REQUIRE(appearance->options.size() == 3);
+  REQUIRE(appearance->options.size() == 6);
   REQUIRE(appearance->options[0].name == "simulate");
   REQUIRE(appearance->options[0].options.size() == 1);
   REQUIRE(appearance->options[0].options[0].choices.size() == 13);
 }
 
-TEST_CASE("DPP translates nested incoming commands and rejects malformed groups",
-          "[discord][commands][chronicle][incoming]") {
+TEST_CASE(
+    "DPP retains owner appearance safety controls when administration is off",
+    "[discord][commands][appearance][safety]") {
+  const auto translated =
+      sanguinius::dpp_adapter_detail::translate_command_catalog(
+          sanguinius::command_catalog(false, false), 42);
+  const auto admin = std::ranges::find(translated, std::string{"sang-admin"},
+                                       &dpp::slashcommand::name);
+  REQUIRE(admin != translated.end());
+  REQUIRE(admin->options.size() == 1);
+  REQUIRE(admin->options[0].name == "appearance");
+  REQUIRE(admin->options[0].options.size() == 2);
+  REQUIRE(admin->options[0].options[0].name == "disable");
+  REQUIRE(admin->options[0].options[1].name == "enable");
+}
+
+TEST_CASE(
+    "DPP translates nested incoming commands and rejects malformed groups",
+    "[discord][commands][chronicle][incoming]") {
   dpp::command_interaction command;
   command.name = "chronicle";
   dpp::command_data_option reference;
@@ -166,10 +179,9 @@ TEST_CASE("DPP translates nested incoming commands and rejects malformed groups"
           "00000000-0000-4000-8000-000000000101");
 
   command.options.front().options.push_back(close);
-  REQUIRE_THROWS_AS(
-      sanguinius::dpp_adapter_detail::translate_slash_command(command,
-                                                               translated),
-      std::invalid_argument);
+  REQUIRE_THROWS_AS(sanguinius::dpp_adapter_detail::translate_slash_command(
+                        command, translated),
+                    std::invalid_argument);
 }
 
 TEST_CASE("DPP context snapshots retain only bounded Chronicle metadata",

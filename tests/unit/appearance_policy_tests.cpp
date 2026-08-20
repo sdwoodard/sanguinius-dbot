@@ -37,7 +37,7 @@ TEST_CASE("appearance policy v1 loads exact bounded defaults",
           "[appearance][policy]") {
   const auto value = policy();
   REQUIRE(value.schema_version == 1);
-  REQUIRE(value.policy_version == "m9-initial-1");
+  REQUIRE(value.policy_version == "m10-live-1");
   REQUIRE(value.activity_window_ms == 600'000);
   REQUIRE(value.human_messages_required == 8);
   REQUIRE(value.active_humans_required == 2);
@@ -53,7 +53,7 @@ TEST_CASE("appearance policy v1 loads exact bounded defaults",
   REQUIRE(value.minimum_confidence == 0.8);
   REQUIRE(value.quiet_windows.empty());
   REQUIRE(nlohmann::json::parse(value.canonical_json).at("policy_version") ==
-          "m9-initial-1");
+          "m10-live-1");
 }
 
 TEST_CASE("appearance policy rejects unknown fields versions and ranges",
@@ -271,6 +271,14 @@ TEST_CASE("appearance model result is strict bounded and mention safe",
   unicode_blank["text"] = std::string{"\xC2\xA0"};
   REQUIRE_THROWS(sanguinius::parse_appearance_model_result(
       value, unicode_blank.dump(), memories));
+
+  auto multiline = nlohmann::json::parse(valid);
+  multiline["text"] = "First line\nSecond line";
+  REQUIRE_THROWS(sanguinius::parse_appearance_model_result(
+      value, multiline.dump(), memories));
+  multiline["text"] = std::string{"First line\xE2\x80\xA8Second line"};
+  REQUIRE_THROWS(sanguinius::parse_appearance_model_result(
+      value, multiline.dump(), memories));
 
   std::string invalid_utf8 =
       R"({"serious_context":false,"serious_categories":[],"should_speak":true,"text":")";

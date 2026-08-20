@@ -58,6 +58,7 @@ sanguinius_embed_migrations(
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0005_relationships.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0006_chronicle_sessions.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0007_appearance_dry_run.sql"
+    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0008_appearance_live.sql"
 )
 
 function(sanguinius_enable_warnings target)

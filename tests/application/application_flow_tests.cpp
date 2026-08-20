@@ -93,13 +93,12 @@ TEST_CASE("appearance observer failures do not suppress Chronicle observation",
           return event.category == "appearance.message_observer";
         });
   };
-  while ((!fixture.chronicle_sessions->last_observation.has_value() ||
-          !has_appearance_diagnostic()) &&
+  while (!has_appearance_diagnostic() &&
          std::chrono::steady_clock::now() < deadline)
     std::this_thread::yield();
-  REQUIRE(fixture.chronicle_sessions->last_observation.has_value());
   REQUIRE(has_appearance_diagnostic());
   fixture.application->stop();
+  REQUIRE(fixture.chronicle_sessions->last_observation.has_value());
 }
 
 TEST_CASE("appearance activity observes only humans and Sanguinius bot output",
@@ -169,22 +168,22 @@ TEST_CASE("successful appearance recurring jobs stay healthy while off",
       {.job_id = "00000000-0000-4000-8000-000000000919",
        .job_type = std::string{sanguinius::appearance_scan_job_type},
        .aggregate_type = "appearance_policy",
-       .aggregate_id = "m9-initial-1",
+       .aggregate_id = "m10-live-1",
        .due_at_ms = 0,
        .max_attempts = 5,
        .idempotency_key = "appearance:scan:recurring:v1",
        .created_at_ms = 0},
-      sanguinius::AppearanceScanJobPayload{.policy_version = "m9-initial-1"});
+      sanguinius::AppearanceScanJobPayload{.policy_version = "m10-live-1"});
   fixture.durable_work->seed_job(
       {.job_id = "00000000-0000-4000-8000-000000000920",
        .job_type = std::string{sanguinius::appearance_purge_job_type},
        .aggregate_type = "appearance_policy",
-       .aggregate_id = "m9-initial-1",
+       .aggregate_id = "m10-live-1",
        .due_at_ms = 0,
        .max_attempts = 5,
        .idempotency_key = "appearance:purge:recurring:v1",
        .created_at_ms = 0},
-      sanguinius::AppearancePurgeJobPayload{.policy_version = "m9-initial-1"});
+      sanguinius::AppearancePurgeJobPayload{.policy_version = "m10-live-1"});
 
   fixture.application->start();
   REQUIRE(fixture.durable_work->wait_for_job_due(

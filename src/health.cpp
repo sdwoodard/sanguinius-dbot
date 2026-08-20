@@ -36,17 +36,6 @@ constexpr std::size_t maximum_build_metadata_size = 128;
   return result;
 }
 
-[[nodiscard]] std::string bounded_health_message(std::string message) {
-  if (message.size() <= maximum_health_message_size) {
-    return message;
-  }
-
-  constexpr std::string_view truncation_marker{"...\n"};
-  message.resize(maximum_health_message_size - truncation_marker.size());
-  message += truncation_marker;
-  return message;
-}
-
 [[nodiscard]] const char *enabled(const bool value) noexcept {
   return value ? "enabled" : "disabled";
 }
@@ -59,6 +48,17 @@ void append_queue(std::ostringstream &output, const char *name,
 }
 
 } // namespace
+
+std::string bounded_health_message(std::string message) {
+  if (message.size() <= maximum_health_message_size) {
+    return message;
+  }
+
+  constexpr std::string_view truncation_marker{"...\n"};
+  message.resize(maximum_health_message_size - truncation_marker.size());
+  message += truncation_marker;
+  return message;
+}
 
 HealthService::HealthService(BuildInfo build, ControlConfiguration controls,
                              FeatureConfiguration features,

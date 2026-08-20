@@ -196,10 +196,16 @@ struct DiscordRuntimeStatus {
   std::uint32_t command_catalog_version{};
 };
 
+enum class ButtonStyle {
+  primary,
+  secondary,
+};
+
 struct ButtonPayload {
   std::string custom_id;
   std::string label;
   bool disabled{};
+  ButtonStyle style{ButtonStyle::primary};
 };
 
 struct InteractionMessage {

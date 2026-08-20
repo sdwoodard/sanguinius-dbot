@@ -7,6 +7,7 @@ namespace sanguinius {
 enum class AppearanceMode {
   off,
   dry_run,
+  live,
 };
 
 struct ControlConfiguration {

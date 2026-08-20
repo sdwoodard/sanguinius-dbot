@@ -283,15 +283,11 @@ TEST_CASE("configuration rejects noncanonical booleans and durations",
 
 TEST_CASE("configuration validates appearance mode database and persona",
           "[config]") {
-  for (const std::string valid : {"off", "dry_run"}) {
+  for (const std::string valid : {"off", "dry_run", "live"}) {
     FakeConfigSource source;
     source.values["SANGUINIUS_APPEARANCES_MODE"] = valid;
     REQUIRE_NOTHROW(sanguinius::Config::from_source(source));
   }
-  FakeConfigSource live_mode;
-  live_mode.values["SANGUINIUS_APPEARANCES_MODE"] = "live";
-  REQUIRE(contains(config_error(live_mode), "unavailable"));
-
   FakeConfigSource bad_mode;
   bad_mode.values["SANGUINIUS_APPEARANCES_MODE"] = "DRY_RUN_SENTINEL";
   const auto mode_error = config_error(bad_mode);

@@ -119,6 +119,12 @@ public:
     const std::scoped_lock lock{mutex_};
     return proposals_.size();
   }
+  [[nodiscard]] std::optional<CreateProposalRequest> latest_proposal() const {
+    const std::scoped_lock lock{mutex_};
+    return proposals_.empty()
+               ? std::nullopt
+               : std::optional<CreateProposalRequest>{proposals_.back()};
+  }
   [[nodiscard]] std::size_t confirmation_count() const {
     const std::scoped_lock lock{mutex_};
     return confirmations_.size();

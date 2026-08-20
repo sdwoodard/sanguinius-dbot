@@ -198,6 +198,40 @@ void ensure_user(SqliteConnection &connection, const ContextUserSnapshot &user,
   return query.step() && query.column_int64(0) == 1;
 }
 
+[[nodiscard]] bool appearance_source_entry(SqliteConnection &connection,
+                                           const std::string_view entry_id) {
+  auto query = connection.prepare(
+      "SELECT 1 FROM chronicle_appearance_source WHERE entry_id=?");
+  query.bind(1, entry_id);
+  return query.step();
+}
+
+[[nodiscard]] bool
+verified_appearance_source(SqliteConnection &connection,
+                           const CreateProposalRequest &request) {
+  if (!request.appearance_decision_id)
+    return false;
+  auto query = connection.prepare(
+      "SELECT r.is_test FROM appearance_decision d JOIN "
+      "appearance_budget_reservation r ON r.decision_id=d.decision_id JOIN "
+      "outbox_message o ON o.outbox_id=r.outbox_id JOIN guild_config g ON "
+      "g.singleton=1 WHERE d.decision_id=? AND d.action='live_queued' AND "
+      "o.kind='discord.public.v1' AND "
+      "o.aggregate_type='appearance_decision' AND "
+      "o.aggregate_id=d.decision_id AND o.target_user_id IS NULL AND "
+      "o.idempotency_key='appearance.public:'||d.decision_id AND "
+      "o.state='delivered' AND o.provider_message_id=? AND o.target_guild_id=? "
+      "AND o.target_channel_id=? AND o.target_guild_id=g.guild_id AND "
+      "o.target_channel_id=g.primary_channel_id AND "
+      "json_extract(o.payload_json,'$.content')=?");
+  query.bind(1, *request.appearance_decision_id);
+  query.bind(2, request.source.reference.message_id.str());
+  query.bind(3, request.source.reference.guild_id.str());
+  query.bind(4, request.source.reference.channel_id.str());
+  query.bind(5, request.source.content);
+  return query.step() && (query.column_int64(0) != 0) == request.owner_test;
+}
+
 [[nodiscard]] ChronicleEntry read_entry_base(SqliteStatement &row) {
   return ChronicleEntry{
       .entry_id = row.column_text(0),
@@ -682,7 +716,8 @@ ProposalResult SqliteChronicleRepository::create_or_get_proposal(
       !request.source.reference.guild_id.is_set() ||
       !request.source.reference.channel_id.is_set() ||
       !request.source.reference.message_id.is_set() ||
-      !request.source.author.user_id.is_set() || request.source.author.is_bot ||
+      !request.source.author.user_id.is_set() ||
+      (request.source.author.is_bot != request.appearance_decision_id.has_value()) ||
       request.now_ms < 0 || request.action_expires_at_ms <= request.now_ms ||
       !valid_chronicle_text(request.title, maximum_chronicle_title_size) ||
       !valid_chronicle_text(request.body, maximum_chronicle_body_size) ||
@@ -707,13 +742,19 @@ ProposalResult SqliteChronicleRepository::create_or_get_proposal(
   const std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
   Transaction transaction{connection, TransactionMode::immediate};
+  const bool appearance_source = request.appearance_decision_id.has_value();
+  if (appearance_source && !verified_appearance_source(connection, request)) {
+    transaction.commit();
+    return {.code = ChronicleResultCode::unauthorized};
+  }
   ensure_user(connection, request.source.author, request.now_ms);
   for (const auto &participant : request.source.mentioned_users) {
     if (participant.user_id.is_set())
       ensure_user(connection, participant, request.now_ms);
   }
   if (!opted_in(connection, request.proposer_user_id) ||
-      !opted_in(connection, request.source.author.user_id)) {
+      (!appearance_source &&
+       !opted_in(connection, request.source.author.user_id))) {
     transaction.commit();
     return {.code = ChronicleResultCode::opted_out};
   }
@@ -905,7 +946,8 @@ ProposalResult SqliteChronicleRepository::create_or_get_proposal(
               "Invalid Chronicle approval renewal dispatch."};
         }
         if (!opted_in(connection, entry->created_by_user_id) ||
-            !opted_in(connection, entry->source_author_user_id)) {
+            (!appearance_source_entry(connection, entry->entry_id) &&
+             !opted_in(connection, entry->source_author_user_id))) {
           transaction.commit();
           return {.code = ChronicleResultCode::opted_out,
                   .entry = std::move(entry),
@@ -1083,6 +1125,16 @@ ProposalResult SqliteChronicleRepository::create_or_get_proposal(
   insert.bind(15, static_cast<std::int64_t>(request.source.attachments.size()));
   insert.execute();
 
+  if (appearance_source) {
+    auto provenance = connection.prepare(
+        "INSERT INTO chronicle_appearance_source(entry_id,decision_id,"
+        "created_at_ms) VALUES(?,?,?)");
+    provenance.bind(1, request.entry_id);
+    provenance.bind(2, *request.appearance_decision_id);
+    provenance.bind(3, request.now_ms);
+    provenance.execute();
+  }
+
   auto add_participant = connection.prepare(
       "INSERT OR IGNORE INTO chronicle_participant (entry_id,user_id,role) "
       "VALUES (?,?,?)");
@@ -1095,7 +1147,8 @@ ProposalResult SqliteChronicleRepository::create_or_get_proposal(
     add_participant.reset();
   };
   add(request.proposer_user_id, "proposer");
-  add(request.source.author.user_id, "source_author");
+  if (!appearance_source)
+    add(request.source.author.user_id, "source_author");
   for (const auto &participant : request.source.mentioned_users) {
     if (!participant.is_bot && participant.user_id.is_set()) {
       add(participant.user_id, "subject");
@@ -1404,6 +1457,8 @@ ChronicleMutationResult SqliteChronicleRepository::submit_proposal(
   }
 
   const bool owner_test_entry = has_tag(*entry, "owner-test");
+  const bool appearance_source =
+      appearance_source_entry(connection, entry->entry_id);
   if (owner_test_entry && (request.actor_user_id != request.owner_user_id ||
                            !request.owner_user_id.is_set())) {
     transaction.commit();
@@ -1415,24 +1470,31 @@ ChronicleMutationResult SqliteChronicleRepository::submit_proposal(
     const auto reviewer =
         owner_test_entry
             ? request.owner_user_id
+            : appearance_source
+                  ? request.owner_user_id
             : (entry->source_author_user_id != request.actor_user_id
                    ? entry->source_author_user_id
                    : request.owner_user_id);
-    if (reviewer == request.actor_user_id && !owner_test_entry) {
+    if (reviewer == request.actor_user_id && !owner_test_entry &&
+        !appearance_source) {
       transaction.commit();
       return {.code = ChronicleResultCode::invalid_state, .entry = entry};
     }
     if (!opted_in(connection, request.actor_user_id) ||
-        !opted_in(connection, entry->source_author_user_id) ||
-        !opted_in(connection, reviewer)) {
+        (!appearance_source &&
+         !opted_in(connection, entry->source_author_user_id)) ||
+        (reviewer != request.actor_user_id &&
+         !opted_in(connection, reviewer))) {
       transaction.commit();
       return {.code = ChronicleResultCode::opted_out, .entry = entry};
     }
-    reviewers.emplace_back(
-        reviewer,
-        owner_test_entry
-            ? "owner_test"
-            : (reviewer == request.owner_user_id ? "owner" : "participant"));
+    if (reviewer != request.actor_user_id || owner_test_entry ||
+        appearance_source)
+      reviewers.emplace_back(
+          reviewer,
+          owner_test_entry
+              ? "owner_test"
+              : (reviewer == request.owner_user_id ? "owner" : "participant"));
   } else {
     for (const auto &participant : entry->participants) {
       if (!opted_in(connection, participant)) {
@@ -1803,9 +1865,11 @@ SqliteChronicleRepository::apply_approval(const ApplyApprovalRequest &request) {
   }
   const bool declined = token->action == "chronicle.entry.decline";
   if (!declined) {
-    bool consent_valid = opted_in(connection, request.actor_user_id) &&
-                         opted_in(connection, entry->created_by_user_id) &&
-                         opted_in(connection, entry->source_author_user_id);
+    bool consent_valid =
+        opted_in(connection, request.actor_user_id) &&
+        opted_in(connection, entry->created_by_user_id) &&
+        (appearance_source_entry(connection, entry->entry_id) ||
+         opted_in(connection, entry->source_author_user_id));
     if (entry->visibility == ChronicleVisibility::participant_only) {
       consent_valid =
           consent_valid &&

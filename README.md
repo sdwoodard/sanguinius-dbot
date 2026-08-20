@@ -2,8 +2,8 @@
 
 Sanguinius is a Discord bot built with modern C++ and [D++](https://dpp.dev/).
 It supports guild-scoped slash commands, sealed notices, an optional Living
-Chronicle, and a persistent unsolicited-appearance candidate engine restricted
-to inspection-only dry-run decisions. It
+Chronicle, and persistent unsolicited appearances with off, dry-run, and
+conservatively budgeted live modes. It
 preserves two public prefix commands, answers messages that begin with a bot
 mention through the OpenAI Responses API, and writes every visible guild
 message-create event to an append-only text log. Typed configuration fixes the
@@ -16,7 +16,7 @@ bot's feature boundary to one guild, one primary text channel, and one owner.
 | `!help` | List the supported commands. |
 | `!repo` | Link to this source repository. |
 
-The configured guild receives command catalog version 6. Chronicle commands
+The configured guild receives command catalog version 7. Chronicle commands
 are registered only when `SANGUINIUS_CHRONICLE_ENABLED=true`; owner commands
 remain separately gated:
 
@@ -26,7 +26,12 @@ remain separately gated:
 | `/sanguinius inbox` | Ephemerally opens the oldest pending sealed notice. Duplicate Discord interaction IDs replay the same result. |
 | `/sanguinius privacy` | Ephemeral identity/preference, voice-input, no-DM, and raw-voice-retention summary. |
 | `/sanguinius appearance-callbacks <on\|off>` | Ephemerally opts the invoking member into or out of public appearance callbacks. This remains available while appearance evaluation is `off`. |
-| **Canonize in the Chronicle** | Message context action that privately previews a bounded proposal, then requests sealed participant approval before canon. |
+| `/sanguinius appearance-feedback response:<more\|less\|not_relevant> [reference]` | Privately records sentiment for an exact delivered appearance. Without a reference, it selects the latest eligible delivery. |
+| `/sanguinius quiet for duration:2h` | Starts or extends server-wide appearance quiet for two hours. |
+| `/sanguinius quiet tonight` | Starts or extends server-wide quiet until 10:00 AM on the following `America/New_York` calendar day. |
+| `/sanguinius quiet until time:HH:MM` | Starts or extends server-wide quiet to the next valid local occurrence within 24 hours. |
+| `/sanguinius quiet off` | Ends quiet early only for its latest setter or the owner. |
+| **Canonize in the Chronicle** | Message context action that privately previews a bounded proposal. Bot-authored sources must be an exact delivered appearance; canon still requires the ordinary approval path. |
 | `/chronicle remember` | Opens a modal and ephemeral confirm/cancel preview for an explicit memory, with up to five optional lowercase topic tags. Unconfirmed drafts are memory-only and disappear on restart. |
 | `/chronicle recall [query] [participant] [type] [from] [to]` | Ephemerally searches visible canon with literal FTS5 terms and relational filters; explicit-memory matching remains privacy-checked. Results use invoker-bound five-item pages. |
 | `/chronicle timeline [period]` | Publicly starts a shared-canon timeline for `7d`, `30d`, or `all`; later invoker-bound pages are ephemeral. |
@@ -47,6 +52,9 @@ remain separately gated:
 | `/sang-admin appearance simulate fixture:<choice>` | Owner-only, test-mode and `dry_run`-gated creation of an idempotent sanitized candidate. Returns immediately with its reference. |
 | `/sang-admin appearance preview reference:<uuid>` | Owner-only ephemeral inspection of a stored decision, including gates, score components, model status, shortened memory references, and any retained preview. Available in `off`. |
 | `/sang-admin appearance recent` | Owner-only ephemeral inspection of the ten latest redacted decisions, with full references accepted by `preview`, and the appearance-public-outbox invariant. Available in `off`. |
+| `/sang-admin appearance trigger fixture:owner_live_safe` | Owner-only, admin/test-mode-gated, visibly tagged one-person live delivery through the normal transaction and outbox. Configured mode must be `live`. |
+| `/sang-admin appearance disable` | Owner-only persistent global kill switch; cancels appearance rows that have never been submitted. Available without test mode or the full admin-control catalog. |
+| `/sang-admin appearance enable` | Owner-only clearing of the global kill switch; it never overrides configured `off` or `dry_run`. |
 
 Command names are case-insensitive. Messages written by bots are logged but are
 not treated as commands.
@@ -88,7 +96,7 @@ title activation, public delivery, and relationship effects. Transient context
 is purged on approval/rejection or by persisted cleanup even when Chronicle
 command access is disabled.
 
-Appearance dry-run observes only the configured guild and primary channel
+The appearance engine observes only the configured guild and primary channel
 after messages enter the serialized application worker. It retains at most 24
 activity rows, 500 UTF-8 bytes per row, and 12 KiB total, and purges activity
 and copied candidate excerpts at immutable deadlines set by the policy active
@@ -96,7 +104,7 @@ when each row or candidate was created. A later policy cannot extend those
 deadlines. Unrelated bots are ignored;
 only human messages and Sanguinius's own output enter appearance activity.
 Each candidate retains a prose-free summary after excerpt purge. Deterministic scope, expiry,
-participation, quiet, consent, sensitivity, cooldown, and hypothetical-budget
+participation, quiet, consent, sensitivity, cooldown, and reservation-budget
 gates run before optional structured AI classification and are rechecked after
 it, together with current bounded channel activity and last-speaker state.
 Serious-context phrase matches can only suppress. Decisions and redacted
@@ -109,20 +117,44 @@ Each human must explicitly enable appearance callbacks before participating in
 a real or simulated candidate. Chronicle-backed candidates additionally
 revalidate the current shared source record and every source participant's
 Chronicle and appearance consent before model preparation and again before a
-final hypothetical decision. Conversation matches retain an authoritative
+final decision. Conversation matches retain an authoritative
 Chronicle-entry source link, and selected memories retain exact revision
 references; revoked, changed, private, or unavailable sources fail closed on
 restart and final revalidation.
 
-Milestone 9 accepts only `off` and `dry_run`. There is no live mode, force or
-trigger command, delivery dependency, or appearance budget reservation. The
-v7 schema rejects any outbox insert whose kind or aggregate identifies an
-appearance. A dry-run candidate can therefore produce only `reject` or
-`hypothetical`, never a public Discord message. Activity retained under an
-older policy version is never reused under a new policy, direct prefix and
-leading-mention invocations are excluded from appearance activity, and events
-observed while mode is `off` are audited without being replayed after a later
-`dry_run` activation.
+Modes are `off`, `dry_run`, and `live`; changing mode creates a persistent
+epoch, so candidates cannot cross an activation boundary. Dry-run can produce
+only `reject` or `hypothetical` and the schema still proves it cannot create a
+public appearance outbox row. In live mode, one `BEGIN IMMEDIATE` finalization
+transaction repeats every gate, reserves the conservative automatic or
+isolated owner-test budget, records the decision and used-memory references,
+persists immutable opt-out dependencies for original and final-window active
+humans, creates four opaque feedback controls, and inserts exactly one causally
+linked primary-channel public outbox row. Competing candidates serialize, and
+the reservation is consumed once that transaction commits even if delivery
+later fails or becomes ambiguous.
+
+Automatic live policy remains fixed at one appearance per rolling 24 hours, a
+90-minute gap, eight intervening human messages, two opted-in active humans, a
+seven-day theme cooldown, and a 30-day used-memory cooldown. Public text is one
+validated line of at most 500 Unicode code points with no allowed mentions.
+Every live line offers private `More like this`, `Less like this`, `Not
+relevant`, and `Quiet for tonight` controls. Quiet is server-wide: any member
+may start or extend it, but only its latest setter or the owner may clear it
+early. The owner kill switch and opt-out/retraction paths cancel pending or
+claimed-but-never-submitted appearance rows; already submitted rows, including
+retry-pending unknown outcomes, remain fenced for normal reconciliation.
+
+Delivery reuses the transactional outbox's stable nonce, enforced Discord
+deduplication, fenced leases, provider message-ID receipt, safe retry window,
+and stale-unknown quarantine. The candidate/model worker never sends directly.
+An exact delivered appearance can be proposed through **Canonize in the
+Chronicle**, but only its public text is copied and the ordinary explicit
+approval path still governs canon. Feedback changes only deterministic counts
+and recommendations; it never rewrites policy automatically. Activity retained
+under an older policy version is never reused under a new policy, direct prefix
+and leading-mention invocations are excluded, and events observed while mode is
+`off` are audited without later replay.
 
 To talk to the AI persona, mention the bot at the start of a message:
 
@@ -249,11 +281,11 @@ Optional settings are:
 | `SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS` | `10` | Discord REST timeout, from 1 through 300 seconds. |
 | `SANGUINIUS_TIMEZONE` | `America/New_York` | IANA time zone used for the daily 10:00 Chronicle anniversary scan. |
 | `SANGUINIUS_DATABASE_FILE` | `state/sanguinius.sqlite3` | SQLite state file. Production should use an absolute path outside release directories. |
-| `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Register owner slash controls and enable the transitional prefix health command. |
+| `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Register the full owner diagnostic/test catalog and enable transitional prefix health. The owner-only appearance kill-switch commands remain registered when this is `false`. |
 | `SANGUINIUS_TEST_MODE` | `false` | Enable auditable, self-targeted durable-work test controls. |
 | `SANGUINIUS_CHRONICLE_ENABLED` | `false` | Register and enable the Living Chronicle context/slash flows. Durable memory expiry remains safe while UI access is disabled. |
 | `SANGUINIUS_TAROT_ENABLED` | `false` | Configured Tarot mode; no Tarot behavior exists yet. |
-| `SANGUINIUS_APPEARANCES_MODE` | `off` | Appearance engine mode. Only `off` and inspection-only `dry_run` are valid; `live` is rejected. |
+| `SANGUINIUS_APPEARANCES_MODE` | `off` | Appearance engine mode: `off`, inspection-only `dry_run`, or conservatively budgeted `live`. |
 | `SANGUINIUS_VOX_ENABLED` | `false` | Configured Vox mode; no voice connection exists yet. |
 | `SANGUINIUS_VOICE_INPUT_ENABLED` | `false` | Reserved privacy gate; voice input remains unavailable. |
 
@@ -356,6 +388,17 @@ budget reservation or public-delivery path. Its database trigger rejects
 appearance-related inserts into `outbox_message`; rollback restores a verified
 schema-v6 backup and the accepted Milestone 8 artifact rather than running
 reverse SQL.
+Migration `0008_appearance_live` advances the mode fence to `off`, `dry_run`,
+or `live`; rebuilds the decision family without losing v7 audit rows; and adds
+concurrency-safe budget reservations, server-wide quiet/kill state, opaque
+feedback controls and append-only feedback, restart-safe alert throttles, and
+verified Chronicle appearance sources. Its fail-closed trigger permits only a
+fully linked `discord.public.v1` row for a current-epoch live decision,
+reservation, configured guild, and primary channel; direct SQL proofs continue
+to reject appearance outbox inserts in `off` and `dry_run`, including unrelated
+rows inserted after a deferred reservation. It is forward-only: binary rollback
+restores a verified schema-v7 backup and the accepted Milestone 9 artifact
+rather than applying reverse SQL.
 The readable SQL for each ordered migration is
 embedded independently with its SHA-256
 checksum. Applied history must be ordered, contiguous, and byte-for-byte
@@ -462,8 +505,9 @@ prose or retry. The one-minute event scan and policy-bounded retention purge
 appearance mode is `off`.
 Unknown or malformed versioned handler types are retained and dead-lettered
 with safe error categories. The current runtime additionally registers
-Chronicle session/anniversary handlers and the appearance scan/purge handlers;
-no appearance handler can enqueue public delivery.
+Chronicle session/anniversary and appearance scan/purge handlers. Live
+appearance finalization is the only appearance path that may enqueue public
+delivery, and it commits before waking the existing outbox workers.
 
 Public outbox delivery uses one stable 25-character nonce with Discord's
 `enforce_nonce` flag. Immediately before network I/O, the current fenced claim

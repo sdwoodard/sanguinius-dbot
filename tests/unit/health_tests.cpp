@@ -123,6 +123,12 @@ TEST_CASE("health snapshot renders build queues and configured modes",
   REQUIRE_FALSE(contains(bounded, "\ninjected="));
   REQUIRE(contains(bounded, "message_queue=1/64 queued, 1 active, accepting"));
   REQUIRE(contains(bounded, "appearances=dry_run"));
+
+  const auto combined = sanguinius::bounded_health_message(
+      std::string(sanguinius::maximum_health_message_size, 'h') +
+      "\nAppearances: configured=live, persisted=live");
+  REQUIRE(combined.size() <= sanguinius::maximum_health_message_size);
+  REQUIRE(combined.ends_with("...\n"));
 }
 
 TEST_CASE("health types cannot expose secret configuration", "[health]") {

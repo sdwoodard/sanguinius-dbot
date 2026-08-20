@@ -96,11 +96,12 @@ load_policy_snapshot(SqliteConnection &connection,
 
 [[nodiscard]] AppearanceCandidate read_candidate(SqliteConnection &connection,
                                                  const std::string_view id) {
-  auto query = connection.prepare("SELECT "
-                                  "candidate_id,policy_version,candidate_type,"
-                                  "context_json,theme_key,owner_simulation,"
-                                  "created_at_ms,expires_at_ms FROM "
-                                  "appearance_candidate WHERE candidate_id=?");
+  auto query = connection.prepare(
+      "SELECT "
+      "candidate_id,policy_version,candidate_type,"
+      "context_json,theme_key,owner_simulation,"
+      "created_at_ms,expires_at_ms,mode_activated_at_ms FROM "
+      "appearance_candidate WHERE candidate_id=?");
   query.bind(1, id);
   if (!query.step())
     throw std::runtime_error{"Appearance candidate is missing."};
@@ -114,6 +115,7 @@ load_policy_snapshot(SqliteConnection &connection,
       .type = *type,
       .created_at_ms = query.column_int64(6),
       .expires_at_ms = query.column_int64(7),
+      .mode_activated_at_ms = query.column_int64(8),
       .actors = {},
       .excerpts = json.at("excerpts").get<std::vector<std::string>>(),
       .source_context = {},
@@ -165,28 +167,27 @@ load_policy_snapshot(SqliteConnection &connection,
                                const std::size_t revision) {
     auto memory = connection.prepare(
         "SELECT m.text,(m.revision=? AND m.status='confirmed' AND "
-        "m.visibility='shared' AND m.sensitivity='ordinary' AND NOT EXISTS("
+        "m.visibility='shared' AND m.sensitivity='ordinary'),NOT EXISTS("
         "SELECT 1 FROM memory_subject s JOIN user_preference p ON "
         "p.user_id=s.subject_id WHERE s.memory_id=m.memory_id AND "
         "s.subject_type='user' AND (p.chronicle_opt_in=0 OR "
-        "p.memory_callback_opt_in=0 OR p.appearance_callback_opt_in=0))) "
+        "p.memory_callback_opt_in=0 OR p.appearance_callback_opt_in=0)) "
         "FROM memory m WHERE m.memory_id=?");
     memory.bind(1, static_cast<std::int64_t>(revision));
     memory.bind(2, memory_id);
     if (!memory.step()) {
-      result.consented = false;
       result.visible = false;
-      result.memory_available = false;
       return;
     }
-    const bool available = memory.column_int64(1) != 0;
+    const bool visible = memory.column_int64(1) != 0;
+    const bool consented = memory.column_int64(2) != 0;
     result.memory_context.push_back(
-        {memory_id, revision, available ? memory.column_text(0) : ""});
-    if (!available) {
-      result.consented = false;
+        {memory_id, revision,
+         visible && consented ? memory.column_text(0) : ""});
+    if (!visible)
       result.visible = false;
-      result.memory_available = false;
-    }
+    if (!consented)
+      result.consented = false;
   };
   if (json.contains("memory_references")) {
     for (const auto &reference : json.at("memory_references"))
@@ -201,9 +202,7 @@ load_policy_snapshot(SqliteConnection &connection,
         load_memory(memory_id,
                     static_cast<std::size_t>(revision.column_int64(0)));
       else {
-        result.consented = false;
         result.visible = false;
-        result.memory_available = false;
       }
     }
   }
@@ -211,17 +210,19 @@ load_policy_snapshot(SqliteConnection &connection,
       "SELECT e.title,e.body,COALESCE((SELECT group_concat(t.tag,' ') FROM "
       "chronicle_tag t WHERE t.entry_id=e.entry_id),''),(e.status='canon' AND "
       "e.visibility='shared' "
-      "AND e.source_guild_id=c.guild_id AND e.source_channel_id=c.channel_id "
-      "AND NOT EXISTS(SELECT 1 FROM chronicle_participant cp "
+      "AND e.source_guild_id=c.guild_id AND e.source_channel_id=c.channel_id),"
+      "NOT EXISTS(SELECT 1 FROM chronicle_participant cp "
       "JOIN user_preference p ON p.user_id=cp.user_id "
       "WHERE cp.entry_id=e.entry_id AND (p.chronicle_opt_in=0 OR "
-      "p.appearance_callback_opt_in=0))) FROM appearance_candidate_source s "
+      "p.appearance_callback_opt_in=0)) FROM appearance_candidate_source s "
       "JOIN appearance_candidate c ON c.candidate_id=s.candidate_id "
       "JOIN chronicle_entry e ON e.entry_id=s.source_id "
       "WHERE s.candidate_id=? AND s.source_kind='chronicle_entry' LIMIT 1");
   chronicle_source.bind(1, id);
   if (chronicle_source.step()) {
-    if (chronicle_source.column_int64(3) != 0) {
+    const bool visible = chronicle_source.column_int64(3) != 0;
+    const bool consented = chronicle_source.column_int64(4) != 0;
+    if (visible && consented) {
       const auto source_policy =
           load_policy_snapshot(connection, result.policy_version);
       result.source_context.push_back(
@@ -229,12 +230,21 @@ load_policy_snapshot(SqliteConnection &connection,
                            chronicle_source.column_text(1) + " " +
                            chronicle_source.column_text(2),
                        source_policy.activity_maximum_utf8_bytes_per_row));
-    } else {
-      result.consented = false;
-      result.visible = false;
     }
+    if (!visible)
+      result.visible = false;
+    if (!consented)
+      result.consented = false;
   }
   return result;
+}
+
+void merge_runtime_gates(AppearanceCandidate &persisted,
+                         const AppearanceCandidate &runtime) {
+  persisted.configured_quiet =
+      persisted.configured_quiet || runtime.configured_quiet;
+  persisted.operational = persisted.operational && runtime.operational;
+  persisted.degraded = persisted.degraded || runtime.degraded;
 }
 
 [[nodiscard]] std::vector<std::string>
@@ -357,10 +367,16 @@ void apply_theme_history(SqliteConnection &connection,
   if (!candidate.theme_key)
     return;
   auto query = connection.prepare(
-      "SELECT max(d.finalized_at_ms) FROM appearance_decision d "
+      "SELECT max(history_at_ms) FROM ("
+      "SELECT d.finalized_at_ms AS history_at_ms FROM appearance_decision d "
       "JOIN appearance_candidate c ON c.candidate_id=d.candidate_id "
-      "WHERE d.action='hypothetical' AND c.theme_key=?");
+      "WHERE d.action='hypothetical' AND c.theme_key=? UNION ALL "
+      "SELECT r.reserved_at_ms AS history_at_ms FROM "
+      "appearance_budget_reservation r JOIN appearance_candidate c ON "
+      "c.candidate_id=r.candidate_id WHERE r.is_test=? AND c.theme_key=?)");
   query.bind(1, *candidate.theme_key);
+  query.bind(2, static_cast<std::int64_t>(candidate.owner_simulation));
+  query.bind(3, *candidate.theme_key);
   if (!query.step())
     throw std::runtime_error{"Unable to inspect appearance theme history."};
   if (!query.column_is_null(0)) {
@@ -619,6 +635,25 @@ void refresh_channel_activity(SqliteConnection &connection,
                       candidate);
 }
 
+[[nodiscard]] std::set<DiscordSnowflake>
+current_active_actors(SqliteConnection &connection,
+                      const AppearancePolicy &policy, const std::int64_t now_ms,
+                      const std::string_view candidate_id) {
+  auto active = connection.prepare(
+      "SELECT DISTINCT a.author_user_id FROM appearance_message_activity a "
+      "JOIN appearance_candidate c ON c.candidate_id=? WHERE "
+      "a.author_is_bot=0 AND a.guild_id=c.guild_id AND "
+      "a.channel_id=c.channel_id AND a.policy_version=c.policy_version AND "
+      "a.observed_at_ms>=? AND a.observed_at_ms<=? ORDER BY a.author_user_id");
+  active.bind(1, candidate_id);
+  active.bind(2, std::max<std::int64_t>(0, now_ms - policy.activity_window_ms));
+  active.bind(3, now_ms);
+  std::set<DiscordSnowflake> result;
+  while (active.step())
+    result.insert(DiscordSnowflake::parse(active.column_text(0)));
+  return result;
+}
+
 void insert_candidate(SqliteConnection &connection,
                       const AppearancePolicy &policy,
                       const AppearanceCandidate &candidate,
@@ -630,8 +665,11 @@ void insert_candidate(SqliteConnection &connection,
       "INSERT INTO "
       "appearance_candidate(candidate_id,candidate_type,guild_id,channel_id,"
       "policy_version,deduplication_key,context_json,theme_key,owner_"
-      "simulation,created_at_ms,expires_at_ms,context_expires_at_ms)"
-      " VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(deduplication_key) DO "
+      "simulation,created_at_ms,expires_at_ms,context_expires_at_ms,"
+      "mode_activated_at_ms)"
+      " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,(SELECT activated_at_ms FROM "
+      "appearance_mode_state WHERE singleton=1)) ON "
+      "CONFLICT(deduplication_key) DO "
       "NOTHING");
   insert.bind(1, candidate.candidate_id);
   insert.bind(2, appearance_candidate_type_name(candidate.type));
@@ -757,19 +795,51 @@ void apply_budget_gates(SqliteConnection &connection,
                         const std::int64_t now_ms) {
   const auto cutoff =
       std::max<std::int64_t>(0, now_ms - policy.budget_window_ms);
-  auto recent =
-      connection.prepare("SELECT count(*) FROM appearance_decision "
-                         "WHERE action='hypothetical' AND finalized_at_ms>?");
-  recent.bind(1, cutoff);
+  auto mode = connection.prepare(
+      "SELECT mode FROM appearance_mode_state WHERE singleton=1");
+  const auto persisted_mode = mode.step() ? mode.column_text(0) : "off";
+  const bool live = persisted_mode == "live";
+  auto recent = connection.prepare(
+      live ? "SELECT count(*) FROM appearance_budget_reservation WHERE "
+             "is_test=? AND reserved_at_ms>?"
+           : "SELECT count(*) FROM (SELECT finalized_at_ms AS used_at_ms FROM "
+             "appearance_decision WHERE action='hypothetical' AND "
+             "finalized_at_ms>? UNION ALL SELECT reserved_at_ms FROM "
+             "appearance_budget_reservation WHERE is_test=? AND "
+             "reserved_at_ms>?)");
+  if (live) {
+    recent.bind(1, static_cast<std::int64_t>(candidate.owner_simulation));
+    recent.bind(2, cutoff);
+  } else {
+    recent.bind(1, cutoff);
+    recent.bind(2, static_cast<std::int64_t>(candidate.owner_simulation));
+    recent.bind(3, cutoff);
+  }
   if (!recent.step())
     throw std::runtime_error{"Unable to inspect appearance budget."};
   candidate.budget_available =
       static_cast<std::size_t>(recent.column_int64(0)) < policy.budget_maximum;
   auto previous = connection.prepare(
-      "SELECT finalized_at_ms,human_message_count FROM appearance_decision "
-      "WHERE action='hypothetical' AND finalized_at_ms>? "
-      "ORDER BY finalized_at_ms DESC,decision_id DESC LIMIT 1");
-  previous.bind(1, cutoff);
+      live ? "SELECT reserved_at_ms,human_message_count FROM "
+             "appearance_budget_reservation WHERE is_test=? AND "
+             "reserved_at_ms>? ORDER BY reserved_at_ms DESC,reservation_id "
+             "DESC LIMIT 1"
+           : "SELECT used_at_ms,human_message_count FROM (SELECT "
+             "finalized_at_ms AS used_at_ms,human_message_count,decision_id AS "
+             "history_id FROM appearance_decision WHERE action='hypothetical' "
+             "AND finalized_at_ms>? UNION ALL SELECT reserved_at_ms,"
+             "human_message_count,reservation_id FROM "
+             "appearance_budget_reservation WHERE is_test=? AND "
+             "reserved_at_ms>?) ORDER BY used_at_ms DESC,history_id DESC "
+             "LIMIT 1");
+  if (live) {
+    previous.bind(1, static_cast<std::int64_t>(candidate.owner_simulation));
+    previous.bind(2, cutoff);
+  } else {
+    previous.bind(1, cutoff);
+    previous.bind(2, static_cast<std::int64_t>(candidate.owner_simulation));
+    previous.bind(3, cutoff);
+  }
   if (previous.step()) {
     const auto last = previous.column_int64(0);
     candidate.gap_available = now_ms - last >= policy.minimum_gap_ms;
@@ -781,25 +851,64 @@ void apply_budget_gates(SqliteConnection &connection,
   }
   if (candidate.theme_key) {
     auto theme = connection.prepare(
-        "SELECT 1 FROM appearance_decision d JOIN appearance_candidate c ON "
-        "c.candidate_id=d.candidate_id "
-        "WHERE d.action='hypothetical' AND c.theme_key=? AND "
-        "d.finalized_at_ms>? LIMIT 1");
-    theme.bind(1, *candidate.theme_key);
-    theme.bind(
-        2, std::max<std::int64_t>(0, now_ms - policy.same_theme_cooldown_ms));
+        live ? "SELECT 1 FROM appearance_budget_reservation r JOIN "
+               "appearance_candidate c ON c.candidate_id=r.candidate_id "
+               "WHERE r.is_test=? AND c.theme_key=? AND r.reserved_at_ms>? "
+               "LIMIT 1"
+             : "SELECT 1 FROM (SELECT d.finalized_at_ms AS used_at_ms FROM "
+               "appearance_decision d JOIN appearance_candidate c ON "
+               "c.candidate_id=d.candidate_id WHERE d.action='hypothetical' "
+               "AND c.theme_key=? AND d.finalized_at_ms>? UNION ALL SELECT "
+               "r.reserved_at_ms FROM appearance_budget_reservation r JOIN "
+               "appearance_candidate c ON c.candidate_id=r.candidate_id WHERE "
+               "r.is_test=? AND c.theme_key=? AND r.reserved_at_ms>?) LIMIT 1");
+    if (live) {
+      theme.bind(1, static_cast<std::int64_t>(candidate.owner_simulation));
+      theme.bind(2, *candidate.theme_key);
+      theme.bind(
+          3, std::max<std::int64_t>(0, now_ms - policy.same_theme_cooldown_ms));
+    } else {
+      const auto theme_cutoff =
+          std::max<std::int64_t>(0, now_ms - policy.same_theme_cooldown_ms);
+      theme.bind(1, *candidate.theme_key);
+      theme.bind(2, theme_cutoff);
+      theme.bind(3, static_cast<std::int64_t>(candidate.owner_simulation));
+      theme.bind(4, *candidate.theme_key);
+      theme.bind(5, theme_cutoff);
+    }
     candidate.theme_available = !theme.step();
   }
   for (const auto &memory : candidate.memory_context) {
     auto used = connection.prepare(
-        "SELECT 1 FROM appearance_decision_memory dm JOIN appearance_decision "
-        "d ON d.decision_id=dm.decision_id "
-        "WHERE dm.memory_id=? AND dm.used_by_model=1 "
-        "AND d.action='hypothetical' AND "
-        "d.finalized_at_ms>? LIMIT 1");
-    used.bind(1, memory.memory_id);
-    used.bind(
-        2, std::max<std::int64_t>(0, now_ms - policy.same_memory_cooldown_ms));
+        live
+            ? "SELECT 1 FROM appearance_decision_memory dm JOIN "
+              "appearance_budget_reservation r ON r.decision_id=dm.decision_id "
+              "WHERE r.is_test=? AND dm.memory_id=? AND dm.used_by_model=1 "
+              "AND r.reserved_at_ms>? LIMIT 1"
+            : "SELECT 1 FROM (SELECT d.finalized_at_ms AS used_at_ms FROM "
+              "appearance_decision_memory dm JOIN appearance_decision d ON "
+              "d.decision_id=dm.decision_id WHERE dm.memory_id=? AND "
+              "dm.used_by_model=1 AND d.action='hypothetical' AND "
+              "d.finalized_at_ms>? UNION ALL SELECT r.reserved_at_ms FROM "
+              "appearance_decision_memory dm JOIN "
+              "appearance_budget_reservation r ON "
+              "r.decision_id=dm.decision_id WHERE r.is_test=? AND "
+              "dm.memory_id=? AND dm.used_by_model=1 AND "
+              "r.reserved_at_ms>?) LIMIT 1");
+    if (live) {
+      used.bind(1, static_cast<std::int64_t>(candidate.owner_simulation));
+      used.bind(2, memory.memory_id);
+      used.bind(3, std::max<std::int64_t>(
+                       0, now_ms - policy.same_memory_cooldown_ms));
+    } else {
+      const auto memory_cutoff =
+          std::max<std::int64_t>(0, now_ms - policy.same_memory_cooldown_ms);
+      used.bind(1, memory.memory_id);
+      used.bind(2, memory_cutoff);
+      used.bind(3, static_cast<std::int64_t>(candidate.owner_simulation));
+      used.bind(4, memory.memory_id);
+      used.bind(5, memory_cutoff);
+    }
     if (used.step()) {
       candidate.memory_available = false;
       break;
@@ -811,6 +920,8 @@ void refresh_persistent_gates(SqliteConnection &connection,
                               const AppearancePolicy &policy,
                               AppearanceCandidate &candidate,
                               const std::int64_t now_ms) {
+  std::set<DiscordSnowflake> consent_actors{candidate.actors.begin(),
+                                            candidate.actors.end()};
   const bool initial_budget = candidate.budget_available;
   const bool initial_gap = candidate.gap_available;
   const bool initial_messages = candidate.messages_after_previous;
@@ -822,6 +933,12 @@ void refresh_persistent_gates(SqliteConnection &connection,
   candidate.theme_available = true;
   candidate.memory_available = true;
   refresh_channel_activity(connection, policy, now_ms, candidate);
+  if (!candidate.owner_simulation) {
+    const auto active = current_active_actors(connection, policy, now_ms,
+                                              candidate.candidate_id);
+    candidate.actors.assign(active.begin(), active.end());
+    consent_actors.insert(active.begin(), active.end());
+  }
   apply_theme_history(connection, candidate, now_ms);
   apply_budget_gates(connection, policy, candidate, now_ms);
   candidate.budget_available = initial_budget && candidate.budget_available;
@@ -831,10 +948,37 @@ void refresh_persistent_gates(SqliteConnection &connection,
   candidate.theme_available = initial_theme && candidate.theme_available;
   candidate.memory_available = initial_memory && candidate.memory_available;
 
+  auto controls = connection.prepare(
+      "SELECT "
+      "c.mode_activated_at_ms,m.activated_at_ms,ctl.globally_disabled,ctl."
+      "quiet_until_ms,"
+      "c.guild_id,c.channel_id,g.guild_id,g.primary_channel_id "
+      "FROM appearance_candidate c JOIN appearance_mode_state m ON "
+      "m.singleton=1 "
+      "JOIN appearance_control_state ctl ON ctl.singleton=1 JOIN guild_config "
+      "g "
+      "ON g.singleton=1 WHERE c.candidate_id=?");
+  controls.bind(1, candidate.candidate_id);
+  if (!controls.step()) {
+    candidate.correct_scope = false;
+    candidate.mode_epoch_valid = false;
+  } else {
+    candidate.mode_activated_at_ms = controls.column_int64(0);
+    candidate.mode_epoch_valid =
+        controls.column_int64(0) == controls.column_int64(1);
+    candidate.globally_disabled = controls.column_int64(2) != 0;
+    candidate.global_quiet =
+        !controls.column_is_null(3) && controls.column_int64(3) > now_ms;
+    candidate.correct_scope =
+        candidate.correct_scope &&
+        controls.column_text(4) == controls.column_text(6) &&
+        controls.column_text(5) == controls.column_text(7);
+  }
+
   bool current_consent = true;
   bool current_visibility = true;
   bool current_quiet = false;
-  for (const auto actor : candidate.actors) {
+  for (const auto actor : consent_actors) {
     auto preference = connection.prepare(
         "SELECT appearance_callback_opt_in,quiet_until_ms FROM user_preference "
         "WHERE user_id=?");
@@ -851,23 +995,31 @@ void refresh_persistent_gates(SqliteConnection &connection,
       candidate.deterministic_serious_category =
           detect_serious_context(policy, memory.text);
     auto available = connection.prepare(
-        "SELECT 1 FROM memory m WHERE m.memory_id=? AND m.revision=? "
-        "AND m.status='confirmed' AND m.visibility='shared' "
-        "AND m.sensitivity='ordinary' "
-        "AND (m.expires_at_ms IS NULL OR m.expires_at_ms>?) AND NOT EXISTS("
+        "SELECT (m.revision=? AND m.status='confirmed' AND "
+        "m.visibility='shared' AND m.sensitivity='ordinary' AND "
+        "(m.expires_at_ms IS NULL OR m.expires_at_ms>?)),NOT EXISTS("
         "SELECT 1 FROM memory_subject s JOIN user_preference p "
         "ON p.user_id=s.subject_id WHERE s.memory_id=m.memory_id "
         "AND s.subject_type='user' AND (p.chronicle_opt_in=0 OR "
-        "p.memory_callback_opt_in=0 OR p.appearance_callback_opt_in=0 OR "
-        "(p.quiet_until_ms IS NOT NULL AND p.quiet_until_ms>?)))");
-    available.bind(1, memory.memory_id);
-    available.bind(2, static_cast<std::int64_t>(memory.revision));
+        "p.memory_callback_opt_in=0 OR p.appearance_callback_opt_in=0)),"
+        "EXISTS(SELECT 1 FROM memory_subject s JOIN user_preference p "
+        "ON p.user_id=s.subject_id WHERE s.memory_id=m.memory_id AND "
+        "s.subject_type='user' AND p.quiet_until_ms IS NOT NULL AND "
+        "p.quiet_until_ms>?) FROM memory m WHERE m.memory_id=?");
+    available.bind(1, static_cast<std::int64_t>(memory.revision));
+    available.bind(2, now_ms);
     available.bind(3, now_ms);
-    available.bind(4, now_ms);
+    available.bind(4, memory.memory_id);
     if (!available.step()) {
-      current_consent = false;
       current_visibility = false;
+      continue;
     }
+    if (available.column_int64(0) == 0)
+      current_visibility = false;
+    if (available.column_int64(1) == 0)
+      current_consent = false;
+    if (available.column_int64(2) != 0)
+      current_quiet = true;
   }
   candidate.consented = candidate.consented && current_consent;
   candidate.visible = candidate.visible && current_visibility;
@@ -901,7 +1053,7 @@ void insert_decision_memories(
 }
 
 [[nodiscard]] std::string
-final_reason(const AppearanceEvaluation &evaluation,
+final_reason(const AppearanceMode mode, const AppearanceEvaluation &evaluation,
              const std::string_view model_status,
              const std::optional<AppearanceModelResult> &result) {
   if (!evaluation.eligible_for_model)
@@ -912,7 +1064,7 @@ final_reason(const AppearanceEvaluation &evaluation,
     return "model_serious_context";
   if (!result->should_speak)
     return "model_declined";
-  return "hypothetical";
+  return mode == AppearanceMode::live ? "live_queued" : "hypothetical";
 }
 
 [[nodiscard]] std::vector<std::string>
@@ -939,7 +1091,9 @@ void append_decision_event(SqliteConnection &connection,
       connection,
       EventJournalEntry{
           .event_id = event_id,
-          .event_type = "appearance.decision_recorded.v1",
+          .event_type = action == "live_queued"
+                            ? "appearance.live_queued.v1"
+                            : "appearance.decision_recorded.v1",
           .aggregate_type = "appearance_decision",
           .aggregate_id = std::string{decision_id},
           .actor_user_id = candidate.actors.empty()
@@ -955,6 +1109,207 @@ void append_decision_event(SqliteConnection &connection,
           .idempotency_key = "appearance.decision:" + std::string{decision_id},
           .payload_json =
               Json{{"action", action}, {"reason", reason}}.dump()}));
+}
+
+void insert_live_effects(
+    SqliteConnection &connection, const AppearancePolicy &policy,
+    const AppearanceCandidate &candidate, const std::string_view decision_id,
+    const std::string &event_id, const AppearanceModelResult &result,
+    const AppearanceDeliveryIds &ids, const std::int64_t now_ms) {
+  if (!valid_uuid_v4(ids.reservation_id) || !valid_uuid_v4(ids.outbox_id) ||
+      std::ranges::any_of(ids.feedback_control_ids,
+                          [](const auto &id) { return !valid_uuid_v4(id); }))
+    throw std::invalid_argument{"Invalid appearance delivery identifiers."};
+
+  auto reservation = connection.prepare(
+      "INSERT INTO appearance_budget_reservation(reservation_id,decision_id,"
+      "candidate_id,outbox_id,idempotency_key,reserved_at_ms,human_message_"
+      "count,is_test) VALUES(?,?,?,?,?,?,?,?)");
+  reservation.bind(1, ids.reservation_id);
+  reservation.bind(2, decision_id);
+  reservation.bind(3, candidate.candidate_id);
+  reservation.bind(4, ids.outbox_id);
+  reservation.bind(5, "appearance.reservation:" + std::string{decision_id});
+  reservation.bind(6, now_ms);
+  reservation.bind(7, candidate.human_message_count);
+  reservation.bind(8, static_cast<std::int64_t>(candidate.owner_simulation));
+  reservation.execute();
+
+  auto original_participants = connection.prepare(
+      "INSERT INTO appearance_delivery_participant(decision_id,user_id,"
+      "created_at_ms) SELECT ?,user_id,? FROM appearance_candidate_actor "
+      "WHERE candidate_id=?");
+  original_participants.bind(1, decision_id);
+  original_participants.bind(2, now_ms);
+  original_participants.bind(3, candidate.candidate_id);
+  original_participants.execute();
+  auto current_participant = connection.prepare(
+      "INSERT OR IGNORE INTO appearance_delivery_participant(decision_id,"
+      "user_id,created_at_ms) VALUES(?,?,?)");
+  for (const auto actor : candidate.actors) {
+    current_participant.reset();
+    current_participant.bind(1, decision_id);
+    current_participant.bind(2, actor.str());
+    current_participant.bind(3, now_ms);
+    current_participant.execute();
+  }
+
+  constexpr std::array<std::string_view, 4> actions{
+      "more", "less", "not_relevant", "quiet_tonight"};
+  constexpr std::array<std::string_view, 4> labels{
+      "More like this", "Less like this", "Not relevant", "Quiet for tonight"};
+  InteractionMessage message{.content = result.text,
+                             .embed = std::nullopt,
+                             .buttons = {},
+                             .allowed_user_mentions = {}};
+  for (std::size_t index = 0; index < actions.size(); ++index) {
+    auto control = connection.prepare(
+        "INSERT INTO appearance_feedback_control(control_id,decision_id,"
+        "action,created_at_ms,expires_at_ms) VALUES(?,?,?,?,?)");
+    control.bind(1, ids.feedback_control_ids[index]);
+    control.bind(2, decision_id);
+    control.bind(3, actions[index]);
+    control.bind(4, now_ms);
+    control.bind(5, now_ms + policy.generated_preview_retention_ms);
+    control.execute();
+    message.buttons.push_back(ButtonPayload{
+        .custom_id = std::string{appearance_feedback_component_prefix} +
+                     ids.feedback_control_ids[index],
+        .label = std::string{labels[index]},
+        .disabled = false,
+        .style = ButtonStyle::secondary});
+  }
+
+  append_decision_event(connection, event_id, candidate, decision_id,
+                        "live_queued", "live_queued", now_ms);
+  const auto [guild, channel] = scope(connection);
+  const auto outbox = OutboxEnqueue{
+      .outbox_id = ids.outbox_id,
+      .kind = std::string{public_discord_outbox_kind},
+      .aggregate_type = "appearance_decision",
+      .aggregate_id = std::string{decision_id},
+      .target_guild_id = guild,
+      .target_channel_id = channel,
+      .target_user_id = std::nullopt,
+      .available_at_ms = now_ms,
+      .max_attempts = 5,
+      .idempotency_key = "appearance.public:" + std::string{decision_id},
+      .provider_nonce = discord_nonce_from_uuid(ids.outbox_id),
+      .created_at_ms = now_ms};
+  const auto payload = PublicOutboxPayload{
+      .request = PublicMessageRequest{.guild_id = guild,
+                                      .channel_id = channel,
+                                      .message = std::move(message)},
+      .fail_before_first_send = false};
+  if (!detail::insert_outbox_uncommitted(
+          connection, outbox,
+          detail::encode_public_payload(payload, "appearance-live", event_id)))
+    throw std::runtime_error{"Appearance outbox idempotency conflict."};
+}
+
+void cancel_unsent_appearance_outbox(
+    SqliteConnection &connection, const std::int64_t now_ms,
+    const std::optional<DiscordSnowflake> affected_user = std::nullopt,
+    const std::string_view reason = "appearance_control_changed") {
+  std::string sql =
+      "UPDATE outbox_message SET state='cancelled',lease_owner=NULL,"
+      "lease_token=NULL,lease_until_ms=NULL,"
+      "terminal_at_ms=max(?,created_at_ms,updated_at_ms),"
+      "updated_at_ms=max(?,created_at_ms,updated_at_ms),"
+      "last_error_code=? WHERE outbox_id IN (SELECT r.outbox_id FROM "
+      "appearance_budget_reservation r ";
+  if (affected_user) {
+    sql += "WHERE EXISTS(SELECT 1 FROM appearance_delivery_participant dp "
+           "WHERE dp.decision_id=r.decision_id AND dp.user_id=?) OR "
+           "EXISTS(SELECT 1 FROM appearance_candidate_actor a WHERE "
+           "a.candidate_id=r.candidate_id AND a.user_id=?) OR EXISTS(SELECT 1 "
+           "FROM appearance_decision_memory dm JOIN memory_subject s ON "
+           "s.memory_id=dm.memory_id WHERE dm.decision_id=r.decision_id AND "
+           "s.subject_type='user' AND s.subject_id=?) OR EXISTS(SELECT 1 FROM "
+           "appearance_candidate_source_user su WHERE "
+           "su.candidate_id=r.candidate_id AND su.user_id=?)";
+  }
+  sql += ") AND first_attempt_at_ms IS NULL AND "
+         "((state='pending') OR (state='claimed' AND "
+         "submission_started_at_ms IS NULL))";
+  auto cancel = connection.prepare(sql);
+  cancel.bind(1, now_ms);
+  cancel.bind(2, now_ms);
+  cancel.bind(3, reason);
+  if (affected_user) {
+    cancel.bind(4, affected_user->str());
+    cancel.bind(5, affected_user->str());
+    cancel.bind(6, affected_user->str());
+    cancel.bind(7, affected_user->str());
+  }
+  cancel.execute();
+}
+
+void append_control_event(
+    SqliteConnection &connection, const std::string &event_id,
+    const DiscordSnowflake actor, const std::string_view event_type,
+    const std::string_view aggregate_type, const std::string_view aggregate_id,
+    const std::string &idempotency_key, const std::string &correlation_id,
+    const Json &payload, const std::int64_t now_ms) {
+  const auto [guild, channel] = scope(connection);
+  static_cast<void>(detail::insert_event_uncommitted(
+      connection,
+      EventJournalEntry{.event_id = event_id,
+                        .event_type = std::string{event_type},
+                        .aggregate_type = std::string{aggregate_type},
+                        .aggregate_id = std::string{aggregate_id},
+                        .actor_user_id = actor,
+                        .guild_id = guild,
+                        .channel_id = channel,
+                        .source_message_id = std::nullopt,
+                        .occurred_at_ms = now_ms,
+                        .recorded_at_ms = now_ms,
+                        .correlation_id = correlation_id,
+                        .causation_id = std::nullopt,
+                        .idempotency_key = idempotency_key,
+                        .payload_json = payload.dump()}));
+}
+
+[[nodiscard]] std::string_view
+quiet_result_name(const AppearanceMutationResult result) {
+  switch (result) {
+  case AppearanceMutationResult::applied:
+    return "applied";
+  case AppearanceMutationResult::unchanged:
+    return "unchanged";
+  case AppearanceMutationResult::unauthorized:
+    return "unauthorized";
+  default:
+    throw std::invalid_argument{"Invalid durable quiet result."};
+  }
+}
+
+[[nodiscard]] std::optional<AppearanceMutationResult>
+parse_quiet_result(const std::string_view value) noexcept {
+  if (value == "applied")
+    return AppearanceMutationResult::applied;
+  if (value == "unchanged")
+    return AppearanceMutationResult::unchanged;
+  if (value == "unauthorized")
+    return AppearanceMutationResult::unauthorized;
+  return std::nullopt;
+}
+
+[[nodiscard]] bool valid_quiet_request_value(const std::string_view kind,
+                                             const std::string_view value) {
+  if (kind == "off" || kind == "tonight" || kind == "feedback")
+    return value.empty();
+  if (kind == "duration")
+    return value == "2h";
+  if (kind != "until" || value.size() != 5 || value[2] != ':' ||
+      !std::isdigit(static_cast<unsigned char>(value[0])) ||
+      !std::isdigit(static_cast<unsigned char>(value[1])) ||
+      !std::isdigit(static_cast<unsigned char>(value[3])) ||
+      !std::isdigit(static_cast<unsigned char>(value[4])))
+    return false;
+  const int hour = (value[0] - '0') * 10 + (value[1] - '0');
+  const int minute = (value[3] - '0') * 10 + (value[4] - '0');
+  return hour <= 23 && minute <= 59;
 }
 
 } // namespace
@@ -1036,7 +1391,7 @@ void SqliteAppearanceRepository::activate_mode(const AppearanceMode mode,
   if (now_ms < 0)
     throw std::invalid_argument{"Invalid appearance mode activation time."};
   const auto mode_name = appearance_mode_name(mode);
-  if (mode_name != "off" && mode_name != "dry_run")
+  if (mode_name != "off" && mode_name != "dry_run" && mode_name != "live")
     throw std::invalid_argument{"Invalid appearance mode."};
 
   const std::scoped_lock lock{context_->mutex()};
@@ -1053,12 +1408,35 @@ void SqliteAppearanceRepository::activate_mode(const AppearanceMode mode,
     discard.bind(1, now_ms);
     discard.execute();
   }
+  if (previous_mode != mode_name) {
+    auto cancel = connection.prepare(
+        "UPDATE outbox_message SET state='cancelled',lease_owner=NULL,"
+        "lease_token=NULL,lease_until_ms=NULL,"
+        "terminal_at_ms=max(?,created_at_ms,updated_at_ms),"
+        "updated_at_ms=max(?,created_at_ms,updated_at_ms),"
+        "last_error_code='appearance_mode_changed' WHERE outbox_id IN "
+        "(SELECT outbox_id FROM appearance_budget_reservation) AND "
+        "first_attempt_at_ms IS NULL AND ((state='pending') OR "
+        "(state='claimed' AND submission_started_at_ms IS NULL))");
+    cancel.bind(1, now_ms);
+    cancel.bind(2, now_ms);
+    cancel.execute();
+  }
   auto update = connection.prepare(
-      "INSERT INTO appearance_mode_state(singleton,mode,updated_at_ms) "
-      "VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET "
-      "mode=excluded.mode,updated_at_ms=excluded.updated_at_ms");
+      "INSERT INTO "
+      "appearance_mode_state(singleton,mode,activated_at_ms,updated_at_ms) "
+      "VALUES(1,?,?,?) ON CONFLICT(singleton) DO UPDATE SET "
+      "mode=excluded.mode,activated_at_ms=CASE WHEN "
+      "appearance_mode_state.mode<>"
+      "excluded.mode THEN max(excluded.activated_at_ms,appearance_mode_state."
+      "activated_at_ms+1) ELSE appearance_mode_state.activated_at_ms END,"
+      "updated_at_ms=max(appearance_mode_state.updated_at_ms,excluded.updated_"
+      "at_ms,CASE WHEN appearance_mode_state.mode<>excluded.mode THEN "
+      "max(excluded.activated_at_ms,appearance_mode_state.activated_at_ms+1) "
+      "ELSE appearance_mode_state.activated_at_ms END)");
   update.bind(1, mode_name);
   update.bind(2, now_ms);
+  update.bind(3, now_ms);
   update.execute();
   transaction.commit();
 }
@@ -1152,6 +1530,9 @@ bool SqliteAppearanceRepository::set_callback_consent(
     update.bind(2, now_ms);
     update.bind(3, user_id.str());
     update.execute();
+    if (!enabled)
+      cancel_unsent_appearance_outbox(connection, now_ms, user_id,
+                                      "appearance_opt_out");
   }
   const auto [guild, channel] = scope(connection);
   static_cast<void>(detail::insert_event_uncommitted(
@@ -1502,7 +1883,8 @@ AppearanceCandidate SqliteAppearanceRepository::simulate(
       "tarot_settlement",
       "opted_out_participant",
       "stale_candidate",
-      "owner_dry_run"};
+      "owner_dry_run",
+      "owner_live_safe"};
   if (!fixtures.contains(request.fixture))
     throw std::invalid_argument{"Unknown appearance fixture."};
   const std::scoped_lock lock{context_->mutex()};
@@ -1597,10 +1979,14 @@ SqliteAppearanceRepository::scan_events(const AppearancePolicy &policy,
   const auto [guild, channel] = scope(connection);
   auto events = connection.prepare(
       "SELECT "
-      "source_event_id,event_type,aggregate_id,actor_user_id,occurred_at_ms,"
-      "guild_id,channel_id FROM appearance_event_observation "
-      "WHERE processed_at_ms IS NULL ORDER BY recorded_at_ms,source_event_id "
-      "LIMIT 32");
+      "o.source_event_id,o.event_type,o.aggregate_id,o.actor_user_id,"
+      "o.occurred_at_ms,o.guild_id,o.channel_id,"
+      "CASE WHEN COALESCE(json_extract(e.payload_json,'$.test'),0)=1 OR "
+      "COALESCE(json_extract(e.payload_json,'$.test_run'),0)=1 THEN 1 ELSE 0 "
+      "END FROM "
+      "appearance_event_observation o JOIN event_journal e ON "
+      "e.event_id=o.source_event_id WHERE o.processed_at_ms IS NULL ORDER BY "
+      "o.recorded_at_ms,o.source_event_id LIMIT 32");
   struct Event {
     std::string id;
     std::string type;
@@ -1609,6 +1995,7 @@ SqliteAppearanceRepository::scan_events(const AppearancePolicy &policy,
     std::int64_t occurred{};
     DiscordSnowflake guild;
     std::optional<DiscordSnowflake> channel;
+    bool owner_test{};
   };
   std::vector<Event> pending;
   while (events.step())
@@ -1620,9 +2007,19 @@ SqliteAppearanceRepository::scan_events(const AppearancePolicy &policy,
          events.column_int64(4), DiscordSnowflake::parse(events.column_text(5)),
          events.column_is_null(6)
              ? std::nullopt
-             : std::optional{DiscordSnowflake::parse(events.column_text(6))}});
+             : std::optional{DiscordSnowflake::parse(events.column_text(6))},
+         events.column_int64(7) != 0});
   std::vector<AppearanceCandidate> result;
   for (const auto &event : pending) {
+    if (event.owner_test) {
+      auto suppress = connection.prepare(
+          "UPDATE appearance_event_observation SET extraction_result="
+          "'source_not_enabled',processed_at_ms=? WHERE source_event_id=?");
+      suppress.bind(1, now_ms);
+      suppress.bind(2, event.id);
+      suppress.execute();
+      continue;
+    }
     AppearanceCandidateType type;
     std::string expiry_key;
     int specificity{};
@@ -1784,21 +2181,31 @@ bool SqliteAppearanceRepository::record_final(
     const AppearanceEvaluation &evaluation, std::string decision_id,
     std::string event_id, const std::string_view instance_id,
     std::string model_status, std::optional<AppearanceModelResult> model_result,
-    const std::int64_t now_ms) {
+    const AppearanceDeliveryIds &delivery_ids, const std::int64_t now_ms) {
   const std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
   Transaction transaction{connection, TransactionMode::immediate};
   static_cast<void>(evaluation);
-  if (!candidate.policy_version.empty() &&
-      candidate.policy_version != policy.policy_version)
+  auto final_candidate = read_candidate(connection, candidate.candidate_id);
+  merge_runtime_gates(final_candidate, candidate);
+  if (final_candidate.policy_version != policy.policy_version)
     throw std::runtime_error{"Appearance candidate policy mismatch."};
-  auto final_candidate = candidate;
-  refresh_persistent_gates(connection, policy, final_candidate, now_ms);
+  const auto persisted_policy =
+      load_policy_snapshot(connection, final_candidate.policy_version);
+  refresh_persistent_gates(connection, persisted_policy, final_candidate,
+                           now_ms);
+  if (model_result &&
+      !validate_appearance_model_result(persisted_policy, *model_result,
+                                        final_candidate.supplied_memory_ids)) {
+    model_result.reset();
+    model_status = "model_revalidation_failed";
+  }
   const auto final_evaluation =
-      evaluate_appearance(policy, mode, final_candidate, now_ms);
+      evaluate_appearance(persisted_policy, mode, final_candidate, now_ms);
   const auto reason =
-      final_reason(final_evaluation, model_status, model_result);
-  const auto action = reason == "hypothetical" ? "hypothetical" : "reject";
+      final_reason(mode, final_evaluation, model_status, model_result);
+  const auto action =
+      reason == "hypothetical" || reason == "live_queued" ? reason : "reject";
   const auto categories = serious_categories(final_candidate, model_result);
   auto insert = connection.prepare(
       "INSERT INTO "
@@ -1809,8 +2216,8 @@ bool SqliteAppearanceRepository::record_final(
       "CONFLICT(candidate_id) "
       "DO NOTHING");
   insert.bind(1, decision_id);
-  insert.bind(2, candidate.candidate_id);
-  insert.bind(3, policy.policy_version);
+  insert.bind(2, final_candidate.candidate_id);
+  insert.bind(3, persisted_policy.policy_version);
   insert.bind(4, instance_id);
   insert.bind(5, action);
   insert.bind(6, reason);
@@ -1837,11 +2244,17 @@ bool SqliteAppearanceRepository::record_final(
       preview.bind(2, model_result->text);
       preview.bind(3, model_result->tone);
       preview.bind(4, now_ms);
-      preview.bind(5, now_ms + policy.generated_preview_retention_ms);
+      preview.bind(5, now_ms + persisted_policy.generated_preview_retention_ms);
       preview.execute();
     }
-    append_decision_event(connection, event_id, final_candidate, decision_id,
-                          action, reason, now_ms);
+    if (action == std::string_view{"live_queued"} && model_result) {
+      insert_live_effects(connection, persisted_policy, final_candidate,
+                          decision_id, event_id, *model_result, delivery_ids,
+                          now_ms);
+    } else {
+      append_decision_event(connection, event_id, final_candidate, decision_id,
+                            action, reason, now_ms);
+    }
   }
   transaction.commit();
   return created;
@@ -1857,13 +2270,16 @@ bool SqliteAppearanceRepository::prepare_model(
   auto &connection = context_->connection();
   Transaction transaction{connection, TransactionMode::immediate};
   static_cast<void>(evaluation);
-  if (!candidate.policy_version.empty() &&
-      candidate.policy_version != policy.policy_version)
+  auto prepared_candidate = read_candidate(connection, candidate.candidate_id);
+  merge_runtime_gates(prepared_candidate, candidate);
+  if (prepared_candidate.policy_version != policy.policy_version)
     throw std::runtime_error{"Appearance candidate policy mismatch."};
-  auto prepared_candidate = candidate;
-  refresh_persistent_gates(connection, policy, prepared_candidate, now_ms);
+  const auto persisted_policy =
+      load_policy_snapshot(connection, prepared_candidate.policy_version);
+  refresh_persistent_gates(connection, persisted_policy, prepared_candidate,
+                           now_ms);
   const auto prepared_evaluation =
-      evaluate_appearance(policy, mode, prepared_candidate, now_ms);
+      evaluate_appearance(persisted_policy, mode, prepared_candidate, now_ms);
   if (!prepared_evaluation.eligible_for_model) {
     const auto categories =
         serious_categories(prepared_candidate, std::nullopt);
@@ -1877,8 +2293,8 @@ bool SqliteAppearanceRepository::prepare_model(
         "VALUES(?,?,?,?,1,'final','reject',?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(candidate_id) DO NOTHING");
     reject.bind(1, decision_id);
-    reject.bind(2, candidate.candidate_id);
-    reject.bind(3, policy.policy_version);
+    reject.bind(2, prepared_candidate.candidate_id);
+    reject.bind(3, persisted_policy.policy_version);
     reject.bind(4, instance_id);
     reject.bind(5, prepared_evaluation.reason);
     reject.bind(6, gate_json(prepared_evaluation).dump());
@@ -1909,8 +2325,8 @@ bool SqliteAppearanceRepository::prepare_model(
       " VALUES(?,?,?,?,1,'model_pending',?,?,?,?,'model_pending',?,?) ON "
       "CONFLICT(candidate_id) DO NOTHING");
   insert.bind(1, decision_id);
-  insert.bind(2, candidate.candidate_id);
-  insert.bind(3, policy.policy_version);
+  insert.bind(2, prepared_candidate.candidate_id);
+  insert.bind(3, persisted_policy.policy_version);
   insert.bind(4, instance_id);
   insert.bind(5, gate_json(prepared_evaluation).dump());
   insert.bind(6, score_json(prepared_evaluation).dump());
@@ -1935,20 +2351,31 @@ bool SqliteAppearanceRepository::complete_model(
     const AppearanceEvaluation &fresh_evaluation,
     const std::string_view decision_id, std::string event_id,
     std::string model_status, std::optional<AppearanceModelResult> result,
-    const std::int64_t now_ms) {
+    const AppearanceDeliveryIds &delivery_ids, const std::int64_t now_ms) {
   const std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
   Transaction transaction{connection, TransactionMode::immediate};
   static_cast<void>(fresh_evaluation);
-  if (!candidate.policy_version.empty() &&
-      candidate.policy_version != policy.policy_version)
+  auto final_candidate = read_candidate(connection, candidate.candidate_id);
+  merge_runtime_gates(final_candidate, candidate);
+  if (final_candidate.policy_version != policy.policy_version)
     throw std::runtime_error{"Appearance candidate policy mismatch."};
-  auto final_candidate = candidate;
-  refresh_persistent_gates(connection, policy, final_candidate, now_ms);
+  const auto persisted_policy =
+      load_policy_snapshot(connection, final_candidate.policy_version);
+  refresh_persistent_gates(connection, persisted_policy, final_candidate,
+                           now_ms);
+  if (result &&
+      !validate_appearance_model_result(persisted_policy, *result,
+                                        final_candidate.supplied_memory_ids)) {
+    result.reset();
+    model_status = "model_revalidation_failed";
+  }
   const auto final_evaluation =
-      evaluate_appearance(policy, mode, final_candidate, now_ms);
-  const auto reason = final_reason(final_evaluation, model_status, result);
-  const auto action = reason == "hypothetical" ? "hypothetical" : "reject";
+      evaluate_appearance(persisted_policy, mode, final_candidate, now_ms);
+  const auto reason =
+      final_reason(mode, final_evaluation, model_status, result);
+  const auto action =
+      reason == "hypothetical" || reason == "live_queued" ? reason : "reject";
   const auto categories = serious_categories(final_candidate, result);
   auto update = connection.prepare(
       "UPDATE appearance_decision SET "
@@ -1980,14 +2407,561 @@ bool SqliteAppearanceRepository::complete_model(
       preview.bind(2, result->text);
       preview.bind(3, result->tone);
       preview.bind(4, now_ms);
-      preview.bind(5, now_ms + policy.generated_preview_retention_ms);
+      preview.bind(5, now_ms + persisted_policy.generated_preview_retention_ms);
       preview.execute();
     }
-    append_decision_event(connection, event_id, final_candidate, decision_id,
-                          action, reason, now_ms);
+    if (action == std::string_view{"live_queued"} && result) {
+      insert_live_effects(connection, persisted_policy, final_candidate,
+                          decision_id, event_id, *result, delivery_ids, now_ms);
+    } else {
+      append_decision_event(connection, event_id, final_candidate, decision_id,
+                            action, reason, now_ms);
+    }
   }
   transaction.commit();
   return changed;
+}
+
+AppearanceMutationResult
+SqliteAppearanceRepository::set_quiet(const AppearanceQuietMutation &request) {
+  const bool clearing = !request.quiet_until_ms.has_value();
+  const std::string request_kind = clearing ? "off" : request.reason;
+  if (!request.actor_user_id.is_set() || request.now_ms < 0 ||
+      !valid_uuid_v4(request.event_id) || request.idempotency_key.empty() ||
+      request.idempotency_key.size() > 160 || request.correlation_id.empty() ||
+      request.correlation_id.size() > 160 ||
+      !valid_quiet_request_value(request_kind, request.request_value) ||
+      (clearing && !request.reason.empty()) ||
+      (!clearing &&
+       (!request.quiet_until_ms || *request.quiet_until_ms <= request.now_ms ||
+        (request.reason != "duration" && request.reason != "tonight" &&
+         request.reason != "until" && request.reason != "feedback"))))
+    return AppearanceMutationResult::invalid;
+  const std::scoped_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  Transaction transaction{connection, TransactionMode::immediate};
+  auto replay = connection.prepare(
+      "SELECT event_type,actor_user_id,payload_json FROM event_journal WHERE "
+      "idempotency_key=?");
+  replay.bind(1, request.idempotency_key);
+  if (replay.step()) {
+    const auto payload = Json::parse(replay.column_text(2));
+    if (replay.column_text(0) != "appearance.quiet_requested.v1" ||
+        replay.column_text(1) != request.actor_user_id.str() ||
+        !payload.is_object() || payload.size() != 5 ||
+        payload.value("kind", std::string{}) != request_kind ||
+        payload.value("request_value", std::string{}) != request.request_value)
+      throw std::runtime_error{"Appearance quiet replay conflicts."};
+    const auto stored_result =
+        parse_quiet_result(payload.value("result", std::string{}));
+    if (!stored_result || !payload.contains("quiet_until_ms") ||
+        !payload.contains("active") ||
+        payload.value("active", clearing) != !clearing)
+      throw std::runtime_error{"Appearance quiet replay is invalid."};
+    transaction.commit();
+    return *stored_result;
+  }
+  const auto record_request = [&](const AppearanceMutationResult result) {
+    Json payload{{"active", !clearing},
+                 {"kind", std::string{request_kind}},
+                 {"request_value", request.request_value},
+                 {"result", std::string{quiet_result_name(result)}}};
+    payload["quiet_until_ms"] =
+        clearing ? Json{nullptr} : Json(*request.quiet_until_ms);
+    append_control_event(connection, request.event_id, request.actor_user_id,
+                         "appearance.quiet_requested.v1", "appearance_control",
+                         "global", request.idempotency_key,
+                         request.correlation_id, payload, request.now_ms);
+  };
+  auto state = connection.prepare(
+      "SELECT quiet_until_ms,quiet_set_by_user_id,g.owner_user_id FROM "
+      "appearance_control_state ctl JOIN guild_config g ON g.singleton=1 "
+      "WHERE ctl.singleton=1");
+  if (!state.step())
+    throw std::runtime_error{"Appearance controls are unavailable."};
+  const bool active =
+      !state.column_is_null(0) && state.column_int64(0) > request.now_ms;
+  if (clearing && active &&
+      state.column_text(1) != request.actor_user_id.str() &&
+      state.column_text(2) != request.actor_user_id.str()) {
+    record_request(AppearanceMutationResult::unauthorized);
+    transaction.commit();
+    return AppearanceMutationResult::unauthorized;
+  }
+  if (!clearing && active && *request.quiet_until_ms <= state.column_int64(0)) {
+    record_request(AppearanceMutationResult::unchanged);
+    transaction.commit();
+    return AppearanceMutationResult::unchanged;
+  }
+  if (clearing && !active) {
+    record_request(AppearanceMutationResult::unchanged);
+    transaction.commit();
+    return AppearanceMutationResult::unchanged;
+  }
+  auto update =
+      connection.prepare("UPDATE appearance_control_state SET quiet_until_ms=?,"
+                         "quiet_set_by_user_id=?,quiet_reason=?,revision="
+                         "revision+1,updated_at_ms=? "
+                         "WHERE singleton=1");
+  if (clearing) {
+    update.bind_null(1);
+    update.bind_null(2);
+    update.bind_null(3);
+  } else {
+    update.bind(1, *request.quiet_until_ms);
+    update.bind(2, request.actor_user_id.str());
+    update.bind(3, request.reason);
+  }
+  update.bind(4, request.now_ms);
+  update.execute();
+  if (!clearing)
+    cancel_unsent_appearance_outbox(connection, request.now_ms, std::nullopt,
+                                    "appearance_global_quiet");
+  record_request(AppearanceMutationResult::applied);
+  transaction.commit();
+  return AppearanceMutationResult::applied;
+}
+
+AppearanceMutationResult SqliteAppearanceRepository::set_global_disabled(
+    const DiscordSnowflake actor_user_id, const bool disabled,
+    const std::int64_t now_ms, std::string event_id,
+    std::string idempotency_key, std::string correlation_id) {
+  if (!actor_user_id.is_set() || now_ms < 0 || !valid_uuid_v4(event_id) ||
+      idempotency_key.empty() || idempotency_key.size() > 160 ||
+      correlation_id.empty() || correlation_id.size() > 160)
+    return AppearanceMutationResult::invalid;
+  const std::scoped_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  Transaction transaction{connection, TransactionMode::immediate};
+  auto owner = connection.prepare(
+      "SELECT owner_user_id FROM guild_config WHERE singleton=1");
+  if (!owner.step() || owner.column_text(0) != actor_user_id.str()) {
+    transaction.commit();
+    return AppearanceMutationResult::unauthorized;
+  }
+  auto replay = connection.prepare(
+      "SELECT event_type,actor_user_id,payload_json FROM event_journal WHERE "
+      "idempotency_key=?");
+  replay.bind(1, idempotency_key);
+  if (replay.step()) {
+    if (replay.column_text(0) != "appearance.kill_switch_changed.v1" ||
+        replay.column_text(1) != actor_user_id.str() ||
+        Json::parse(replay.column_text(2)).value("disabled", !disabled) !=
+            disabled)
+      throw std::runtime_error{"Appearance kill-switch replay conflicts."};
+    transaction.commit();
+    return AppearanceMutationResult::unchanged;
+  }
+  auto current =
+      connection.prepare("SELECT globally_disabled FROM "
+                         "appearance_control_state WHERE singleton=1");
+  if (!current.step())
+    throw std::runtime_error{"Appearance controls are unavailable."};
+  const bool changed = (current.column_int64(0) != 0) != disabled;
+  if (changed) {
+    auto update = connection.prepare(
+        "UPDATE appearance_control_state SET globally_disabled=?,"
+        "disabled_by_user_id=?,disabled_at_ms=?,revision=revision+1,"
+        "updated_at_ms=? WHERE singleton=1");
+    update.bind(1, static_cast<std::int64_t>(disabled));
+    if (disabled) {
+      update.bind(2, actor_user_id.str());
+      update.bind(3, now_ms);
+    } else {
+      update.bind_null(2);
+      update.bind_null(3);
+    }
+    update.bind(4, now_ms);
+    update.execute();
+    if (disabled)
+      cancel_unsent_appearance_outbox(connection, now_ms, std::nullopt,
+                                      "appearance_globally_disabled");
+  }
+  append_control_event(connection, event_id, actor_user_id,
+                       "appearance.kill_switch_changed.v1",
+                       "appearance_control", "global", idempotency_key,
+                       correlation_id, Json{{"disabled", disabled}}, now_ms);
+  transaction.commit();
+  return changed ? AppearanceMutationResult::applied
+                 : AppearanceMutationResult::unchanged;
+}
+
+AppearanceMutationResult SqliteAppearanceRepository::record_feedback(
+    const AppearanceFeedbackMutation &request) {
+  auto effective_action = request.action;
+  std::string action{appearance_feedback_action_name(effective_action)};
+  const bool valid_reference =
+      !request.reference ||
+      (request.reference->size() >= 4 && request.reference->size() <= 36 &&
+       std::ranges::all_of(*request.reference, [](const char value) {
+         return (value >= '0' && value <= '9') ||
+                (value >= 'a' && value <= 'f') || value == '-';
+       }));
+  if (!request.actor_user_id.is_set() || !request.guild_id.is_set() ||
+      !request.channel_id.is_set() || request.now_ms < 0 ||
+      !valid_uuid_v4(request.feedback_id) || !valid_uuid_v4(request.event_id) ||
+      request.idempotency_key.empty() || request.idempotency_key.size() > 160 ||
+      request.correlation_id.empty() || request.correlation_id.size() > 160 ||
+      !valid_reference ||
+      (request.control_id && !valid_uuid_v4(*request.control_id)) ||
+      (request.action == AppearanceFeedbackAction::quiet_tonight &&
+       (!request.quiet_until_ms || *request.quiet_until_ms <= request.now_ms)))
+    return AppearanceMutationResult::invalid;
+  const std::scoped_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  Transaction transaction{connection, TransactionMode::immediate};
+  if (request.control_id) {
+    auto control = connection.prepare(
+        "SELECT action FROM appearance_feedback_control WHERE control_id=?");
+    control.bind(1, *request.control_id);
+    if (!control.step()) {
+      transaction.commit();
+      return AppearanceMutationResult::not_found;
+    }
+    const auto stored_action =
+        parse_appearance_feedback_action(control.column_text(0));
+    if (!stored_action) {
+      transaction.commit();
+      return AppearanceMutationResult::invalid;
+    }
+    effective_action = *stored_action;
+    action = std::string{appearance_feedback_action_name(effective_action)};
+  }
+  auto replay = connection.prepare(
+      "SELECT f.decision_id,f.user_id,f.action,f.control_id,"
+      "o.provider_message_id FROM appearance_feedback f JOIN "
+      "appearance_budget_reservation r ON r.decision_id=f.decision_id JOIN "
+      "outbox_message o ON o.outbox_id=r.outbox_id WHERE "
+      "f.interaction_idempotency_key=?");
+  replay.bind(1, request.idempotency_key);
+  if (replay.step()) {
+    const bool control_matches =
+        request.control_id ? !replay.column_is_null(3) &&
+                                 replay.column_text(3) == *request.control_id
+                           : replay.column_is_null(3);
+    const auto stored_decision = replay.column_text(0);
+    const bool reference_matches =
+        !request.reference || stored_decision.starts_with(*request.reference) ||
+        (!replay.column_is_null(4) &&
+         replay.column_text(4) == *request.reference);
+    if (replay.column_text(1) != request.actor_user_id.str() ||
+        replay.column_text(2) != action || !control_matches ||
+        !reference_matches)
+      throw std::runtime_error{"Appearance feedback replay conflicts."};
+    transaction.commit();
+    return AppearanceMutationResult::unchanged;
+  }
+
+  std::string sql =
+      "SELECT d.decision_id,fc.action,fc.expires_at_ms FROM "
+      "appearance_decision d JOIN appearance_budget_reservation r ON "
+      "r.decision_id=d.decision_id JOIN outbox_message o ON "
+      "o.outbox_id=r.outbox_id ";
+  if (request.control_id)
+    sql +=
+        "JOIN appearance_feedback_control fc ON fc.decision_id=d.decision_id "
+        "WHERE fc.control_id=? ";
+  else
+    sql += "LEFT JOIN appearance_feedback_control fc ON 0 WHERE ";
+  sql += "AND o.state='delivered' AND o.provider_message_id IS NOT NULL AND "
+         "o.target_guild_id=? AND o.target_channel_id=? ";
+  if (!request.control_id)
+    sql += "AND EXISTS(SELECT 1 FROM appearance_feedback_control active_fc "
+           "WHERE active_fc.decision_id=d.decision_id AND "
+           "active_fc.expires_at_ms>?) ";
+  if (!request.control_id && request.reference)
+    sql += "AND (d.decision_id LIKE ? OR o.provider_message_id=?) ";
+  sql += "ORDER BY o.delivered_at_ms DESC,d.decision_id DESC LIMIT 2";
+  // Remove the leading conjunction in the slash-fallback form.
+  if (!request.control_id) {
+    const auto position = sql.find("WHERE AND ");
+    if (position != std::string::npos)
+      sql.replace(position, 10, "WHERE ");
+  }
+  auto find = connection.prepare(sql);
+  std::size_t index{1};
+  if (request.control_id)
+    find.bind(index++, *request.control_id);
+  find.bind(index++, request.guild_id.str());
+  find.bind(index++, request.channel_id.str());
+  if (!request.control_id)
+    find.bind(index++, request.now_ms);
+  if (!request.control_id && request.reference) {
+    find.bind(index++, *request.reference + "%");
+    find.bind(index++, *request.reference);
+  }
+  if (!find.step()) {
+    transaction.commit();
+    return AppearanceMutationResult::not_found;
+  }
+  const auto decision_id = find.column_text(0);
+  if (request.control_id) {
+    const auto stored_action =
+        parse_appearance_feedback_action(find.column_text(1));
+    if (!stored_action) {
+      transaction.commit();
+      return AppearanceMutationResult::invalid;
+    }
+    effective_action = *stored_action;
+    action = std::string{appearance_feedback_action_name(effective_action)};
+    if (find.column_int64(2) <= request.now_ms) {
+      transaction.commit();
+      return AppearanceMutationResult::expired;
+    }
+  } else if (request.reference && find.step()) {
+    transaction.commit();
+    return AppearanceMutationResult::conflict;
+  }
+
+  const auto feedback_class =
+      effective_action == AppearanceFeedbackAction::quiet_tonight ? "quiet"
+                                                                  : "sentiment";
+  auto existing = connection.prepare(
+      "SELECT action FROM appearance_feedback WHERE decision_id=? AND "
+      "user_id=? AND feedback_class=?");
+  existing.bind(1, decision_id);
+  existing.bind(2, request.actor_user_id.str());
+  existing.bind(3, feedback_class);
+  if (existing.step()) {
+    const auto same = existing.column_text(0) == action;
+    transaction.commit();
+    return same ? AppearanceMutationResult::unchanged
+                : AppearanceMutationResult::conflict;
+  }
+  auto insert = connection.prepare(
+      "INSERT INTO appearance_feedback(feedback_id,decision_id,control_id,"
+      "user_id,action,feedback_class,interaction_idempotency_key,created_at_ms)"
+      " "
+      "VALUES(?,?,?,?,?,?,?,?)");
+  insert.bind(1, request.feedback_id);
+  insert.bind(2, decision_id);
+  if (request.control_id)
+    insert.bind(3, *request.control_id);
+  else
+    insert.bind_null(3);
+  insert.bind(4, request.actor_user_id.str());
+  insert.bind(5, action);
+  insert.bind(6, feedback_class);
+  insert.bind(7, request.idempotency_key);
+  insert.bind(8, request.now_ms);
+  insert.execute();
+  if (effective_action == AppearanceFeedbackAction::quiet_tonight) {
+    if (!request.quiet_until_ms || *request.quiet_until_ms <= request.now_ms) {
+      return AppearanceMutationResult::invalid;
+    }
+    auto quiet = connection.prepare(
+        "UPDATE appearance_control_state SET quiet_until_ms=?,"
+        "quiet_set_by_user_id=?,quiet_reason='feedback',revision=revision+1,"
+        "updated_at_ms=? WHERE singleton=1 AND (quiet_until_ms IS NULL OR "
+        "quiet_until_ms<?)");
+    quiet.bind(1, *request.quiet_until_ms);
+    quiet.bind(2, request.actor_user_id.str());
+    quiet.bind(3, request.now_ms);
+    quiet.bind(4, *request.quiet_until_ms);
+    quiet.execute();
+    cancel_unsent_appearance_outbox(connection, request.now_ms, std::nullopt,
+                                    "appearance_global_quiet");
+  }
+  append_control_event(connection, request.event_id, request.actor_user_id,
+                       "appearance.feedback_recorded.v1", "appearance_decision",
+                       decision_id, request.idempotency_key,
+                       request.correlation_id, Json{{"action", action}},
+                       request.now_ms);
+  transaction.commit();
+  return effective_action == AppearanceFeedbackAction::quiet_tonight
+             ? AppearanceMutationResult::quiet_applied
+             : AppearanceMutationResult::applied;
+}
+
+AppearanceControlSummary
+SqliteAppearanceRepository::control_summary(const std::int64_t now_ms) {
+  const std::scoped_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  AppearanceControlSummary result;
+  auto state = connection.prepare(
+      "SELECT m.mode,ctl.globally_disabled,ctl.quiet_until_ms FROM "
+      "appearance_mode_state m JOIN appearance_control_state ctl ON "
+      "ctl.singleton=1 WHERE m.singleton=1");
+  if (!state.step())
+    throw std::runtime_error{"Appearance controls are unavailable."};
+  const auto persisted = state.column_text(0);
+  result.persisted_mode = persisted == "live"      ? AppearanceMode::live
+                          : persisted == "dry_run" ? AppearanceMode::dry_run
+                                                   : AppearanceMode::off;
+  result.globally_disabled = state.column_int64(1) != 0;
+  if (!state.column_is_null(2) && state.column_int64(2) > now_ms)
+    result.quiet_until_ms = state.column_int64(2);
+  const auto scalar = [&](const std::string_view sql) {
+    auto query = connection.prepare(sql);
+    return query.step() ? static_cast<std::size_t>(query.column_int64(0)) : 0U;
+  };
+  result.active_reservations = scalar(
+      "SELECT count(*) FROM appearance_budget_reservation WHERE is_test=0 "
+      "AND reserved_at_ms>=" +
+      std::to_string(std::max<std::int64_t>(0, now_ms - 86'400'000)));
+  result.pending_outbox = scalar(
+      "SELECT count(*) FROM outbox_message WHERE outbox_id IN (SELECT "
+      "outbox_id "
+      "FROM appearance_budget_reservation) AND state IN ('pending','claimed')");
+  result.failed_outbox = scalar(
+      "SELECT count(*) FROM outbox_message WHERE outbox_id IN (SELECT "
+      "outbox_id "
+      "FROM appearance_budget_reservation) AND state IN ('failed','dead')");
+  result.ambiguous_outbox =
+      scalar("SELECT count(*) FROM outbox_message WHERE outbox_id IN (SELECT "
+             "outbox_id "
+             "FROM appearance_budget_reservation) AND "
+             "(submission_started_at_ms IS NOT "
+             "NULL OR last_error_code='discord_unknown_outcome') AND "
+             "state<>'delivered'");
+  const auto rolling_hour = std::max<std::int64_t>(0, now_ms - 3'600'000);
+  auto model_failures = connection.prepare(
+      "SELECT count(*) FROM appearance_decision WHERE finalized_at_ms>=? AND "
+      "model_status NOT IN ('model_pending','model_accepted','model_declined',"
+      "'model_serious','not_requested','not_requested_recheck','owner_fixture'"
+      ")");
+  model_failures.bind(1, rolling_hour);
+  if (model_failures.step())
+    result.recent_model_failures =
+        static_cast<std::size_t>(model_failures.column_int64(0));
+  auto delivery_failures = connection.prepare(
+      "SELECT count(*) FROM outbox_message o JOIN "
+      "appearance_budget_reservation r ON r.outbox_id=o.outbox_id WHERE "
+      "o.updated_at_ms>=? AND o.state IN ('failed','dead')");
+  delivery_failures.bind(1, rolling_hour);
+  if (delivery_failures.step())
+    result.recent_delivery_failures =
+        static_cast<std::size_t>(delivery_failures.column_int64(0));
+  auto times = connection.prepare(
+      "SELECT max(r.reserved_at_ms),max(o.delivered_at_ms) FROM "
+      "appearance_budget_reservation r JOIN outbox_message o ON "
+      "o.outbox_id=r.outbox_id WHERE r.is_test=0");
+  if (times.step()) {
+    if (!times.column_is_null(0))
+      result.last_queued_at_ms = times.column_int64(0);
+    if (!times.column_is_null(1))
+      result.last_delivered_at_ms = times.column_int64(1);
+  }
+  auto feedback = connection.prepare(
+      "SELECT f.action,count(*) FROM appearance_feedback f JOIN "
+      "appearance_budget_reservation r ON r.decision_id=f.decision_id WHERE "
+      "r.is_test=0 AND f.feedback_class='sentiment' AND f.created_at_ms>=? "
+      "GROUP BY f.action");
+  feedback.bind(1, std::max<std::int64_t>(0, now_ms - 30LL * 86'400'000));
+  while (feedback.step()) {
+    const auto count = static_cast<std::size_t>(feedback.column_int64(1));
+    if (feedback.column_text(0) == "more")
+      result.feedback_more = count;
+    else if (feedback.column_text(0) == "less")
+      result.feedback_less = count;
+    else if (feedback.column_text(0) == "not_relevant")
+      result.feedback_not_relevant = count;
+  }
+  const auto total = result.feedback_more + result.feedback_less +
+                     result.feedback_not_relevant;
+  result.recommendation =
+      total < 3 ? "collect_more_feedback"
+      : (result.feedback_not_relevant >= 2 ||
+         result.feedback_less + result.feedback_not_relevant >
+             result.feedback_more)
+          ? "return_to_dry_run"
+          : "hold_current_policy";
+  auto themes = connection.prepare(
+      "SELECT c.theme_key FROM appearance_feedback f JOIN "
+      "appearance_budget_reservation r ON r.decision_id=f.decision_id JOIN "
+      "appearance_candidate c ON c.candidate_id=r.candidate_id WHERE "
+      "r.is_test=0 "
+      "AND c.theme_key IS NOT NULL AND f.feedback_class='sentiment' AND "
+      "f.created_at_ms>=? GROUP BY c.theme_key HAVING "
+      "count(DISTINCT CASE WHEN f.action IN ('less','not_relevant') THEN "
+      "f.user_id END)>=2 AND count(CASE WHEN f.action='more' THEN 1 END)=0 "
+      "ORDER BY c.theme_key LIMIT 10");
+  themes.bind(1, std::max<std::int64_t>(0, now_ms - 30LL * 86'400'000));
+  while (themes.step())
+    result.theme_review_keys.push_back(themes.column_text(0));
+  return result;
+}
+
+std::vector<AppearanceFailureAlert>
+SqliteAppearanceRepository::claim_failure_alerts(const std::int64_t now_ms) {
+  if (now_ms < 0)
+    throw std::invalid_argument{"Appearance alert time is invalid."};
+  const std::scoped_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  Transaction transaction{connection, TransactionMode::immediate};
+  const auto cutoff = std::max<std::int64_t>(0, now_ms - 3'600'000);
+  const auto count = [&](const std::string_view category) -> std::size_t {
+    auto query = connection.prepare(
+        category == "model"
+            ? "SELECT count(*) FROM appearance_decision WHERE "
+              "finalized_at_ms>=? AND model_status NOT IN "
+              "('model_pending','model_accepted','model_declined',"
+              "'model_serious','not_requested','not_requested_recheck',"
+              "'owner_fixture')"
+            : "SELECT count(*) FROM outbox_message o JOIN "
+              "appearance_budget_reservation r ON r.outbox_id=o.outbox_id "
+              "WHERE o.updated_at_ms>=? AND o.state IN ('failed','dead')");
+    query.bind(1, cutoff);
+    if (!query.step())
+      throw std::runtime_error{"Appearance alert count is unavailable."};
+    return static_cast<std::size_t>(query.column_int64(0));
+  };
+  std::vector<AppearanceFailureAlert> result;
+  for (const auto &[category, threshold] :
+       std::array<std::pair<std::string_view, std::size_t>, 2>{
+           std::pair{std::string_view{"model"}, std::size_t{3}},
+           std::pair{std::string_view{"delivery"}, std::size_t{2}}}) {
+    const auto occurrences = count(category);
+    if (occurrences < threshold)
+      continue;
+    auto claim = connection.prepare(
+        "UPDATE appearance_alert_state SET last_alert_at_ms=?,updated_at_ms=? "
+        "WHERE category=? AND (last_alert_at_ms IS NULL OR "
+        "last_alert_at_ms<=?)");
+    claim.bind(1, now_ms);
+    claim.bind(2, now_ms);
+    claim.bind(3, category);
+    claim.bind(4, cutoff);
+    claim.execute();
+    if (connection.changes() != 0)
+      result.push_back(
+          {.category = std::string{category}, .occurrences = occurrences});
+  }
+  transaction.commit();
+  return result;
+}
+
+std::optional<VerifiedAppearanceDelivery>
+SqliteAppearanceRepository::verify_public_delivery(
+    const ContextMessageSnapshot &message) {
+  if (!message.author.is_bot || !message.reference.message_id.is_set() ||
+      !message.reference.guild_id.is_set() ||
+      !message.reference.channel_id.is_set())
+    return std::nullopt;
+  const std::scoped_lock lock{context_->mutex()};
+  auto query = context_->connection().prepare(
+      "SELECT d.decision_id,r.is_test FROM appearance_decision d JOIN "
+      "appearance_budget_reservation r ON r.decision_id=d.decision_id JOIN "
+      "outbox_message o ON o.outbox_id=r.outbox_id JOIN guild_config g ON "
+      "g.singleton=1 WHERE d.action='live_queued' AND o.state='delivered' AND "
+      "o.kind='discord.public.v1' AND "
+      "o.aggregate_type='appearance_decision' AND "
+      "o.aggregate_id=d.decision_id AND o.target_user_id IS NULL AND "
+      "o.idempotency_key='appearance.public:'||d.decision_id AND "
+      "o.provider_message_id=? AND o.target_guild_id=? AND "
+      "o.target_channel_id=? "
+      "AND o.target_guild_id=g.guild_id AND "
+      "o.target_channel_id=g.primary_channel_id "
+      "AND json_extract(o.payload_json,'$.content')=? LIMIT 1");
+  query.bind(1, message.reference.message_id.str());
+  query.bind(2, message.reference.guild_id.str());
+  query.bind(3, message.reference.channel_id.str());
+  query.bind(4, message.content);
+  if (!query.step())
+    return std::nullopt;
+  return VerifiedAppearanceDelivery{.decision_id = query.column_text(0),
+                                    .test_delivery =
+                                        query.column_int64(1) != 0};
 }
 
 std::optional<AppearanceDecisionRecord>
@@ -2113,11 +3087,69 @@ SqliteAppearanceRepository::recent(const std::size_t limit) {
 std::size_t SqliteAppearanceRepository::public_outbox_violation_count() {
   const std::scoped_lock lock{context_->mutex()};
   auto query = context_->connection().prepare(
-      "SELECT count(*) FROM outbox_message WHERE kind LIKE 'appearance.%' OR "
-      "aggregate_type IN "
+      "SELECT count(*) FROM outbox_message o WHERE (o.kind LIKE "
+      "'appearance.%' OR o.aggregate_type IN "
       "('appearance','appearance_candidate','appearance_decision') OR "
-      "aggregate_id IN (SELECT candidate_id FROM appearance_candidate) OR "
-      "aggregate_id IN (SELECT decision_id FROM appearance_decision)");
+      "o.aggregate_id IN (SELECT candidate_id FROM appearance_candidate) OR "
+      "o.aggregate_id IN (SELECT decision_id FROM appearance_decision) OR "
+      "o.outbox_id IN (SELECT outbox_id FROM "
+      "appearance_budget_reservation)) AND "
+      "NOT EXISTS(SELECT 1 FROM appearance_decision d JOIN "
+      "appearance_candidate c ON c.candidate_id=d.candidate_id JOIN "
+      "appearance_budget_reservation r ON r.decision_id=d.decision_id AND "
+      "r.candidate_id=c.candidate_id AND r.outbox_id=o.outbox_id JOIN "
+      "guild_config g ON g.singleton=1 JOIN event_journal e ON "
+      "e.event_id=json_extract(o.payload_json,'$.causation_event_id') AND "
+      "e.event_type='appearance.live_queued.v1' AND "
+      "e.aggregate_type='appearance_decision' AND "
+      "e.aggregate_id=d.decision_id WHERE d.decision_id=o.aggregate_id AND "
+      "d.state='final' AND d.action='live_queued' AND "
+      "o.kind='discord.public.v1' AND "
+      "o.aggregate_type='appearance_decision' AND "
+      "o.target_guild_id=g.guild_id AND "
+      "o.target_channel_id=g.primary_channel_id AND o.target_user_id IS NULL "
+      "AND o.max_attempts=5 "
+      "AND o.idempotency_key='appearance.public:'||d.decision_id AND "
+      "r.idempotency_key='appearance.reservation:'||d.decision_id AND "
+      "o.provider_nonce=substr(replace(o.outbox_id,'-',''),1,12)||"
+      "substr(replace(o.outbox_id,'-',''),20,13) AND "
+      "(SELECT count(*) FROM json_each(o.payload_json))=10 AND "
+      "json_type(o.payload_json,'$.payload_version')='integer' AND "
+      "json_extract(o.payload_json,'$.payload_version')=1 AND "
+      "json_type(o.payload_json,'$.guild_id')='text' AND "
+      "json_type(o.payload_json,'$.channel_id')='text' AND "
+      "json_extract(o.payload_json,'$.guild_id')=g.guild_id AND "
+      "json_extract(o.payload_json,'$.channel_id')=g.primary_channel_id AND "
+      "json_type(o.payload_json,'$.content')='text' AND "
+      "length(json_extract(o.payload_json,'$.content')) BETWEEN 1 AND 500 AND "
+      "instr(json_extract(o.payload_json,'$.content'),char(10))=0 AND "
+      "instr(json_extract(o.payload_json,'$.content'),char(13))=0 AND "
+      "json_type(o.payload_json,'$.embed')='null' AND "
+      "json_type(o.payload_json,'$.allowed_user_mentions')='array' AND "
+      "json_array_length(json_extract(o.payload_json,"
+      "'$.allowed_user_mentions'))=0 AND "
+      "json_type(o.payload_json,'$.buttons')='array' AND "
+      "json_array_length(json_extract(o.payload_json,'$.buttons'))=4 AND "
+      "json_type(o.payload_json,'$.fail_before_first_send')='false' AND "
+      "json_extract(o.payload_json,'$.correlation_id')='appearance-live' AND "
+      "(SELECT count(*) FROM appearance_feedback_control fc WHERE "
+      "fc.decision_id=d.decision_id)=4 AND NOT EXISTS(SELECT 1 FROM "
+      "json_each(json_extract(o.payload_json,'$.buttons')) b LEFT JOIN "
+      "appearance_feedback_control fc ON fc.decision_id=d.decision_id AND "
+      "'sga:1:'||fc.control_id=json_extract(b.value,'$.custom_id') WHERE "
+      "fc.control_id IS NULL OR json_type(b.value)<>'object' OR "
+      "(SELECT count(*) FROM json_each(b.value))<>4 OR "
+      "json_type(b.value,'$.label')<>'text' OR "
+      "json_extract(b.value,'$.label')<>CASE fc.action WHEN 'more' THEN "
+      "'More like this' WHEN 'less' THEN 'Less like this' WHEN "
+      "'not_relevant' THEN 'Not relevant' WHEN 'quiet_tonight' THEN "
+      "'Quiet for tonight' END OR json_type(b.value,'$.disabled')<>'false' OR "
+      "json_extract(b.value,'$.style')<>'secondary') AND (SELECT "
+      "count(DISTINCT "
+      "fc.control_id) FROM json_each(json_extract(o.payload_json,'$.buttons')) "
+      "b JOIN appearance_feedback_control fc ON "
+      "fc.decision_id=d.decision_id AND 'sga:1:'||fc.control_id="
+      "json_extract(b.value,'$.custom_id'))=4)");
   if (!query.step())
     throw std::runtime_error{"Unable to inspect appearance outbox invariant."};
   return static_cast<std::size_t>(query.column_int64(0));

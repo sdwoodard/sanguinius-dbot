@@ -8,6 +8,8 @@ std::string_view appearance_mode_name(const AppearanceMode mode) noexcept {
     return "off";
   case AppearanceMode::dry_run:
     return "dry_run";
+  case AppearanceMode::live:
+    return "live";
   }
   return "unknown";
 }

@@ -22,13 +22,25 @@ namespace {
 
 } // namespace
 
-TEST_CASE("command catalog version six is deterministic and feature gated",
+TEST_CASE("command catalog version seven is deterministic and feature gated",
           "[interaction][commands]") {
   const auto public_catalog = sanguinius::command_catalog(false);
-  REQUIRE(public_catalog.version == 6);
-  REQUIRE(public_catalog.commands.size() == 1);
+  REQUIRE(public_catalog.version == 7);
+  REQUIRE(public_catalog.commands.size() == 2);
   REQUIRE(public_catalog.commands[0].name == "sanguinius");
-  REQUIRE(public_catalog.commands[0].subcommands.size() == 4);
+  REQUIRE(public_catalog.commands[0].subcommands.size() == 5);
+  REQUIRE(public_catalog.commands[0].subcommand_groups.size() == 1);
+  REQUIRE(public_catalog.commands[0].subcommand_groups[0].name == "quiet");
+  REQUIRE(public_catalog.commands[0].subcommand_groups[0].subcommands.size() ==
+          4);
+  REQUIRE(public_catalog.commands[1].name == "sang-admin");
+  REQUIRE(public_catalog.commands[1].subcommands.empty());
+  REQUIRE(public_catalog.commands[1].subcommand_groups.size() == 1);
+  const auto &safety =
+      public_catalog.commands[1].subcommand_groups[0].subcommands;
+  REQUIRE(safety.size() == 2);
+  REQUIRE(safety[0].name == "disable");
+  REQUIRE(safety[1].name == "enable");
 
   const auto admin_catalog = sanguinius::command_catalog(true);
   REQUIRE(admin_catalog.commands.size() == 2);
@@ -37,16 +49,17 @@ TEST_CASE("command catalog version six is deterministic and feature gated",
   REQUIRE(admin_catalog.commands[1].subcommand_groups.size() == 1);
   REQUIRE(admin_catalog.commands[1].subcommand_groups[0].name == "appearance");
   REQUIRE(admin_catalog.commands[1].subcommand_groups[0].subcommands.size() ==
-          3);
+          6);
   const auto &appearance =
       admin_catalog.commands[1].subcommand_groups[0].subcommands;
   REQUIRE(appearance[0].name == "simulate");
   REQUIRE(appearance[1].name == "preview");
   REQUIRE(appearance[2].name == "recent");
-  for (const auto &subcommand : appearance) {
+  REQUIRE(appearance[3].name == "trigger");
+  REQUIRE(appearance[4].name == "disable");
+  REQUIRE(appearance[5].name == "enable");
+  for (const auto &subcommand : appearance)
     REQUIRE(subcommand.name != "force");
-    REQUIRE(subcommand.name != "trigger");
-  }
   REQUIRE(sanguinius::canonical_command_snapshot(admin_catalog) ==
           sanguinius::canonical_command_snapshot(
               sanguinius::command_catalog(true)));
@@ -54,12 +67,13 @@ TEST_CASE("command catalog version six is deterministic and feature gated",
           sanguinius::canonical_command_snapshot(admin_catalog));
 
   const auto chronicle_catalog = sanguinius::command_catalog(false, true);
-  REQUIRE(chronicle_catalog.commands.size() == 3);
+  REQUIRE(chronicle_catalog.commands.size() == 4);
   REQUIRE(chronicle_catalog.commands[1].name == "chronicle");
   REQUIRE(chronicle_catalog.commands[1].subcommands.size() == 6);
   REQUIRE(chronicle_catalog.commands[2].kind ==
           sanguinius::ApplicationCommandKind::message_context);
   REQUIRE(chronicle_catalog.commands[2].name == "Canonize in the Chronicle");
+  REQUIRE(chronicle_catalog.commands[3].name == "sang-admin");
 }
 
 TEST_CASE("command registration reconciliation is guarded and retryable",

@@ -198,6 +198,7 @@ struct CreateProposalRequest {
   ChronicleEntryType type{ChronicleEntryType::quote};
   ChronicleVisibility visibility{ChronicleVisibility::shared};
   bool owner_test{};
+  std::optional<std::string> appearance_decision_id;
   std::string correlation_id;
   std::string idempotency_key;
   std::int64_t now_ms{};
@@ -452,7 +453,10 @@ public:
                    std::function<void()> outbox_wakeup,
                    std::function<void()> scheduler_wakeup,
                    std::size_t draft_capacity = 64,
-                   std::function<void()> canon_observer = {});
+                   std::function<void()> canon_observer = {},
+                   std::function<std::optional<std::pair<std::string, bool>>(
+                       const ContextMessageSnapshot &)>
+                       appearance_verifier = {});
 
   [[nodiscard]] ProposalResult
   canonize_message(const IncomingInteraction &interaction);
@@ -485,6 +489,9 @@ private:
   std::function<void()> outbox_wakeup_;
   std::function<void()> scheduler_wakeup_;
   std::function<void()> canon_observer_;
+  std::function<std::optional<std::pair<std::string, bool>>(
+      const ContextMessageSnapshot &)>
+      appearance_verifier_;
   VolatileChronicleActions volatile_actions_;
 };
 
