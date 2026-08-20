@@ -3,6 +3,7 @@
 #include "sanguinius/application.hpp"
 
 #include "support/fake_ai_client.hpp"
+#include "support/fake_appearance_repository.hpp"
 #include "support/fake_clock.hpp"
 #include "support/fake_chronicle_repository.hpp"
 #include "support/fake_chronicle_session_repository.hpp"
@@ -60,6 +61,7 @@ public:
     auto owned_chronicle_sessions =
         std::make_unique<FakeChronicleSessionRepository>();
     auto owned_relationships = std::make_unique<FakeRelationshipRepository>();
+    auto owned_appearances = std::make_unique<FakeAppearanceRepository>();
     auto owned_ai = std::make_unique<FakeAiClient>();
     auto owned_discord = std::make_unique<FakeDiscord>();
 
@@ -74,6 +76,7 @@ public:
     chronicle = owned_chronicle.get();
     chronicle_sessions = owned_chronicle_sessions.get();
     relationships = owned_relationships.get();
+    appearances = owned_appearances.get();
     ai = owned_ai.get();
     discord = owned_discord.get();
 
@@ -92,6 +95,8 @@ public:
             .chronicle = std::move(owned_chronicle),
             .chronicle_sessions = std::move(owned_chronicle_sessions),
             .relationships = std::move(owned_relationships),
+            .appearances = std::move(owned_appearances),
+            .appearance_policy = test_appearance_policy(),
             .ai_client = std::move(owned_ai),
             .discord = std::move(owned_discord),
         });
@@ -118,6 +123,7 @@ public:
   FakeChronicleRepository *chronicle{};
   FakeChronicleSessionRepository *chronicle_sessions{};
   FakeRelationshipRepository *relationships{};
+  FakeAppearanceRepository *appearances{};
   FakeAiClient *ai{};
   FakeDiscord *discord{};
   std::unique_ptr<Application> application;

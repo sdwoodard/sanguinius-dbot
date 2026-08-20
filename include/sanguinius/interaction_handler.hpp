@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sanguinius/appearances.hpp"
 #include "sanguinius/callback_fence.hpp"
 #include "sanguinius/chronicle.hpp"
 #include "sanguinius/chronicle_sessions.hpp"
@@ -10,8 +11,8 @@
 #include "sanguinius/feature_config.hpp"
 #include "sanguinius/health.hpp"
 #include "sanguinius/pending_notice.hpp"
-#include "sanguinius/repositories.hpp"
 #include "sanguinius/relationships.hpp"
+#include "sanguinius/repositories.hpp"
 #include "sanguinius/work_queue.hpp"
 
 #include <cstddef>
@@ -24,6 +25,7 @@ enum class InteractionOperation {
   status,
   inbox,
   privacy,
+  appearance_callbacks,
   admin_health,
   work_recent,
   work_dead,
@@ -57,6 +59,9 @@ enum class InteractionOperation {
   chronicle_anniversaries_on,
   chronicle_anniversaries_off,
   test_anniversary,
+  appearance_simulate,
+  appearance_preview,
+  appearance_recent,
 };
 
 struct RoutedInteraction {
@@ -76,7 +81,8 @@ public:
                      std::function<QueueSnapshot()> message_queue,
                      std::function<QueueSnapshot()> ai_queue,
                      std::size_t queue_capacity = 64,
-                     RelationshipService *relationships = nullptr);
+                     RelationshipService *relationships = nullptr,
+                     AppearanceService *appearances = nullptr);
   ~InteractionHandler();
 
   InteractionHandler(const InteractionHandler &) = delete;
@@ -103,6 +109,7 @@ private:
   ChronicleService *chronicle_{};
   ChronicleSessionService *chronicle_sessions_{};
   RelationshipService *relationships_{};
+  AppearanceService *appearances_{};
   HealthService &health_service_;
   Diagnostics &diagnostics_;
   FeatureConfiguration features_;

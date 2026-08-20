@@ -2,8 +2,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <string_view>
+#include <thread>
 
 namespace {
 
@@ -72,6 +74,130 @@ TEST_CASE("help and repository commands pass through application seams",
   fixture.discord->emit(sanguinius::test::incoming("bot output", 103, true));
   REQUIRE(fixture.log->wait_for_count(3, 2s));
   REQUIRE(fixture.discord->replies().size() == 2);
+  fixture.application->stop();
+}
+
+TEST_CASE("appearance observer failures do not suppress Chronicle observation",
+          "[application][appearance][chronicle][failure]") {
+  auto options = social_ai_options();
+  options.features.appearances_mode = sanguinius::AppearanceMode::dry_run;
+  sanguinius::test::ApplicationFixture fixture{options};
+  fixture.appearances->throw_on_observe = true;
+  fixture.application->start();
+  fixture.discord->emit(sanguinius::test::incoming("ordinary gathering", 901));
+  REQUIRE(fixture.log->wait_for_count(1, 2s));
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  const auto has_appearance_diagnostic = [&] {
+    return std::ranges::any_of(
+        fixture.diagnostics->events(), [](const auto &event) {
+          return event.category == "appearance.message_observer";
+        });
+  };
+  while ((!fixture.chronicle_sessions->last_observation.has_value() ||
+          !has_appearance_diagnostic()) &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::yield();
+  REQUIRE(fixture.chronicle_sessions->last_observation.has_value());
+  REQUIRE(has_appearance_diagnostic());
+  fixture.application->stop();
+}
+
+TEST_CASE("appearance activity observes only humans and Sanguinius bot output",
+          "[application][appearance][identity]") {
+  auto options = social_ai_options();
+  options.features.appearances_mode = sanguinius::AppearanceMode::dry_run;
+  sanguinius::test::ApplicationFixture fixture{options};
+  fixture.application->start();
+
+  auto unrelated_bot =
+      sanguinius::test::incoming("other bot output", 910, true);
+  unrelated_bot.author_user_id = 77;
+  fixture.discord->emit(unrelated_bot);
+  REQUIRE(fixture.log->wait_for_count(1, 2s));
+  REQUIRE(fixture.appearances->observation_count() == 0);
+
+  auto sanguinius_bot =
+      sanguinius::test::incoming("Sanguinius output", 911, true);
+  sanguinius_bot.author_user_id = sanguinius_bot.bot_user_id;
+  fixture.discord->emit(sanguinius_bot);
+  REQUIRE(fixture.log->wait_for_count(2, 2s));
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (fixture.appearances->observation_count() != 1 &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::yield();
+  REQUIRE(fixture.appearances->observation_count() == 1);
+  REQUIRE(fixture.appearances->last_observation()->author_is_bot);
+  REQUIRE(fixture.appearances->last_observation()->author_user_id == 42);
+  fixture.application->stop();
+}
+
+TEST_CASE("direct bot invocations do not become appearance activity",
+          "[application][appearance][commands][ai]") {
+  auto options = social_ai_options();
+  options.controls.admin_commands_enabled = true;
+  options.features.appearances_mode = sanguinius::AppearanceMode::dry_run;
+  sanguinius::test::ApplicationFixture fixture{options};
+  fixture.ai->set_response("A direct reply.");
+  fixture.application->start();
+
+  fixture.discord->emit(sanguinius::test::incoming("!help", 920));
+  fixture.discord->emit(sanguinius::test::incoming("!repo", 921));
+  fixture.discord->emit(
+      sanguinius::test::incoming("<@42> Answer directly", 922));
+  fixture.discord->emit(sanguinius::test::incoming("!sang-admin health", 923));
+
+  REQUIRE(fixture.discord->wait_for_reply_count(4, 2s));
+  REQUIRE(fixture.log->wait_for_count(4, 2s));
+  REQUIRE(fixture.appearances->observation_count() == 0);
+
+  fixture.discord->emit(
+      sanguinius::test::incoming("ordinary gathering activity", 924));
+  REQUIRE(fixture.log->wait_for_count(5, 2s));
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (fixture.appearances->observation_count() != 1 &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::yield();
+  REQUIRE(fixture.appearances->observation_count() == 1);
+  REQUIRE(fixture.appearances->last_observation()->message_id == 924);
+  fixture.application->stop();
+}
+
+TEST_CASE("successful appearance recurring jobs stay healthy while off",
+          "[application][appearance][retention][scheduler]") {
+  sanguinius::test::ApplicationFixture fixture;
+  fixture.durable_work->seed_job(
+      {.job_id = "00000000-0000-4000-8000-000000000919",
+       .job_type = std::string{sanguinius::appearance_scan_job_type},
+       .aggregate_type = "appearance_policy",
+       .aggregate_id = "m9-initial-1",
+       .due_at_ms = 0,
+       .max_attempts = 5,
+       .idempotency_key = "appearance:scan:recurring:v1",
+       .created_at_ms = 0},
+      sanguinius::AppearanceScanJobPayload{.policy_version = "m9-initial-1"});
+  fixture.durable_work->seed_job(
+      {.job_id = "00000000-0000-4000-8000-000000000920",
+       .job_type = std::string{sanguinius::appearance_purge_job_type},
+       .aggregate_type = "appearance_policy",
+       .aggregate_id = "m9-initial-1",
+       .due_at_ms = 0,
+       .max_attempts = 5,
+       .idempotency_key = "appearance:purge:recurring:v1",
+       .created_at_ms = 0},
+      sanguinius::AppearancePurgeJobPayload{.policy_version = "m9-initial-1"});
+
+  fixture.application->start();
+  REQUIRE(fixture.durable_work->wait_for_job_due(
+      sanguinius::appearance_scan_job_type, 60'000, 2s));
+  REQUIRE(fixture.durable_work->wait_for_job_due(
+      sanguinius::appearance_purge_job_type,
+      sanguinius::appearance_maximum_purge_interval_ms, 2s));
+  REQUIRE(fixture.appearances->purge_count() == 1);
+  REQUIRE(
+      fixture.durable_work->job_due_at(sanguinius::appearance_purge_job_type) ==
+      sanguinius::appearance_maximum_purge_interval_ms);
+  REQUIRE(fixture.durable_work->health(0).pending_jobs == 2);
+  REQUIRE_FALSE(fixture.durable_work->health(0).last_job_error);
   fixture.application->stop();
 }
 

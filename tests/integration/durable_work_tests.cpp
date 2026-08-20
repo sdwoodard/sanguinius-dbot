@@ -65,7 +65,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 6);
+      REQUIRE(migrator.apply(database.connection()).current_version == 7);
     }
     context = std::make_shared<SqliteRepositoryContext>(
         Database::open_runtime(temporary.path(), 25ms));
@@ -220,7 +220,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 6);
+      REQUIRE(migrator.apply(database.connection()).current_version == 7);
     }
     auto context = open();
     SqliteCoreIdentityRepository identities{context};
@@ -648,27 +648,37 @@ TEST_CASE("unstarted claims release without consuming an attempt",
   REQUIRE_FALSE(reclaimed_outbox->first_attempt_at_ms.has_value());
 }
 
-TEST_CASE("delegated jobs renew and disabled jobs defer without consuming attempts",
-          "[durable][scheduler][lease][defer]") {
+TEST_CASE(
+    "delegated jobs renew and disabled jobs defer without consuming attempts",
+    "[durable][scheduler][lease][defer]") {
   DurableFixture fixture;
   REQUIRE(fixture.repository->schedule_notice(
       event(event_id_1, "event:defer-job"), job(100), notice_payload()));
-  const auto claimed = fixture.repository->claim_due_job(
-      100, 200, "instance", std::string{lease_1});
+  const auto claimed = fixture.repository->claim_due_job(100, 200, "instance",
+                                                         std::string{lease_1});
   REQUIRE(claimed);
   REQUIRE(fixture.repository->extend_job_lease(*claimed, 100, 500) ==
           WorkMutationStatus::applied);
-  REQUIRE_FALSE(fixture.repository->claim_due_job(
-      200, 300, "competitor", std::string{lease_2}));
-  REQUIRE(fixture.repository->defer_job(*claimed, 200, 600,
-                                        "feature_disabled") ==
-          WorkMutationStatus::applied);
-  REQUIRE_FALSE(fixture.repository->claim_due_job(
-      599, 700, "competitor", std::string{lease_2}));
+  REQUIRE_FALSE(fixture.repository->claim_due_job(200, 300, "competitor",
+                                                  std::string{lease_2}));
+  REQUIRE(
+      fixture.repository->defer_job(*claimed, 200, 600, "feature_disabled") ==
+      WorkMutationStatus::applied);
+  REQUIRE_FALSE(fixture.repository->claim_due_job(599, 700, "competitor",
+                                                  std::string{lease_2}));
   const auto reclaimed = fixture.repository->claim_due_job(
       600, 700, "competitor", std::string{lease_2});
   REQUIRE(reclaimed);
   REQUIRE(reclaimed->attempt_count == 1);
+  REQUIRE(fixture.repository->reschedule_job(*reclaimed, 600, 900) ==
+          WorkMutationStatus::applied);
+  REQUIRE_FALSE(fixture.repository->health(600).last_job_error);
+  REQUIRE_FALSE(fixture.repository->claim_due_job(899, 1'000, "competitor",
+                                                  std::string{lease_1}));
+  const auto recurring = fixture.repository->claim_due_job(
+      900, 1'000, "competitor", std::string{lease_1});
+  REQUIRE(recurring);
+  REQUIRE(recurring->attempt_count == 1);
 }
 
 TEST_CASE("submitted claims retain ambiguity and recover after lease expiry",

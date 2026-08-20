@@ -54,7 +54,7 @@ public:
           sanguinius::persistence::production_migrations(),
           {"test", "revision"},
           clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 6);
+      REQUIRE(migrator.apply(database.connection()).current_version == 7);
     }
     context =
         std::make_shared<sanguinius::persistence::SqliteRepositoryContext>(

@@ -68,6 +68,8 @@ public:
         chronicle_session_repository_{
             std::move(dependencies.chronicle_sessions)},
         relationship_repository_{std::move(dependencies.relationships)},
+        appearance_repository_{std::move(dependencies.appearances)},
+        appearance_policy_{std::move(dependencies.appearance_policy)},
         ai_client_{std::move(dependencies.ai_client)},
         discord_{std::move(dependencies.discord)} {
     if (!clock_ || !id_generator_ || !persistent_id_generator_ ||
@@ -92,9 +94,30 @@ public:
     }
     ai_work_ = std::make_unique<AiWorkService>(options_.ai_queue_capacity,
                                                options_.ai_worker_count);
-    if (options_.features.chronicle_enabled && !relationship_repository_) {
+    if (options_.features.appearances_mode == AppearanceMode::dry_run &&
+        (!appearance_repository_ || !appearance_policy_)) {
       throw std::invalid_argument{
-          "Relationship persistence is required when the Chronicle is enabled."};
+          "Appearance persistence is required in dry_run mode."};
+    }
+    if (appearance_repository_ && appearance_policy_) {
+      appearance_service_ = std::make_unique<AppearanceService>(
+          *appearance_repository_, *clock_, *persistent_id_generator_,
+          std::move(*appearance_policy_), options_.features.appearances_mode,
+          options_.instance_id, ai_client_.get(), ai_work_.get(), *diagnostics_,
+          options_.persona, options_.timezone, [this] {
+            const auto discord_status = discord_->status();
+            const auto queue = ai_work_->snapshot();
+            return AppearanceRuntimeState{
+                .operational = discord_status.ready && queue.accepting,
+                .degraded = !discord_status.ready || !queue.accepting ||
+                            queue.queued >= queue.capacity ||
+                            discord_status.command_registration ==
+                                CommandRegistrationState::failed};
+          });
+    }
+    if (options_.features.chronicle_enabled && !relationship_repository_) {
+      throw std::invalid_argument{"Relationship persistence is required when "
+                                  "the Chronicle is enabled."};
     }
     if (relationship_repository_ && options_.features.chronicle_enabled) {
       relationship_service_ = std::make_unique<RelationshipService>(
@@ -110,10 +133,10 @@ public:
     if (chronicle_repository_) {
       chronicle_service_ = std::make_unique<ChronicleService>(
           *chronicle_repository_, *clock_, *persistent_id_generator_,
-          options_.server_scope, options_.controls,
-          [this] { outbox_->wake(); },
+          options_.server_scope, options_.controls, [this] { outbox_->wake(); },
           [this] {
-            if (scheduler_) scheduler_->wake();
+            if (scheduler_)
+              scheduler_->wake();
           },
           64,
           [this] {
@@ -122,11 +145,13 @@ public:
                 static_cast<void>(relationship_service_->recover());
               } catch (const std::exception &error) {
                 diagnostics_->emit({DiagnosticSeverity::error,
-                                    "relationship.canon_sync", error.what(),
+                                    "relationship.canon_sync",
+                                    error.what(),
                                     {}});
               } catch (...) {
                 diagnostics_->emit(
-                    {DiagnosticSeverity::error, "relationship.canon_sync",
+                    {DiagnosticSeverity::error,
+                     "relationship.canon_sync",
                      "Unknown Chronicle relationship synchronization failure.",
                      {}});
               }
@@ -137,7 +162,10 @@ public:
       chronicle_session_service_ = std::make_unique<ChronicleSessionService>(
           *chronicle_session_repository_, *clock_, *persistent_id_generator_,
           options_.server_scope, options_.controls,
-          [this] { if (scheduler_) scheduler_->wake(); },
+          [this] {
+            if (scheduler_)
+              scheduler_->wake();
+          },
           [this] { outbox_->wake(); }, options_.timezone, ai_client_.get(),
           ai_work_.get(), durable_work_.get(), diagnostics_.get());
     }
@@ -145,7 +173,8 @@ public:
         *durable_work_, *clock_, *persistent_id_generator_, *diagnostics_,
         options_.instance_id, [this] { outbox_->wake(); }, 32,
         chronicle_service_
-            ? JobHandlerRegistry::Handler{[this](const ClaimedScheduledJob &job) {
+            ? JobHandlerRegistry::Handler{[this](
+                                              const ClaimedScheduledJob &job) {
                 const auto result = chronicle_service_->complete_expiry(job);
                 if (result.code == ChronicleResultCode::invalid_state) {
                   throw std::invalid_argument{
@@ -197,6 +226,39 @@ public:
           if (result.status == WorkMutationStatus::invalid_state)
             throw std::invalid_argument{"Invalid anniversary payload."};
         });
+    scheduler_->add_handler(
+        std::string{appearance_scan_job_type},
+        [this](const ClaimedScheduledJob &job) {
+          if (!std::holds_alternative<AppearanceScanJobPayload>(job.payload))
+            throw std::invalid_argument{"Invalid appearance scan payload."};
+          const bool scanned =
+              appearance_service_ && appearance_service_->scan_events();
+          const auto current = unix_milliseconds(*clock_);
+          const auto status =
+              scanned
+                  ? durable_work_->reschedule_job(job, current,
+                                                  current + 60'000)
+                  : durable_work_->defer_job(job, current, current + 60'000,
+                                             "appearance_runtime_not_ready");
+          if (status != WorkMutationStatus::applied)
+            throw std::runtime_error{"Appearance scan claim became stale."};
+        });
+    scheduler_->add_handler(
+        std::string{appearance_purge_job_type},
+        [this](const ClaimedScheduledJob &job) {
+          if (!std::holds_alternative<AppearancePurgeJobPayload>(job.payload))
+            throw std::invalid_argument{"Invalid appearance purge payload."};
+          const auto recurrence_ms =
+              appearance_service_ ? appearance_service_->purge_interval_ms()
+                                  : appearance_maximum_purge_interval_ms;
+          if (appearance_service_)
+            appearance_service_->purge();
+          const auto current = unix_milliseconds(*clock_);
+          const auto status = durable_work_->reschedule_job(
+              job, current, current + recurrence_ms);
+          if (status != WorkMutationStatus::applied)
+            throw std::runtime_error{"Appearance purge claim became stale."};
+        });
     durable_controls_ = std::make_unique<DurableWorkControlService>(
         *durable_work_, *clock_, *persistent_id_generator_,
         options_.server_scope, [this] { scheduler_->wake(); },
@@ -227,8 +289,87 @@ public:
         *message_log_, *ai_responder_, *discord_, *diagnostics_, *owner_admin_,
         options_.command_prefix, options_.message_queue_capacity,
         [this](const IncomingMessage &message) {
-          if (chronicle_session_service_)
-            chronicle_session_service_->observe_message(message);
+          const bool primary_scope =
+              message.guild_id == options_.server_scope.guild_id &&
+              message.channel_id == options_.server_scope.primary_channel_id;
+          if (primary_scope) {
+            try {
+              identities_->ensure_user(DiscordUserRecord{
+                  .user_id = message.author_user_id,
+                  .display_name =
+                      message.author_display_name.empty()
+                          ? std::nullopt
+                          : std::optional<
+                                std::string>{message.author_display_name},
+                  .username =
+                      message.author_username.empty()
+                          ? std::nullopt
+                          : std::optional<std::string>{message.author_username},
+                  .is_bot = message.author_is_bot,
+                  .observed_at_ms = unix_milliseconds(*clock_),
+              });
+            } catch (const std::exception &error) {
+              diagnostics_->emit({DiagnosticSeverity::error,
+                                  "message.identity_observer", error.what(),
+                                  message.correlation_id});
+            } catch (...) {
+              diagnostics_->emit({DiagnosticSeverity::error,
+                                  "message.identity_observer",
+                                  "Unknown identity observation failure.",
+                                  message.correlation_id});
+            }
+          }
+          if (chronicle_session_service_) {
+            try {
+              chronicle_session_service_->observe_message(message);
+            } catch (const std::exception &error) {
+              diagnostics_->emit({DiagnosticSeverity::error,
+                                  "chronicle.session_context_observer",
+                                  error.what(), message.correlation_id});
+            } catch (...) {
+              diagnostics_->emit(
+                  {DiagnosticSeverity::error,
+                   "chronicle.session_context_observer",
+                   "Unknown Chronicle session observation failure.",
+                   message.correlation_id});
+            }
+          }
+          const bool appearance_author_is_observable =
+              !message.author_is_bot ||
+              (message.bot_user_id.is_set() &&
+               message.author_user_id == message.bot_user_id);
+          const bool appearance_direct_invocation =
+              !message.author_is_bot &&
+              (parse_admin_operation(message.content, options_.command_prefix)
+                   .has_value() ||
+               ai_responder_->handles(message) ||
+               parse_command(message.content, options_.command_prefix) !=
+                   Command::none);
+          if (primary_scope && appearance_service_ &&
+              appearance_author_is_observable &&
+              !appearance_direct_invocation) {
+            try {
+              appearance_service_->observe_message(AppearanceMessageObservation{
+                  .message_id = message.message_id,
+                  .guild_id = message.guild_id,
+                  .channel_id = message.channel_id,
+                  .author_user_id = message.author_user_id,
+                  .author_is_bot = message.author_is_bot,
+                  .excerpt = message.content,
+                  .observed_at_ms = unix_milliseconds(*clock_),
+                  .correlation_id = message.correlation_id,
+              });
+            } catch (const std::exception &error) {
+              diagnostics_->emit({DiagnosticSeverity::error,
+                                  "appearance.message_observer", error.what(),
+                                  message.correlation_id});
+            } catch (...) {
+              diagnostics_->emit({DiagnosticSeverity::error,
+                                  "appearance.message_observer",
+                                  "Unknown appearance observation failure.",
+                                  message.correlation_id});
+            }
+          }
         });
     interaction_handler_ = std::make_unique<InteractionHandler>(
         *identities_, *notice_service_, *clock_, *durable_controls_,
@@ -236,11 +377,11 @@ public:
         *health_service_, *diagnostics_, options_.features,
         [this] { return message_handler_->queue_snapshot(); },
         [this] { return ai_responder_->queue_snapshot(); },
-        options_.interaction_queue_capacity, relationship_service_.get());
+        options_.interaction_queue_capacity, relationship_service_.get(),
+        appearance_service_.get());
     interaction_router_ = std::make_unique<InteractionRouter>(
         *scope_policy_, options_.controls, options_.features,
-        *interaction_handler_,
-        *diagnostics_);
+        *interaction_handler_, *diagnostics_);
   }
 
   void start() {
@@ -269,6 +410,8 @@ public:
               "Relationship projection verification failed during startup."};
         }
       }
+      if (appearance_service_)
+        appearance_service_->start();
       static_cast<void>(notice_service_->recover_incomplete_deliveries());
       if (chronicle_session_service_)
         chronicle_session_service_->ensure_anniversary_schedule();
@@ -412,6 +555,8 @@ private:
   std::unique_ptr<ChronicleRepository> chronicle_repository_;
   std::unique_ptr<ChronicleSessionRepository> chronicle_session_repository_;
   std::unique_ptr<RelationshipRepository> relationship_repository_;
+  std::unique_ptr<AppearanceRepository> appearance_repository_;
+  std::optional<AppearancePolicy> appearance_policy_;
   std::unique_ptr<AiClient> ai_client_;
   std::unique_ptr<DiscordRuntime> discord_;
   std::unique_ptr<AiResponder> ai_responder_;
@@ -425,6 +570,7 @@ private:
   std::unique_ptr<ChronicleService> chronicle_service_;
   std::unique_ptr<ChronicleSessionService> chronicle_session_service_;
   std::unique_ptr<RelationshipService> relationship_service_;
+  std::unique_ptr<AppearanceService> appearance_service_;
   std::unique_ptr<SchedulerService> scheduler_;
   std::unique_ptr<DurableWorkControlService> durable_controls_;
   std::unique_ptr<InteractionHandler> interaction_handler_;

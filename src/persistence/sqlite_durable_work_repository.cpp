@@ -387,6 +387,18 @@ decode_anniversary_scan(const Json &value) {
   return result;
 }
 
+template <typename Payload>
+[[nodiscard]] Payload decode_appearance_job(const Json &value) {
+  if (!value.is_object() || value.size() < 2 ||
+      value.at("payload_version").get<int>() != 1 ||
+      !value.at("policy_version").is_string())
+    throw std::runtime_error{"Unsupported appearance-job payload."};
+  const auto version = value.at("policy_version").get<std::string>();
+  if (version.empty() || version.size() > 80)
+    throw std::runtime_error{"Invalid appearance-job payload."};
+  return Payload{.policy_version = version};
+}
+
 [[nodiscard]] DurablePayload decode_payload(const std::string_view kind,
                                             const std::string &payload) {
   try {
@@ -408,6 +420,10 @@ decode_anniversary_scan(const Json &value) {
       return decode_session_context_purge(value);
     if (kind == anniversary_scan_job_type)
       return decode_anniversary_scan(value);
+    if (kind == "appearance.scan.v1")
+      return decode_appearance_job<AppearanceScanJobPayload>(value);
+    if (kind == "appearance.purge.v1")
+      return decode_appearance_job<AppearancePurgeJobPayload>(value);
   } catch (const std::exception &) {
     return std::monostate{};
   }
@@ -1292,6 +1308,32 @@ WorkMutationStatus SqliteDurableWorkRepository::defer_job(
   update.bind(4, job.job_id);
   update.bind(5, job.lease_owner);
   update.bind(6, job.lease_token);
+  update.execute();
+  if (context_->connection().changes() == 0)
+    return stale_job_status(context_->connection(), job.job_id);
+  return WorkMutationStatus::applied;
+}
+
+WorkMutationStatus
+SqliteDurableWorkRepository::reschedule_job(const ClaimedScheduledJob &job,
+                                            const std::int64_t now_ms,
+                                            const std::int64_t due_at_ms) {
+  require_timestamp(now_ms);
+  require_timestamp(due_at_ms);
+  if (due_at_ms <= now_ms)
+    throw std::invalid_argument{"A rescheduled job must move into the future."};
+  const std::scoped_lock lock{context_->mutex()};
+  auto update = context_->connection().prepare(
+      "UPDATE scheduled_job SET state='pending',due_at_ms=?,"
+      "attempt_count=max(attempt_count-1,0),lease_owner=NULL,lease_token=NULL,"
+      "lease_until_ms=NULL,updated_at_ms=max(?,updated_at_ms),terminal_at_ms="
+      "NULL,last_error_code=NULL WHERE job_id=? AND state='claimed' AND "
+      "lease_owner=? AND lease_token=?");
+  update.bind(1, due_at_ms);
+  update.bind(2, now_ms);
+  update.bind(3, job.job_id);
+  update.bind(4, job.lease_owner);
+  update.bind(5, job.lease_token);
   update.execute();
   if (context_->connection().changes() == 0)
     return stale_job_status(context_->connection(), job.job_id);

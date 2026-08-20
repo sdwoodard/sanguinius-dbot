@@ -156,11 +156,8 @@ request_timeout(const ConfigSource &source, ConfigurationOrigin &origin) {
   if (*value == "dry_run") {
     return AppearanceMode::dry_run;
   }
-  if (*value == "live") {
-    return AppearanceMode::live;
-  }
   throw std::runtime_error{std::string{variable} +
-                           " must be exactly off, dry_run, or live."};
+                           " must be exactly off or dry_run; live is unavailable in Milestone 9."};
 }
 
 [[nodiscard]] std::string enabled(const bool value) {
@@ -317,6 +314,15 @@ Config Config::from_source(const ConfigSource &source) {
   config.features.voice_input_enabled =
       optional_boolean(source, "SANGUINIUS_VOICE_INPUT_ENABLED", false);
 
+  if (const auto policy_file =
+          optional_nonempty(source, "SANGUINIUS_APPEARANCE_POLICY_FILE")) {
+    config.paths.appearance_policy_file = *policy_file;
+    config.origins.appearance_policy_file = ConfigurationOrigin::configured;
+  }
+  config.appearance_policy = parse_appearance_policy(text_from_file(
+      source, config.paths.appearance_policy_file,
+      "SANGUINIUS_APPEARANCE_POLICY_FILE"));
+
   if (const auto timezone = optional_nonempty(source, "SANGUINIUS_TIMEZONE")) {
     config.timezone = *timezone;
     config.origins.timezone = ConfigurationOrigin::configured;
@@ -365,6 +371,11 @@ std::string redacted_config_summary(const Config &config,
          << configuration_origin_name(config.origins.persona_file) << '\n'
          << "timezone="
          << configuration_origin_name(config.origins.timezone) << '\n'
+         << "appearance_policy_file="
+         << configuration_origin_name(config.origins.appearance_policy_file)
+         << '\n'
+         << "appearance_policy_version=" << config.appearance_policy.policy_version
+         << '\n'
          << "discord_request_timeout="
          << configuration_origin_name(config.origins.discord_request_timeout)
          << '\n'

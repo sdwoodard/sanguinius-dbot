@@ -108,7 +108,7 @@ TEST_CASE(
     "[application][interaction][chronicle]") {
   sanguinius::test::ApplicationFixture fixture{chronicle_options()};
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 5);
+  REQUIRE(fixture.discord->command_catalog().version == 6);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 4);
 
   auto remember =
@@ -635,6 +635,90 @@ TEST_CASE("owner test notice card and private open are idempotent",
     REQUIRE_FALSE(
         contains(event.message, cards[0].message.buttons[0].custom_id));
   }
+  fixture.application->stop();
+}
+
+TEST_CASE(
+    "owner appearance controls stay ephemeral and cannot deliver publicly",
+    "[application][interaction][appearance]") {
+  auto options = admin_options();
+  options.features.appearances_mode = sanguinius::AppearanceMode::dry_run;
+  sanguinius::test::ApplicationFixture fixture{options};
+  fixture.clock->set(std::chrono::sys_seconds{std::chrono::seconds{1}});
+  fixture.ai->set_response(
+      R"({"serious_context":false,"serious_categories":[],"should_speak":true,"text":"A fine evening for shared victories.","tone":"warm","memory_ids_used":[],"confidence":0.93})");
+  fixture.application->start();
+  REQUIRE(fixture.appearances->registered());
+
+  auto simulated =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto simulate = slash(simulated, "sang-admin", "simulate", 500);
+  simulate.subcommand_group_name = "appearance";
+  simulate.command_options = {
+      {"fixture", std::string{"lively_game_night_banter"}}};
+  fixture.discord->emit(std::move(simulate));
+  REQUIRE(simulated->wait_for_edit_count(1, 2s));
+  REQUIRE(simulated->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(
+      contains(simulated->edits()[0].content, "Appearance simulation stored:"));
+  REQUIRE(fixture.appearances->candidate_count() == 1);
+  REQUIRE(fixture.ai->wait_for_request_count(1, 2s));
+
+  const auto reference = simulated->edits()[0].content.substr(
+      simulated->edits()[0].content.find_last_of(' ') + 1);
+  auto previewed =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto preview = slash(previewed, "sang-admin", "preview", 501);
+  preview.subcommand_group_name = "appearance";
+  preview.command_options = {{"reference", reference}};
+  fixture.discord->emit(std::move(preview));
+  REQUIRE(previewed->wait_for_edit_count(1, 2s));
+  REQUIRE(
+      contains(previewed->edits()[0].content, "Appearance dry-run decision"));
+
+  auto recent = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto recent_request = slash(recent, "sang-admin", "recent", 502);
+  recent_request.subcommand_group_name = "appearance";
+  fixture.discord->emit(std::move(recent_request));
+  REQUIRE(recent->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(recent->edits()[0].content,
+                   "Appearance public-outbox violations: 0"));
+  REQUIRE(fixture.discord->public_messages().empty());
+  REQUIRE(fixture.discord->replies().empty());
+  fixture.application->stop();
+
+  auto off_options = admin_options();
+  off_options.controls.test_mode = false;
+  sanguinius::test::ApplicationFixture off{off_options};
+  off.application->start();
+  auto historical =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto historical_request = slash(historical, "sang-admin", "recent", 503);
+  historical_request.subcommand_group_name = "appearance";
+  off.discord->emit(std::move(historical_request));
+  REQUIRE(historical->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(historical->edits()[0].content,
+                   "Appearance public-outbox violations: 0"));
+  REQUIRE(off.discord->public_messages().empty());
+  off.application->stop();
+}
+
+TEST_CASE(
+    "members can manage appearance callback consent while appearances are off",
+    "[application][interaction][appearance][consent]") {
+  sanguinius::test::ApplicationFixture fixture{admin_options()};
+  fixture.application->start();
+  auto enabled = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto request = slash(enabled, "sanguinius", "appearance-callbacks", 510);
+  request.command_options = {{"mode", std::string{"on"}}};
+  fixture.discord->emit(std::move(request));
+  REQUIRE(enabled->wait_for_edit_count(1, 2s));
+  REQUIRE(enabled->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(enabled->edits()[0].content == "Appearance callbacks are enabled.");
+  REQUIRE(fixture.appearances->callback_enabled());
+  REQUIRE(fixture.discord->public_messages().empty());
   fixture.application->stop();
 }
 

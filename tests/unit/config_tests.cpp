@@ -5,6 +5,8 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -24,6 +26,13 @@ public:
         {"SANGUINIUS_OWNER_USER_ID", "123456789012345678"},
     };
     files.emplace("config/persona.txt", "PERSONA_SECRET_SENTINEL");
+    const auto policy_path = std::filesystem::path{__FILE__}.parent_path()
+                                 .parent_path().parent_path() /
+                             "config/appearance-policy-v1.json";
+    std::ifstream policy{policy_path};
+    files.emplace("config/appearance-policy-v1.json",
+                  std::string{std::istreambuf_iterator<char>{policy},
+                              std::istreambuf_iterator<char>{}});
   }
 
   std::optional<std::string>
@@ -125,7 +134,8 @@ TEST_CASE("typed configuration loads safe defaults and full snowflakes",
   REQUIRE_FALSE(config.features.vox_enabled);
   REQUIRE_FALSE(config.features.voice_input_enabled);
   REQUIRE(source.read_paths ==
-          std::vector<std::filesystem::path>{"config/persona.txt"});
+          std::vector<std::filesystem::path>{
+              "config/persona.txt", "config/appearance-policy-v1.json"});
 }
 
 TEST_CASE("Discord command configuration does not load application services",
@@ -167,6 +177,9 @@ TEST_CASE("typed configuration parses strict controls features and duration",
   source.values["SANGUINIUS_PERSONA_FILE"] = "configured-persona";
   source.values["SANGUINIUS_TIMEZONE"] = "UTC";
   source.files["configured-persona"] = "configured persona";
+  source.values["SANGUINIUS_APPEARANCE_POLICY_FILE"] = "configured-policy";
+  source.files["configured-policy"] =
+      source.files["config/appearance-policy-v1.json"];
 
   const auto config = sanguinius::Config::from_source(source);
   REQUIRE(config.controls.admin_commands_enabled);
@@ -198,7 +211,7 @@ TEST_CASE("typed configuration parses strict controls features and duration",
           sanguinius::ConfigurationOrigin::configured);
   REQUIRE(config.origins.timezone ==
           sanguinius::ConfigurationOrigin::configured);
-  REQUIRE(source.read_paths.size() == 1);
+  REQUIRE(source.read_paths.size() == 2);
 }
 
 TEST_CASE("configuration rejects missing invalid and zero scope IDs",
@@ -270,11 +283,14 @@ TEST_CASE("configuration rejects noncanonical booleans and durations",
 
 TEST_CASE("configuration validates appearance mode database and persona",
           "[config]") {
-  for (const std::string valid : {"off", "dry_run", "live"}) {
+  for (const std::string valid : {"off", "dry_run"}) {
     FakeConfigSource source;
     source.values["SANGUINIUS_APPEARANCES_MODE"] = valid;
     REQUIRE_NOTHROW(sanguinius::Config::from_source(source));
   }
+  FakeConfigSource live_mode;
+  live_mode.values["SANGUINIUS_APPEARANCES_MODE"] = "live";
+  REQUIRE(contains(config_error(live_mode), "unavailable"));
 
   FakeConfigSource bad_mode;
   bad_mode.values["SANGUINIUS_APPEARANCES_MODE"] = "DRY_RUN_SENTINEL";

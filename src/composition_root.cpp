@@ -9,6 +9,7 @@
 #include "sanguinius/persistence/migrator.hpp"
 #include "sanguinius/persistence/sqlite_chronicle_repository.hpp"
 #include "sanguinius/persistence/sqlite_chronicle_session_repository.hpp"
+#include "sanguinius/persistence/sqlite_appearance_repository.hpp"
 #include "sanguinius/persistence/sqlite_durable_work_repository.hpp"
 #include "sanguinius/persistence/sqlite_repositories.hpp"
 #include "sanguinius/persistence/sqlite_relationship_repository.hpp"
@@ -80,6 +81,8 @@ std::unique_ptr<Application> make_application(const Config &config) {
   auto relationships =
       std::make_unique<persistence::SqliteRelationshipRepository>(
           repository_context);
+  auto appearances =
+      std::make_unique<persistence::SqliteAppearanceRepository>(repository_context);
 
   auto id_generator = std::make_unique<ProcessIdGenerator>();
   auto diagnostics = std::make_unique<ConsoleDiagnostics>();
@@ -129,6 +132,8 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .chronicle = std::move(chronicle),
           .chronicle_sessions = std::move(chronicle_sessions),
           .relationships = std::move(relationships),
+          .appearances = std::move(appearances),
+          .appearance_policy = config.appearance_policy,
           .ai_client = std::move(ai_client),
           .discord = std::move(discord),
       });

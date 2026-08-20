@@ -114,17 +114,18 @@ void MessageHandler::process(const IncomingMessage &message) const {
                        error.what(), message.correlation_id});
   }
 
-  if (message.author_is_bot) {
-    return;
-  }
   if (observer_) {
     try {
       observer_(message);
     } catch (const std::exception &error) {
       diagnostics_.emit({DiagnosticSeverity::error,
-                         "chronicle.session_context", error.what(),
+                         "message.observer", error.what(),
                          message.correlation_id});
     }
+  }
+
+  if (message.author_is_bot) {
+    return;
   }
 
   if (const auto operation =

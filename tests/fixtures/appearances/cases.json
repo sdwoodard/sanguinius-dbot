@@ -1,0 +1,15 @@
+[
+  {"name":"lively_game_night_banter","actors":2,"alternating":true,"recurrence":2,"expected":"model_pending"},
+  {"name":"one_person_quiet_channel","actors":1,"expected":"active_humans"},
+  {"name":"bot_just_spoke","actors":2,"bot_last":true,"expected":"bot_last_meaningful_speaker"},
+  {"name":"quiet_hours","actors":2,"configured_quiet":true,"expected":"configured_quiet_window"},
+  {"name":"manual_quiet","actors":2,"manual_quiet":true,"expected":"participant_quiet"},
+  {"name":"sensitive_serious_conversation","actors":2,"serious":"death_serious_health","expected":"serious_context"},
+  {"name":"christianity","actors":2,"serious":"christianity","expected":"serious_context"},
+  {"name":"chronicle_anniversary","actors":2,"type":"anniversary","specificity":15,"expected":"model_pending"},
+  {"name":"repeated_inside_joke_on_cooldown","actors":2,"theme_available":false,"expected":"theme_cooldown"},
+  {"name":"tarot_settlement","actors":2,"source_enabled":false,"expected":"source_enabled"},
+  {"name":"opted_out_participant","actors":2,"consented":false,"expected":"callback_consent"},
+  {"name":"stale_candidate","actors":2,"stale":true,"expected":"candidate_fresh"},
+  {"name":"owner_dry_run","actors":1,"owner_simulation":true,"alternating":true,"recurrence":2,"expected":"model_pending"}
+]

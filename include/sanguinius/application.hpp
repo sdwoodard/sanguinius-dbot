@@ -1,6 +1,8 @@
 #pragma once
 
 #include "sanguinius/ai_client.hpp"
+#include "sanguinius/appearance_policy.hpp"
+#include "sanguinius/appearances.hpp"
 #include "sanguinius/build_info.hpp"
 #include "sanguinius/chronicle.hpp"
 #include "sanguinius/chronicle_sessions.hpp"
@@ -21,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace sanguinius {
@@ -58,6 +61,8 @@ struct ApplicationDependencies {
   std::unique_ptr<ChronicleRepository> chronicle;
   std::unique_ptr<ChronicleSessionRepository> chronicle_sessions;
   std::unique_ptr<RelationshipRepository> relationships;
+  std::unique_ptr<AppearanceRepository> appearances;
+  std::optional<AppearancePolicy> appearance_policy;
   std::unique_ptr<AiClient> ai_client;
   std::unique_ptr<DiscordRuntime> discord;
 };

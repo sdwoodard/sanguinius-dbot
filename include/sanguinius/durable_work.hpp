@@ -113,10 +113,21 @@ struct AnniversaryScanJobPayload {
   bool test_run{};
 };
 
+struct AppearanceScanJobPayload {
+  std::string policy_version;
+};
+
+struct AppearancePurgeJobPayload {
+  std::string policy_version;
+};
+
 using DurablePayload =
     std::variant<std::monostate, NoticeOutboxPayload, PublicOutboxPayload,
                  MemoryExpiryJobPayload, SessionSummaryJobPayload,
-                 SessionContextPurgeJobPayload, AnniversaryScanJobPayload>;
+                 SessionContextPurgeJobPayload, AnniversaryScanJobPayload,
+                 AppearanceScanJobPayload, AppearancePurgeJobPayload>;
+// Appearance jobs carry only the policy version; excerpts and generated prose
+// never enter durable scheduler payloads.
 
 struct ClaimedScheduledJob {
   std::string job_id;
@@ -231,6 +242,9 @@ public:
   [[nodiscard]] virtual WorkMutationStatus
   defer_job(const ClaimedScheduledJob &job, std::int64_t now_ms,
             std::int64_t retry_at_ms, std::string error_code) = 0;
+  [[nodiscard]] virtual WorkMutationStatus
+  reschedule_job(const ClaimedScheduledJob &job, std::int64_t now_ms,
+                 std::int64_t due_at_ms) = 0;
   [[nodiscard]] virtual WorkMutationStatus
   extend_job_lease(const ClaimedScheduledJob &job, std::int64_t now_ms,
                    std::int64_t lease_until_ms) = 0;

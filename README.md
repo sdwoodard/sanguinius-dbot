@@ -1,8 +1,9 @@
 # Sanguinius
 
 Sanguinius is a Discord bot built with modern C++ and [D++](https://dpp.dev/).
-It supports guild-scoped slash commands, sealed notices, and an optional
-Living Chronicle with deliberate canon entries and explicit memories. It
+It supports guild-scoped slash commands, sealed notices, an optional Living
+Chronicle, and a persistent unsolicited-appearance candidate engine restricted
+to inspection-only dry-run decisions. It
 preserves two public prefix commands, answers messages that begin with a bot
 mention through the OpenAI Responses API, and writes every visible guild
 message-create event to an append-only text log. Typed configuration fixes the
@@ -15,7 +16,7 @@ bot's feature boundary to one guild, one primary text channel, and one owner.
 | `!help` | List the supported commands. |
 | `!repo` | Link to this source repository. |
 
-The configured guild receives command catalog version 5. Chronicle commands
+The configured guild receives command catalog version 6. Chronicle commands
 are registered only when `SANGUINIUS_CHRONICLE_ENABLED=true`; owner commands
 remain separately gated:
 
@@ -24,6 +25,7 @@ remain separately gated:
 | `/sanguinius status` | Ephemeral readiness, feature-mode, and unopened-notice summary. |
 | `/sanguinius inbox` | Ephemerally opens the oldest pending sealed notice. Duplicate Discord interaction IDs replay the same result. |
 | `/sanguinius privacy` | Ephemeral identity/preference, voice-input, no-DM, and raw-voice-retention summary. |
+| `/sanguinius appearance-callbacks <on\|off>` | Ephemerally opts the invoking member into or out of public appearance callbacks. This remains available while appearance evaluation is `off`. |
 | **Canonize in the Chronicle** | Message context action that privately previews a bounded proposal, then requests sealed participant approval before canon. |
 | `/chronicle remember` | Opens a modal and ephemeral confirm/cancel preview for an explicit memory, with up to five optional lowercase topic tags. Unconfirmed drafts are memory-only and disappear on restart. |
 | `/chronicle recall [query] [participant] [type] [from] [to]` | Ephemerally searches visible canon with literal FTS5 terms and relational filters; explicit-memory matching remains privacy-checked. Results use invoker-bound five-item pages. |
@@ -42,6 +44,9 @@ remain separately gated:
 | `/sang-admin test-schedule-notice` | Owner-only, test-mode-gated scheduling of the same self-targeted notice for 60 seconds later. |
 | `/sang-admin test-public-retry` | Owner-only, test-mode-gated neutral card whose first attempt fails before Discord submission and then retries once. |
 | `/sang-admin test-anniversary` | Owner-only, test-mode-gated exactly-once anniversary delivery using the newest eligible owner-test entry. |
+| `/sang-admin appearance simulate fixture:<choice>` | Owner-only, test-mode and `dry_run`-gated creation of an idempotent sanitized candidate. Returns immediately with its reference. |
+| `/sang-admin appearance preview reference:<uuid>` | Owner-only ephemeral inspection of a stored decision, including gates, score components, model status, shortened memory references, and any retained preview. Available in `off`. |
+| `/sang-admin appearance recent` | Owner-only ephemeral inspection of the ten latest redacted decisions, with full references accepted by `preview`, and the appearance-public-outbox invariant. Available in `off`. |
 
 Command names are case-insensitive. Messages written by bots are logged but are
 not treated as commands.
@@ -82,6 +87,42 @@ titles; deterministic validation and explicit owner approval control canon,
 title activation, public delivery, and relationship effects. Transient context
 is purged on approval/rejection or by persisted cleanup even when Chronicle
 command access is disabled.
+
+Appearance dry-run observes only the configured guild and primary channel
+after messages enter the serialized application worker. It retains at most 24
+activity rows, 500 UTF-8 bytes per row, and 12 KiB total, and purges activity
+and copied candidate excerpts at immutable deadlines set by the policy active
+when each row or candidate was created. A later policy cannot extend those
+deadlines. Unrelated bots are ignored;
+only human messages and Sanguinius's own output enter appearance activity.
+Each candidate retains a prose-free summary after excerpt purge. Deterministic scope, expiry,
+participation, quiet, consent, sensitivity, cooldown, and hypothetical-budget
+gates run before optional structured AI classification and are rechecked after
+it, together with current bounded channel activity and last-speaker state.
+Serious-context phrase matches can only suppress. Decisions and redacted
+audits persist; generated previews expire after 30 days.
+Each full transient message is classified before its excerpt is truncated; the
+bounded activity row retains only the category and up to 500 UTF-8 bytes. A
+separate prose-free message-ID fence preserves gateway-delivery idempotency
+after activity excerpts expire.
+Each human must explicitly enable appearance callbacks before participating in
+a real or simulated candidate. Chronicle-backed candidates additionally
+revalidate the current shared source record and every source participant's
+Chronicle and appearance consent before model preparation and again before a
+final hypothetical decision. Conversation matches retain an authoritative
+Chronicle-entry source link, and selected memories retain exact revision
+references; revoked, changed, private, or unavailable sources fail closed on
+restart and final revalidation.
+
+Milestone 9 accepts only `off` and `dry_run`. There is no live mode, force or
+trigger command, delivery dependency, or appearance budget reservation. The
+v7 schema rejects any outbox insert whose kind or aggregate identifies an
+appearance. A dry-run candidate can therefore produce only `reject` or
+`hypothetical`, never a public Discord message. Activity retained under an
+older policy version is never reused under a new policy, direct prefix and
+leading-mention invocations are excluded from appearance activity, and events
+observed while mode is `off` are audited without being replayed after a later
+`dry_run` activation.
 
 To talk to the AI persona, mention the bot at the start of a message:
 
@@ -204,6 +245,7 @@ Optional settings are:
 | `SANGUINIUS_OPENAI_API_KEY_FILE` | Set by start script | OpenAI API key file. |
 | `SANGUINIUS_OPENAI_MODEL` | `gpt-5.4-nano` | Responses API model. |
 | `SANGUINIUS_PERSONA_FILE` | `config/persona.txt` | Plaintext persona instructions. |
+| `SANGUINIUS_APPEARANCE_POLICY_FILE` | `config/appearance-policy-v1.json` | Strict versioned appearance policy. Paths are redacted in configuration output. |
 | `SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS` | `10` | Discord REST timeout, from 1 through 300 seconds. |
 | `SANGUINIUS_TIMEZONE` | `America/New_York` | IANA time zone used for the daily 10:00 Chronicle anniversary scan. |
 | `SANGUINIUS_DATABASE_FILE` | `state/sanguinius.sqlite3` | SQLite state file. Production should use an absolute path outside release directories. |
@@ -211,7 +253,7 @@ Optional settings are:
 | `SANGUINIUS_TEST_MODE` | `false` | Enable auditable, self-targeted durable-work test controls. |
 | `SANGUINIUS_CHRONICLE_ENABLED` | `false` | Register and enable the Living Chronicle context/slash flows. Durable memory expiry remains safe while UI access is disabled. |
 | `SANGUINIUS_TAROT_ENABLED` | `false` | Configured Tarot mode; no Tarot behavior exists yet. |
-| `SANGUINIUS_APPEARANCES_MODE` | `off` | Configured `off`, `dry_run`, or `live` intent; no appearance service exists yet. |
+| `SANGUINIUS_APPEARANCES_MODE` | `off` | Appearance engine mode. Only `off` and inspection-only `dry_run` are valid; `live` is rejected. |
 | `SANGUINIUS_VOX_ENABLED` | `false` | Configured Vox mode; no voice connection exists yet. |
 | `SANGUINIUS_VOICE_INPUT_ENABLED` | `false` | Reserved privacy gate; voice input remains unavailable. |
 
@@ -300,6 +342,20 @@ and anniversary state, FTS5 synchronization triggers, transient context caps,
 and the anniversary preference. It is forward-only; rollback restores a
 verified schema-v5 backup and the accepted Milestone 7 artifact rather than
 running reverse SQL.
+Migration `0007_appearance_dry_run` adds immutable policy snapshots, bounded
+policy-versioned message activity, non-prose channel counters for
+retention-independent speech and post-hypothetical gates, persistently
+mode-fenced event observations, candidates and source actors, revision-fenced
+decisions, memory-use audit, separately purgeable previews, prose-free retained
+summaries, and recurring scan/purge jobs. Activity and candidate-context rows
+retain immutable expiry deadlines so policy upgrades cannot lengthen
+previously collected prose retention.
+Candidate sources include authoritative Chronicle-entry links in addition to
+message, journal-event, and simulation inputs. It deliberately adds no appearance
+budget reservation or public-delivery path. Its database trigger rejects
+appearance-related inserts into `outbox_message`; rollback restores a verified
+schema-v6 backup and the accepted Milestone 8 artifact rather than running
+reverse SQL.
 The readable SQL for each ordered migration is
 embedded independently with its SHA-256
 checksum. Applied history must be ordered, contiguous, and byte-for-byte
@@ -397,9 +453,17 @@ their fenced claim for the bounded delegation window, and release queued claims
 without consuming an attempt during shutdown. When Chronicle is disabled,
 persisted summary and anniversary work is deferred without consuming attempts;
 privacy cleanup work continues to run.
+Appearance classification/generation shares the same two-worker AI queue and
+uses one strict structured attempt. Saturation, timeout, refusal, incomplete or
+malformed output, unsafe text, low confidence, privacy changes, and interrupted
+prior-instance attempts all become final audited rejections without fallback
+prose or retry. The one-minute event scan and policy-bounded retention purge
+(never slower than once per minute) are durable; retention continues while
+appearance mode is `off`.
 Unknown or malformed versioned handler types are retained and dead-lettered
-with safe error categories; Milestone 5 registers only the owner test notice,
-pending-notice, public Discord, and synthetic retry handlers.
+with safe error categories. The current runtime additionally registers
+Chronicle session/anniversary handlers and the appearance scan/purge handlers;
+no appearance handler can enqueue public delivery.
 
 Public outbox delivery uses one stable 25-character nonce with Discord's
 `enforce_nonce` flag. Immediately before network I/O, the current fenced claim

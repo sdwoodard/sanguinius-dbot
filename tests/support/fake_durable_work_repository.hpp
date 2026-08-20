@@ -92,8 +92,8 @@ public:
   void seed_job(ScheduledJobEnqueue job, DurablePayload payload,
                 std::string correlation_id = "seeded-job") {
     const std::scoped_lock lock{mutex_};
-    jobs_.push_back({std::move(job), std::move(payload),
-                     std::move(correlation_id), {}});
+    jobs_.push_back(
+        {std::move(job), std::move(payload), std::move(correlation_id), {}});
     changed_.notify_all();
   }
 
@@ -204,9 +204,10 @@ public:
     return WorkMutationStatus::applied;
   }
 
-  [[nodiscard]] WorkMutationStatus defer_job(
-      const ClaimedScheduledJob &job, const std::int64_t now_ms,
-      const std::int64_t retry_at_ms, std::string error_code) override {
+  [[nodiscard]] WorkMutationStatus defer_job(const ClaimedScheduledJob &job,
+                                             const std::int64_t now_ms,
+                                             const std::int64_t retry_at_ms,
+                                             std::string error_code) override {
     if (retry_at_ms <= now_ms) {
       throw std::invalid_argument{"A deferred job must move into the future."};
     }
@@ -228,11 +229,37 @@ public:
     return WorkMutationStatus::applied;
   }
 
-  [[nodiscard]] WorkMutationStatus extend_job_lease(
-      const ClaimedScheduledJob &job, const std::int64_t now_ms,
-      const std::int64_t lease_until_ms) override {
+  [[nodiscard]] WorkMutationStatus
+  reschedule_job(const ClaimedScheduledJob &job, const std::int64_t now_ms,
+                 const std::int64_t due_at_ms) override {
+    if (due_at_ms <= now_ms) {
+      throw std::invalid_argument{
+          "A rescheduled job must move into the future."};
+    }
+    const std::scoped_lock lock{mutex_};
+    auto *row = find_job(job.job_id);
+    if (row == nullptr)
+      return WorkMutationStatus::not_found;
+    if (!current_claim(*row, job.lease_token))
+      return WorkMutationStatus::stale_claim;
+    row->state = ScheduledJobState::pending;
+    row->enqueue.due_at_ms = due_at_ms;
+    row->error.clear();
+    row->lease_owner.clear();
+    row->lease_token.clear();
+    row->lease_until_ms = 0;
+    if (row->attempts > 0)
+      --row->attempts;
+    changed_.notify_all();
+    return WorkMutationStatus::applied;
+  }
+
+  [[nodiscard]] WorkMutationStatus
+  extend_job_lease(const ClaimedScheduledJob &job, const std::int64_t now_ms,
+                   const std::int64_t lease_until_ms) override {
     if (lease_until_ms <= now_ms) {
-      throw std::invalid_argument{"A renewed job lease must remain in the future."};
+      throw std::invalid_argument{
+          "A renewed job lease must remain in the future."};
     }
     const std::scoped_lock lock{mutex_};
     auto *row = find_job(job.job_id);
@@ -566,6 +593,32 @@ public:
     return events_.size();
   }
 
+  [[nodiscard]] std::optional<std::int64_t>
+  job_due_at(const std::string_view job_type) const {
+    const std::scoped_lock lock{mutex_};
+    const auto found =
+        std::ranges::find(jobs_, job_type, [](const JobRow &row) {
+          return std::string_view{row.enqueue.job_type};
+        });
+    return found == jobs_.end()
+               ? std::nullopt
+               : std::optional<std::int64_t>{found->enqueue.due_at_ms};
+  }
+
+  [[nodiscard]] bool
+  wait_for_job_due(const std::string_view job_type,
+                   const std::int64_t due_at_ms,
+                   const std::chrono::milliseconds timeout) const {
+    std::unique_lock lock{mutex_};
+    return changed_.wait_for(lock, timeout, [this, job_type, due_at_ms] {
+      return std::ranges::any_of(jobs_, [&](const JobRow &row) {
+        return row.enqueue.job_type == job_type &&
+               row.enqueue.due_at_ms == due_at_ms &&
+               row.state == ScheduledJobState::pending;
+      });
+    });
+  }
+
   [[nodiscard]] bool
   wait_for_outbox_error(const std::string_view error,
                         const std::chrono::milliseconds timeout) const {
@@ -582,9 +635,8 @@ public:
                      const std::chrono::milliseconds timeout) const {
     std::unique_lock lock{mutex_};
     return changed_.wait_for(lock, timeout, [this, error] {
-      return std::ranges::any_of(jobs_, [error](const JobRow &row) {
-        return row.error == error;
-      });
+      return std::ranges::any_of(
+          jobs_, [error](const JobRow &row) { return row.error == error; });
     });
   }
 

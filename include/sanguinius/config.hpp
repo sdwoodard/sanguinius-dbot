@@ -1,6 +1,7 @@
 #pragma once
 
 #include "sanguinius/build_info.hpp"
+#include "sanguinius/appearance_policy.hpp"
 #include "sanguinius/feature_config.hpp"
 #include "sanguinius/server_scope_policy.hpp"
 
@@ -46,6 +47,7 @@ struct AiConfiguration {
 struct PathConfiguration {
   std::filesystem::path message_log{"logs/messages.log"};
   std::filesystem::path database_file{"state/sanguinius.sqlite3"};
+  std::filesystem::path appearance_policy_file{"config/appearance-policy-v1.json"};
 };
 
 enum class ConfigurationOrigin {
@@ -62,6 +64,7 @@ struct ConfigurationOrigins {
   ConfigurationOrigin openai_model{ConfigurationOrigin::default_value};
   ConfigurationOrigin persona_file{ConfigurationOrigin::default_value};
   ConfigurationOrigin timezone{ConfigurationOrigin::default_value};
+  ConfigurationOrigin appearance_policy_file{ConfigurationOrigin::default_value};
 };
 
 struct Config {
@@ -71,6 +74,7 @@ struct Config {
   ControlConfiguration controls;
   FeatureConfiguration features;
   ConfigurationOrigins origins;
+  AppearancePolicy appearance_policy;
   std::string command_prefix{"!"};
   std::string timezone{"America/New_York"};
 

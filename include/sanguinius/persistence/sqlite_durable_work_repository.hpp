@@ -44,6 +44,9 @@ public:
                                              std::int64_t retry_at_ms,
                                              std::string error_code) override;
   [[nodiscard]] WorkMutationStatus
+  reschedule_job(const ClaimedScheduledJob &job, std::int64_t now_ms,
+                 std::int64_t due_at_ms) override;
+  [[nodiscard]] WorkMutationStatus
   extend_job_lease(const ClaimedScheduledJob &job, std::int64_t now_ms,
                    std::int64_t lease_until_ms) override;
   [[nodiscard]] WorkMutationStatus fail_job(const ClaimedScheduledJob &job,

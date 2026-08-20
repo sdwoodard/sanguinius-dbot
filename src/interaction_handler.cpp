@@ -63,18 +63,16 @@ privacy_message(const FeatureConfiguration &features,
 InteractionHandler::InteractionHandler(
     CoreIdentityRepository &identities, PendingNoticeService &notices,
     const Clock &clock, DurableWorkControlService &durable_controls,
-    ChronicleService *chronicle,
-    ChronicleSessionService *chronicle_sessions,
+    ChronicleService *chronicle, ChronicleSessionService *chronicle_sessions,
     HealthService &health_service, Diagnostics &diagnostics,
     const FeatureConfiguration features,
     std::function<QueueSnapshot()> message_queue,
     std::function<QueueSnapshot()> ai_queue, const std::size_t queue_capacity,
-    RelationshipService *relationships)
+    RelationshipService *relationships, AppearanceService *appearances)
     : identities_{identities}, notices_{notices}, clock_{clock},
       durable_controls_{durable_controls}, chronicle_{chronicle},
-      chronicle_sessions_{chronicle_sessions},
-      relationships_{relationships},
-      health_service_{health_service},
+      chronicle_sessions_{chronicle_sessions}, relationships_{relationships},
+      appearances_{appearances}, health_service_{health_service},
       diagnostics_{diagnostics}, features_{features},
       message_queue_{std::move(message_queue)}, ai_queue_{std::move(ai_queue)},
       callbacks_{std::make_shared<CallbackFence>()},
@@ -160,6 +158,24 @@ void InteractionHandler::process(const RoutedInteraction &request) {
          "interaction.privacy");
     return;
   }
+  case InteractionOperation::appearance_callbacks: {
+    if (!appearances_)
+      throw std::runtime_error{"Appearance service is unavailable."};
+    const auto found = std::ranges::find(request.interaction.command_options,
+                                         "mode", &InteractionOption::name);
+    if (found == request.interaction.command_options.end())
+      throw std::invalid_argument{"Appearance callback mode is required."};
+    const auto *mode = std::get_if<std::string>(&found->value);
+    if (mode == nullptr || (*mode != "on" && *mode != "off"))
+      throw std::invalid_argument{"Appearance callback mode is invalid."};
+    edit(request.interaction,
+         text_message(appearances_->set_callback_consent(
+             request.interaction.user_id, *mode == "on",
+             "appearance.callbacks:" + request.interaction.interaction_id.str(),
+             request.interaction.correlation_id)),
+         "interaction.appearance_callbacks");
+    return;
+  }
   case InteractionOperation::inbox:
     edit_reveal(request.interaction, notices_.open_inbox(request.interaction),
                 "interaction.inbox");
@@ -170,18 +186,23 @@ void InteractionHandler::process(const RoutedInteraction &request) {
                 "interaction.component");
     return;
   case InteractionOperation::chronicle_canonize:
-    if (!chronicle_) throw std::runtime_error{"Chronicle service is unavailable."};
+    if (!chronicle_)
+      throw std::runtime_error{"Chronicle service is unavailable."};
     edit(request.interaction,
-         render_chronicle_proposal(chronicle_->canonize_message(request.interaction)),
+         render_chronicle_proposal(
+             chronicle_->canonize_message(request.interaction)),
          "interaction.chronicle_canonize");
     return;
   case InteractionOperation::chronicle_memory_preview:
-    if (!chronicle_) throw std::runtime_error{"Chronicle service is unavailable."};
-    edit(request.interaction, chronicle_->begin_memory_preview(request.interaction),
+    if (!chronicle_)
+      throw std::runtime_error{"Chronicle service is unavailable."};
+    edit(request.interaction,
+         chronicle_->begin_memory_preview(request.interaction),
          "interaction.chronicle_memory_preview");
     return;
   case InteractionOperation::chronicle_recall:
-    if (!chronicle_sessions_) throw std::runtime_error{"Chronicle search service is unavailable."};
+    if (!chronicle_sessions_)
+      throw std::runtime_error{"Chronicle search service is unavailable."};
     edit(request.interaction, chronicle_sessions_->search(request.interaction),
          "interaction.chronicle_recall");
     return;
@@ -195,11 +216,13 @@ void InteractionHandler::process(const RoutedInteraction &request) {
   case InteractionOperation::chronicle_timeline:
     if (!chronicle_sessions_)
       throw std::runtime_error{"Chronicle timeline service is unavailable."};
-    edit(request.interaction, chronicle_sessions_->timeline(request.interaction),
+    edit(request.interaction,
+         chronicle_sessions_->timeline(request.interaction),
          "interaction.chronicle_timeline");
     return;
   case InteractionOperation::chronicle_forget:
-    if (!chronicle_) throw std::runtime_error{"Chronicle service is unavailable."};
+    if (!chronicle_)
+      throw std::runtime_error{"Chronicle service is unavailable."};
     edit(request.interaction, chronicle_->forget(request.interaction),
          "interaction.chronicle_forget");
     return;
@@ -217,62 +240,76 @@ void InteractionHandler::process(const RoutedInteraction &request) {
          "interaction.chronicle_callbacks");
     return;
   case InteractionOperation::chronicle_edit:
-    if (!chronicle_) throw std::runtime_error{"Chronicle service is unavailable."};
+    if (!chronicle_)
+      throw std::runtime_error{"Chronicle service is unavailable."};
     edit(request.interaction,
-         render_chronicle_mutation(chronicle_->edit_proposal(request.interaction)),
+         render_chronicle_mutation(
+             chronicle_->edit_proposal(request.interaction)),
          "interaction.chronicle_edit");
     return;
   case InteractionOperation::chronicle_component:
-    if (!chronicle_) throw std::runtime_error{"Chronicle service is unavailable."};
+    if (!chronicle_)
+      throw std::runtime_error{"Chronicle service is unavailable."};
     edit(request.interaction,
-         render_chronicle_mutation(chronicle_->apply_component(request.interaction)),
+         render_chronicle_mutation(
+             chronicle_->apply_component(request.interaction)),
          "interaction.chronicle_component");
     return;
   case InteractionOperation::chronicle_session_start: {
-    if (!chronicle_sessions_) throw std::runtime_error{"Chronicle session service is unavailable."};
+    if (!chronicle_sessions_)
+      throw std::runtime_error{"Chronicle session service is unavailable."};
     const auto result = chronicle_sessions_->start(request.interaction);
     edit(request.interaction,
-         text_message(result.code == ChronicleSessionResultCode::created
-                          ? "The Chronicle session is now open."
-                          : result.code == ChronicleSessionResultCode::existing
-                                ? "A Chronicle session is already active."
-                                : result.code == ChronicleSessionResultCode::opted_out
-                                      ? "Enable Chronicle participation before starting a session."
-                                      : "The Chronicle session could not be opened."),
+         text_message(
+             result.code == ChronicleSessionResultCode::created
+                 ? "The Chronicle session is now open."
+             : result.code == ChronicleSessionResultCode::existing
+                 ? "A Chronicle session is already active."
+             : result.code == ChronicleSessionResultCode::opted_out
+                 ? "Enable Chronicle participation before starting a session."
+                 : "The Chronicle session could not be opened."),
          "interaction.chronicle_session_start");
     return;
   }
   case InteractionOperation::chronicle_session_status:
-    if (!chronicle_sessions_) throw std::runtime_error{"Chronicle session service is unavailable."};
+    if (!chronicle_sessions_)
+      throw std::runtime_error{"Chronicle session service is unavailable."};
     edit(request.interaction, chronicle_sessions_->status(request.interaction),
          "interaction.chronicle_session_status");
     return;
   case InteractionOperation::chronicle_session_close: {
-    if (!chronicle_sessions_) throw std::runtime_error{"Chronicle session service is unavailable."};
+    if (!chronicle_sessions_)
+      throw std::runtime_error{"Chronicle session service is unavailable."};
     const auto result = chronicle_sessions_->close(request.interaction);
     edit(request.interaction,
-         text_message(result.code == ChronicleSessionResultCode::updated
-                          ? (result.wake_scheduler
-                                 ? "The session is closed; its chapter draft is being prepared."
-                                 : "The empty session was abandoned without a chapter.")
-                          : result.code == ChronicleSessionResultCode::unauthorized
-                                ? "Only the opener or owner may close this session."
-                                : "The Chronicle session could not be closed."),
+         text_message(
+             result.code == ChronicleSessionResultCode::updated
+                 ? (result.wake_scheduler
+                        ? "The session is closed; its chapter draft is being "
+                          "prepared."
+                        : "The empty session was abandoned without a chapter.")
+             : result.code == ChronicleSessionResultCode::unauthorized
+                 ? "Only the opener or owner may close this session."
+                 : "The Chronicle session could not be closed."),
          "interaction.chronicle_session_close");
     return;
   }
   case InteractionOperation::chronicle_summary_edit:
-    if (!chronicle_sessions_) throw std::runtime_error{"Chronicle session service is unavailable."};
-    edit(request.interaction, chronicle_sessions_->edit_summary(request.interaction),
+    if (!chronicle_sessions_)
+      throw std::runtime_error{"Chronicle session service is unavailable."};
+    edit(request.interaction,
+         chronicle_sessions_->edit_summary(request.interaction),
          "interaction.chronicle_summary_edit");
     return;
   case InteractionOperation::chronicle_summary_approve:
   case InteractionOperation::chronicle_summary_reject:
-    if (!chronicle_sessions_) throw std::runtime_error{"Chronicle session service is unavailable."};
+    if (!chronicle_sessions_)
+      throw std::runtime_error{"Chronicle session service is unavailable."};
     edit(request.interaction,
          chronicle_sessions_->decide_summary(
              request.interaction,
-             request.operation == InteractionOperation::chronicle_summary_approve),
+             request.operation ==
+                 InteractionOperation::chronicle_summary_approve),
          "interaction.chronicle_summary_decision");
     return;
   case InteractionOperation::chronicle_summary_component:
@@ -283,20 +320,25 @@ void InteractionHandler::process(const RoutedInteraction &request) {
          "interaction.chronicle_summary_component");
     return;
   case InteractionOperation::chronicle_title_propose:
-    if (!chronicle_sessions_) throw std::runtime_error{"Chronicle session service is unavailable."};
-    edit(request.interaction, chronicle_sessions_->propose_title(request.interaction),
+    if (!chronicle_sessions_)
+      throw std::runtime_error{"Chronicle session service is unavailable."};
+    edit(request.interaction,
+         chronicle_sessions_->propose_title(request.interaction),
          "interaction.chronicle_title_propose");
     return;
   case InteractionOperation::chronicle_title_list:
-    if (!chronicle_sessions_) throw std::runtime_error{"Chronicle session service is unavailable."};
-    edit(request.interaction, chronicle_sessions_->list_titles(request.interaction),
+    if (!chronicle_sessions_)
+      throw std::runtime_error{"Chronicle session service is unavailable."};
+    edit(request.interaction,
+         chronicle_sessions_->list_titles(request.interaction),
          "interaction.chronicle_title_list");
     return;
   case InteractionOperation::chronicle_title_approve:
   case InteractionOperation::chronicle_title_reject:
   case InteractionOperation::chronicle_title_feature:
   case InteractionOperation::chronicle_title_revoke: {
-    if (!chronicle_sessions_) throw std::runtime_error{"Chronicle session service is unavailable."};
+    if (!chronicle_sessions_)
+      throw std::runtime_error{"Chronicle session service is unavailable."};
     const auto action =
         request.operation == InteractionOperation::chronicle_title_approve
             ? TitleAction::approve
@@ -312,19 +354,24 @@ void InteractionHandler::process(const RoutedInteraction &request) {
   }
   case InteractionOperation::chronicle_anniversaries_on:
   case InteractionOperation::chronicle_anniversaries_off:
-    if (!chronicle_sessions_) throw std::runtime_error{"Chronicle session service is unavailable."};
+    if (!chronicle_sessions_)
+      throw std::runtime_error{"Chronicle session service is unavailable."};
     edit(request.interaction,
          chronicle_sessions_->set_anniversaries(
              request.interaction,
-             request.operation == InteractionOperation::chronicle_anniversaries_on),
+             request.operation ==
+                 InteractionOperation::chronicle_anniversaries_on),
          "interaction.chronicle_anniversary_preference");
     return;
   case InteractionOperation::test_anniversary:
-    if (!chronicle_sessions_) throw std::runtime_error{"Chronicle session service is unavailable."};
+    if (!chronicle_sessions_)
+      throw std::runtime_error{"Chronicle session service is unavailable."};
     edit(request.interaction,
-         text_message(chronicle_sessions_->queue_test_anniversary(request.interaction)
-                          ? "A test anniversary scan is queued."
-                          : "That test anniversary scan was already queued or is unavailable."),
+         text_message(
+             chronicle_sessions_->queue_test_anniversary(request.interaction)
+                 ? "A test anniversary scan is queued."
+                 : "That test anniversary scan was already queued or is "
+                   "unavailable."),
          "interaction.test_anniversary");
     return;
   case InteractionOperation::admin_health: {
@@ -378,6 +425,52 @@ void InteractionHandler::process(const RoutedInteraction &request) {
          "interaction.test_public_retry");
     return;
   }
+  case InteractionOperation::appearance_simulate: {
+    if (!appearances_)
+      throw std::runtime_error{"Appearance service is unavailable."};
+    const auto found = std::ranges::find(request.interaction.command_options,
+                                         "fixture", &InteractionOption::name);
+    if (found == request.interaction.command_options.end())
+      throw std::invalid_argument{"Appearance fixture is required."};
+    const auto *fixture = std::get_if<std::string>(&found->value);
+    if (fixture == nullptr)
+      throw std::invalid_argument{"Appearance fixture is invalid."};
+    const auto reference = appearances_->simulate(AppearanceSimulationRequest{
+        .fixture = *fixture,
+        .idempotency_key =
+            "appearance.simulate:" + request.interaction.interaction_id.str(),
+        .correlation_id = request.interaction.correlation_id,
+        .owner_user_id = request.interaction.user_id,
+        .now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      clock_.now().time_since_epoch())
+                      .count(),
+        .candidate_id = {},
+        .event_id = {}});
+    edit(request.interaction,
+         text_message("Appearance simulation stored: " + reference),
+         "interaction.appearance_simulate");
+    return;
+  }
+  case InteractionOperation::appearance_preview: {
+    if (!appearances_)
+      throw std::runtime_error{"Appearance service is unavailable."};
+    const auto found = std::ranges::find(request.interaction.command_options,
+                                         "reference", &InteractionOption::name);
+    if (found == request.interaction.command_options.end())
+      throw std::invalid_argument{"Appearance reference is required."};
+    const auto *reference = std::get_if<std::string>(&found->value);
+    if (reference == nullptr)
+      throw std::invalid_argument{"Appearance reference is invalid."};
+    edit(request.interaction, text_message(appearances_->preview(*reference)),
+         "interaction.appearance_preview");
+    return;
+  }
+  case InteractionOperation::appearance_recent:
+    if (!appearances_)
+      throw std::runtime_error{"Appearance service is unavailable."};
+    edit(request.interaction, text_message(appearances_->recent()),
+         "interaction.appearance_recent");
+    return;
   }
 }
 

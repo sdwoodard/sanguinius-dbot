@@ -32,6 +32,9 @@ slash_operation(const IncomingInteraction &interaction) {
     if (interaction.subcommand_name == "privacy") {
       return InteractionOperation::privacy;
     }
+    if (interaction.subcommand_name == "appearance-callbacks") {
+      return InteractionOperation::appearance_callbacks;
+    }
   }
   if (interaction.command_name == "sang-admin") {
     if (interaction.subcommand_name == "health") {
@@ -54,60 +57,89 @@ slash_operation(const IncomingInteraction &interaction) {
     }
     if (interaction.subcommand_name == "test-anniversary")
       return InteractionOperation::test_anniversary;
+    if (interaction.subcommand_group_name == "appearance") {
+      if (interaction.subcommand_name == "simulate")
+        return InteractionOperation::appearance_simulate;
+      if (interaction.subcommand_name == "preview")
+        return InteractionOperation::appearance_preview;
+      if (interaction.subcommand_name == "recent")
+        return InteractionOperation::appearance_recent;
+    }
   }
   if (interaction.command_name == "chronicle") {
     if (interaction.subcommand_group_name == "session") {
-      if (interaction.subcommand_name == "start") return InteractionOperation::chronicle_session_start;
-      if (interaction.subcommand_name == "status") return InteractionOperation::chronicle_session_status;
-      if (interaction.subcommand_name == "close") return InteractionOperation::chronicle_session_close;
-      if (interaction.subcommand_name == "edit") return InteractionOperation::chronicle_summary_edit;
-      if (interaction.subcommand_name == "approve") return InteractionOperation::chronicle_summary_approve;
-      if (interaction.subcommand_name == "reject") return InteractionOperation::chronicle_summary_reject;
+      if (interaction.subcommand_name == "start")
+        return InteractionOperation::chronicle_session_start;
+      if (interaction.subcommand_name == "status")
+        return InteractionOperation::chronicle_session_status;
+      if (interaction.subcommand_name == "close")
+        return InteractionOperation::chronicle_session_close;
+      if (interaction.subcommand_name == "edit")
+        return InteractionOperation::chronicle_summary_edit;
+      if (interaction.subcommand_name == "approve")
+        return InteractionOperation::chronicle_summary_approve;
+      if (interaction.subcommand_name == "reject")
+        return InteractionOperation::chronicle_summary_reject;
     }
     if (interaction.subcommand_group_name == "title") {
-      if (interaction.subcommand_name == "propose") return InteractionOperation::chronicle_title_propose;
-      if (interaction.subcommand_name == "list") return InteractionOperation::chronicle_title_list;
-      if (interaction.subcommand_name == "approve") return InteractionOperation::chronicle_title_approve;
-      if (interaction.subcommand_name == "reject") return InteractionOperation::chronicle_title_reject;
-      if (interaction.subcommand_name == "feature") return InteractionOperation::chronicle_title_feature;
-      if (interaction.subcommand_name == "revoke") return InteractionOperation::chronicle_title_revoke;
+      if (interaction.subcommand_name == "propose")
+        return InteractionOperation::chronicle_title_propose;
+      if (interaction.subcommand_name == "list")
+        return InteractionOperation::chronicle_title_list;
+      if (interaction.subcommand_name == "approve")
+        return InteractionOperation::chronicle_title_approve;
+      if (interaction.subcommand_name == "reject")
+        return InteractionOperation::chronicle_title_reject;
+      if (interaction.subcommand_name == "feature")
+        return InteractionOperation::chronicle_title_feature;
+      if (interaction.subcommand_name == "revoke")
+        return InteractionOperation::chronicle_title_revoke;
     }
     if (interaction.subcommand_group_name == "anniversaries") {
-      if (interaction.subcommand_name == "on") return InteractionOperation::chronicle_anniversaries_on;
-      if (interaction.subcommand_name == "off") return InteractionOperation::chronicle_anniversaries_off;
+      if (interaction.subcommand_name == "on")
+        return InteractionOperation::chronicle_anniversaries_on;
+      if (interaction.subcommand_name == "off")
+        return InteractionOperation::chronicle_anniversaries_off;
     }
-    if (interaction.subcommand_name == "recall") return InteractionOperation::chronicle_recall;
-    if (interaction.subcommand_name == "timeline") return InteractionOperation::chronicle_timeline;
-    if (interaction.subcommand_name == "forget") return InteractionOperation::chronicle_forget;
-    if (interaction.subcommand_name == "profile") return InteractionOperation::chronicle_profile;
-    if (interaction.subcommand_name == "callbacks") return InteractionOperation::chronicle_callbacks;
+    if (interaction.subcommand_name == "recall")
+      return InteractionOperation::chronicle_recall;
+    if (interaction.subcommand_name == "timeline")
+      return InteractionOperation::chronicle_timeline;
+    if (interaction.subcommand_name == "forget")
+      return InteractionOperation::chronicle_forget;
+    if (interaction.subcommand_name == "profile")
+      return InteractionOperation::chronicle_profile;
+    if (interaction.subcommand_name == "callbacks")
+      return InteractionOperation::chronicle_callbacks;
   }
   return std::nullopt;
 }
 
 [[nodiscard]] bool valid_slash_shape(const IncomingInteraction &interaction) {
   const auto catalog = command_catalog(true, true);
-  const auto command = std::ranges::find(catalog.commands,
-                                         interaction.command_name,
-                                         &CommandDefinition::name);
+  const auto command = std::ranges::find(
+      catalog.commands, interaction.command_name, &CommandDefinition::name);
   if (command == catalog.commands.end() ||
       command->kind != ApplicationCommandKind::chat_input)
     return false;
   const CommandSubcommandDefinition *definition = nullptr;
   if (interaction.subcommand_group_name.empty()) {
-    const auto found = std::ranges::find(command->subcommands,
-                                         interaction.subcommand_name,
-                                         &CommandSubcommandDefinition::name);
-    if (found != command->subcommands.end()) definition = &*found;
+    const auto found =
+        std::ranges::find(command->subcommands, interaction.subcommand_name,
+                          &CommandSubcommandDefinition::name);
+    if (found != command->subcommands.end())
+      definition = &*found;
   } else {
-    const auto group = std::ranges::find(command->subcommand_groups,
-                                         interaction.subcommand_group_name,
-                                         &CommandSubcommandGroupDefinition::name);
-    if (group == command->subcommand_groups.end()) return false;
-    const auto found = std::ranges::find(group->subcommands,
-                                         interaction.subcommand_name,
-                                         &CommandSubcommandDefinition::name);
-    if (found != group->subcommands.end()) definition = &*found;
+    const auto group = std::ranges::find(
+        command->subcommand_groups, interaction.subcommand_group_name,
+        &CommandSubcommandGroupDefinition::name);
+    if (group == command->subcommand_groups.end())
+      return false;
+    const auto found =
+        std::ranges::find(group->subcommands, interaction.subcommand_name,
+                          &CommandSubcommandDefinition::name);
+    if (found != group->subcommands.end())
+      definition = &*found;
   }
   if (definition == nullptr ||
       interaction.command_options.size() > definition->options.size())
@@ -120,13 +152,14 @@ slash_operation(const IncomingInteraction &interaction) {
         });
     if ((expected.required && count != 1) || (!expected.required && count > 1))
       return false;
-    if (count == 0) continue;
-    const auto found = std::ranges::find(interaction.command_options,
-                                         expected.name,
-                                         &InteractionOption::name);
+    if (count == 0)
+      continue;
+    const auto found = std::ranges::find(
+        interaction.command_options, expected.name, &InteractionOption::name);
     if (expected.kind == CommandOptionKind::user) {
       const auto *value = std::get_if<DiscordId>(&found->value);
-      if (value == nullptr || !value->is_set()) return false;
+      if (value == nullptr || !value->is_set())
+        return false;
     } else {
       const auto *value = std::get_if<std::string>(&found->value);
       if (value == nullptr || value->size() < expected.minimum_length ||
@@ -139,14 +172,14 @@ slash_operation(const IncomingInteraction &interaction) {
         return false;
     }
   }
-  return std::all_of(interaction.command_options.begin(),
-                     interaction.command_options.end(),
-                     [definition](const InteractionOption &option) {
-                       return std::ranges::any_of(
-                           definition->options, [&option](const auto &expected) {
-                             return expected.name == option.name;
-                           });
-                     });
+  return std::all_of(
+      interaction.command_options.begin(), interaction.command_options.end(),
+      [definition](const InteractionOption &option) {
+        return std::ranges::any_of(definition->options,
+                                   [&option](const auto &expected) {
+                                     return expected.name == option.name;
+                                   });
+      });
 }
 
 } // namespace
@@ -158,7 +191,8 @@ public:
         const FeatureConfiguration features_value,
         InteractionHandler &handler_value, Diagnostics &diagnostics_value)
       : scope_policy{scope_policy_value}, controls{controls_value},
-        features{features_value}, handler{handler_value}, diagnostics{diagnostics_value} {}
+        features{features_value}, handler{handler_value},
+        diagnostics{diagnostics_value} {}
 
   const ServerScopePolicy &scope_policy;
   ControlConfiguration controls;
@@ -224,8 +258,10 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
   } else if (interaction.kind == InteractionKind::message_context_command) {
     if (!state_->features.chronicle_enabled ||
         interaction.command_name != "Canonize in the Chronicle" ||
-        !interaction.subcommand_name.empty() || !interaction.command_options.empty() ||
-        !interaction.custom_id.empty() || !interaction.context_message.has_value()) {
+        !interaction.subcommand_name.empty() ||
+        !interaction.command_options.empty() ||
+        !interaction.custom_id.empty() ||
+        !interaction.context_message.has_value()) {
       reply_ephemeral(interaction, "That context action is not available yet.");
       return;
     }
@@ -261,7 +297,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       if (const auto edit_token = parse_chronicle_component(
               interaction.custom_id, chronicle_session_edit_prefix)) {
         if (!state_->features.chronicle_enabled) {
-          reply_ephemeral(interaction, "The Chronicle is currently unavailable.");
+          reply_ephemeral(interaction,
+                          "The Chronicle is currently unavailable.");
           return;
         }
         interaction.responder->show_modal(
@@ -271,7 +308,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       if (const auto edit_token = parse_chronicle_component(
               interaction.custom_id, chronicle_modal_prefix)) {
         if (!state_->features.chronicle_enabled) {
-          reply_ephemeral(interaction, "The Chronicle is currently unavailable.");
+          reply_ephemeral(interaction,
+                          "The Chronicle is currently unavailable.");
           return;
         }
         interaction.responder->show_modal(
@@ -280,9 +318,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       }
       if (parse_component_token(interaction.custom_id)) {
         operation = InteractionOperation::open_component;
-      } else if (parse_chronicle_component(
-                     interaction.custom_id,
-                     chronicle_search_component_prefix)) {
+      } else if (parse_chronicle_component(interaction.custom_id,
+                                           chronicle_search_component_prefix)) {
         operation = InteractionOperation::chronicle_search_component;
       } else if (parse_chronicle_component(
                      interaction.custom_id,
@@ -293,7 +330,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
                  parse_chronicle_component(interaction.custom_id,
                                            memory_draft_component_prefix)) {
         if (!state_->features.chronicle_enabled) {
-          reply_ephemeral(interaction, "The Chronicle is currently unavailable.");
+          reply_ephemeral(interaction,
+                          "The Chronicle is currently unavailable.");
           return;
         }
         operation = InteractionOperation::chronicle_component;
@@ -334,7 +372,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation <= InteractionOperation::chronicle_anniversaries_off;
   const bool anniversary_test =
       *operation == InteractionOperation::test_anniversary;
-  if ((chronicle_operation || chronicle_session_operation || anniversary_test) &&
+  if ((chronicle_operation || chronicle_session_operation ||
+       anniversary_test) &&
       !state_->features.chronicle_enabled) {
     reply_ephemeral(interaction, "The Chronicle is currently unavailable.");
     return;
@@ -346,11 +385,15 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::work_dead ||
       *operation == InteractionOperation::test_notice ||
       *operation == InteractionOperation::test_schedule_notice ||
-      *operation == InteractionOperation::test_public_retry;
+      *operation == InteractionOperation::test_public_retry ||
+      *operation == InteractionOperation::appearance_simulate ||
+      *operation == InteractionOperation::appearance_preview ||
+      *operation == InteractionOperation::appearance_recent;
   const bool test_operation =
       *operation == InteractionOperation::test_notice ||
       *operation == InteractionOperation::test_schedule_notice ||
-      *operation == InteractionOperation::test_public_retry;
+      *operation == InteractionOperation::test_public_retry ||
+      *operation == InteractionOperation::appearance_simulate;
   if (admin_operation || anniversary_test) {
     if (!state_->controls.admin_commands_enabled) {
       state_->diagnostics.emit(
@@ -380,14 +423,20 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       reply_ephemeral(interaction, "Owner test mode is currently disabled.");
       return;
     }
+    if (*operation == InteractionOperation::appearance_simulate &&
+        state_->features.appearances_mode != AppearanceMode::dry_run) {
+      reply_ephemeral(interaction,
+                      "Appearance simulation requires dry_run mode.");
+      return;
+    }
   }
 
   auto shared_state = state_;
   bool public_profile = false;
   if (*operation == InteractionOperation::chronicle_profile &&
       !interaction.command_options.empty()) {
-    if (const auto *target =
-            std::get_if<DiscordId>(&interaction.command_options.front().value)) {
+    if (const auto *target = std::get_if<DiscordId>(
+            &interaction.command_options.front().value)) {
       public_profile = *target != interaction.user_id;
     }
   }
@@ -396,8 +445,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       (*operation == InteractionOperation::chronicle_timeline || public_profile)
           ? ResponseVisibility::public_message
           : ResponseVisibility::ephemeral,
-      [shared_state, queued = std::move(queued)](
-                                         const DeliveryResult result) mutable {
+      [shared_state,
+       queued = std::move(queued)](const DeliveryResult result) mutable {
         if (result != DeliveryResult::success) {
           shared_state->diagnostics.emit(
               {DiagnosticSeverity::warning, "interaction.defer",

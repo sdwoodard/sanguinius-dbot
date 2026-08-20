@@ -114,6 +114,29 @@ TEST_CASE("DPP translates Chronicle context commands and typed options",
   REQUIRE(title_list->options[1].type == dpp::co_string);
 }
 
+TEST_CASE("DPP translates owner appearance controls as one nested group",
+          "[discord][commands][appearance]") {
+  const auto translated =
+      sanguinius::dpp_adapter_detail::translate_command_catalog(
+          sanguinius::command_catalog(true, false), 42);
+  const auto admin = std::find_if(translated.begin(), translated.end(),
+                                  [](const dpp::slashcommand &command) {
+                                    return command.name == "sang-admin";
+                                  });
+  REQUIRE(admin != translated.end());
+  const auto appearance =
+      std::find_if(admin->options.begin(), admin->options.end(),
+                   [](const dpp::command_option &option) {
+                     return option.name == "appearance";
+                   });
+  REQUIRE(appearance != admin->options.end());
+  REQUIRE(appearance->type == dpp::co_sub_command_group);
+  REQUIRE(appearance->options.size() == 3);
+  REQUIRE(appearance->options[0].name == "simulate");
+  REQUIRE(appearance->options[0].options.size() == 1);
+  REQUIRE(appearance->options[0].options[0].choices.size() == 13);
+}
+
 TEST_CASE("DPP translates nested incoming commands and rejects malformed groups",
           "[discord][commands][chronicle][incoming]") {
   dpp::command_interaction command;
