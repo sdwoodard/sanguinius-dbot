@@ -5,10 +5,12 @@
 #include "sanguinius/durable_work.hpp"
 #include "sanguinius/feature_config.hpp"
 #include "sanguinius/work_queue.hpp"
+#include "sanguinius/tarot.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 
 namespace sanguinius {
@@ -38,6 +40,7 @@ struct HealthSnapshot {
   DiscordRuntimeStatus discord;
   std::size_t pending_notice_count{};
   DurableWorkHealth durable_work;
+  std::optional<TarotInvariantReport> tarot;
   bool scope_matched{};
 };
 
@@ -48,6 +51,7 @@ struct HealthRuntimeProviders {
   std::function<QueueSnapshot()> outbox_queue;
   std::function<std::size_t()> pending_notice_count;
   std::function<DurableWorkHealth()> durable_work;
+  std::function<std::optional<TarotInvariantReport>()> tarot;
 };
 
 class HealthService {

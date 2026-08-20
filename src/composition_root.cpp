@@ -13,7 +13,9 @@
 #include "sanguinius/persistence/sqlite_durable_work_repository.hpp"
 #include "sanguinius/persistence/sqlite_repositories.hpp"
 #include "sanguinius/persistence/sqlite_relationship_repository.hpp"
+#include "sanguinius/persistence/sqlite_tarot_repository.hpp"
 #include "sanguinius/persistent_id.hpp"
+#include "sanguinius/random.hpp"
 
 #include <array>
 #include <chrono>
@@ -83,6 +85,9 @@ std::unique_ptr<Application> make_application(const Config &config) {
           repository_context);
   auto appearances =
       std::make_unique<persistence::SqliteAppearanceRepository>(repository_context);
+  auto tarot =
+      std::make_unique<persistence::SqliteTarotRepository>(repository_context);
+  auto random = std::make_unique<SystemRandom>();
 
   auto id_generator = std::make_unique<ProcessIdGenerator>();
   auto diagnostics = std::make_unique<ConsoleDiagnostics>();
@@ -101,6 +106,7 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .server_scope = config.discord.server_scope,
           .controls = config.controls,
           .features = config.features,
+          .tarot_policy = config.tarot_policy,
           .build = current_build_info(),
           .persistence =
               PersistenceHealth{
@@ -133,6 +139,8 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .chronicle_sessions = std::move(chronicle_sessions),
           .relationships = std::move(relationships),
           .appearances = std::move(appearances),
+          .tarot = std::move(tarot),
+          .random = std::move(random),
           .appearance_policy = config.appearance_policy,
           .ai_client = std::move(ai_client),
           .discord = std::move(discord),

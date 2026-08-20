@@ -56,7 +56,7 @@ TEST_CASE(
           temporary.path(), clock);
   REQUIRE(migrated.exit_code == 0);
   REQUIRE(migrated.output.find("database=current") != std::string::npos);
-  REQUIRE(migrated.output.find("current_schema=8") != std::string::npos);
+  REQUIRE(migrated.output.find("current_schema=9") != std::string::npos);
 
   const auto checked =
       run({sanguinius::DatabaseCommandType::check, std::nullopt},
@@ -76,6 +76,12 @@ TEST_CASE(
   REQUIRE(relationships.exit_code == 0);
   REQUIRE(relationships.output ==
           "relationships=ok\nevents=0\nprojections=0\nmismatches=0\n");
+  const auto tarot = run(
+      {sanguinius::DatabaseCommandType::tarot_check, std::nullopt},
+      temporary.path(), clock);
+  REQUIRE(tarot.exit_code == 0);
+  REQUIRE(tarot.output.find("tarot=ok\n") == 0);
+  REQUIRE(tarot.output.find("prepared=0\n") != std::string::npos);
   const auto rebuilt = run(
       {sanguinius::DatabaseCommandType::relationships_rebuild, std::nullopt},
       temporary.path(), clock);

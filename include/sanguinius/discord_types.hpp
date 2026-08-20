@@ -89,6 +89,7 @@ enum class ApplicationCommandKind {
 enum class CommandOptionKind {
   string,
   user,
+  integer,
 };
 
 struct CommandOptionChoiceDefinition {
@@ -107,6 +108,8 @@ struct CommandOptionDefinition {
   std::size_t minimum_length{};
   std::size_t maximum_length{};
   std::vector<CommandOptionChoiceDefinition> choices{};
+  std::optional<std::int64_t> minimum_integer{};
+  std::optional<std::int64_t> maximum_integer{};
 
   [[nodiscard]] bool operator==(const CommandOptionDefinition &) const =
       default;
@@ -180,6 +183,8 @@ inline constexpr std::size_t maximum_modal_fields = 5;
 inline constexpr std::size_t maximum_interaction_name_size = 100;
 inline constexpr std::size_t maximum_select_value_size = 100;
 inline constexpr std::size_t maximum_modal_value_size = 4'000;
+inline constexpr std::int64_t minimum_tarot_adjustment = -1'000'000'000;
+inline constexpr std::int64_t maximum_tarot_adjustment = 1'000'000'000;
 
 using InteractionOptionValue =
     std::variant<std::string, std::int64_t, bool, DiscordId, double>;

@@ -13,6 +13,7 @@
 #include "sanguinius/pending_notice.hpp"
 #include "sanguinius/relationships.hpp"
 #include "sanguinius/repositories.hpp"
+#include "sanguinius/tarot.hpp"
 #include "sanguinius/work_queue.hpp"
 
 #include <cstddef>
@@ -71,6 +72,15 @@ enum class InteractionOperation {
   appearance_trigger,
   appearance_disable,
   appearance_enable,
+  tarot_balance,
+  tarot_history,
+  tarot_standings,
+  tarot_standings_visibility,
+  tarot_grace,
+  tarot_trial,
+  tarot_component,
+  tarot_adjust,
+  tarot_reverse,
 };
 
 struct RoutedInteraction {
@@ -91,7 +101,8 @@ public:
                      std::function<QueueSnapshot()> ai_queue,
                      std::size_t queue_capacity = 64,
                      RelationshipService *relationships = nullptr,
-                     AppearanceService *appearances = nullptr);
+                     AppearanceService *appearances = nullptr,
+                     TarotService *tarot = nullptr);
   ~InteractionHandler();
 
   InteractionHandler(const InteractionHandler &) = delete;
@@ -119,6 +130,7 @@ private:
   ChronicleSessionService *chronicle_sessions_{};
   RelationshipService *relationships_{};
   AppearanceService *appearances_{};
+  TarotService *tarot_{};
   HealthService &health_service_;
   Diagnostics &diagnostics_;
   FeatureConfiguration features_;

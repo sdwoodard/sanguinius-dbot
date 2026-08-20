@@ -90,6 +90,12 @@ public:
     return found->second;
   }
 
+  void set_tarot_standings_visibility(const DiscordSnowflake &user_id,
+                                      const bool is_public) {
+    const std::scoped_lock lock{mutex_};
+    preferences_[user_id].public_tarot_results_opt_in = is_public;
+  }
+
   [[nodiscard]] std::size_t user_count() const {
     const std::scoped_lock lock{mutex_};
     return users_.size();

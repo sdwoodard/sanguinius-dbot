@@ -13,7 +13,9 @@
 #include "support/fake_id_generator.hpp"
 #include "support/fake_message_log.hpp"
 #include "support/fake_repositories.hpp"
+#include "support/fake_random.hpp"
 #include "support/fake_relationship_repository.hpp"
+#include "support/fake_tarot_repository.hpp"
 
 #include <memory>
 #include <utility>
@@ -29,6 +31,7 @@ public:
           .server_scope = {10, 20, 30},
           .controls = {},
           .features = {},
+          .tarot_policy = {},
           .build = {"test-version", "test-revision"},
           .persistence = {true, 1, 1, "3.53.4",
                           "00000000-0000-4000-8000-000000000001"},
@@ -62,6 +65,9 @@ public:
         std::make_unique<FakeChronicleSessionRepository>();
     auto owned_relationships = std::make_unique<FakeRelationshipRepository>();
     auto owned_appearances = std::make_unique<FakeAppearanceRepository>();
+    auto owned_tarot = std::make_unique<FakeTarotRepository>();
+    auto owned_random = std::make_unique<FakeRandom>(
+        std::vector<std::uint64_t>(128, 0));
     auto owned_ai = std::make_unique<FakeAiClient>();
     auto owned_discord = std::make_unique<FakeDiscord>();
 
@@ -77,6 +83,7 @@ public:
     chronicle_sessions = owned_chronicle_sessions.get();
     relationships = owned_relationships.get();
     appearances = owned_appearances.get();
+    tarot = owned_tarot.get();
     ai = owned_ai.get();
     discord = owned_discord.get();
 
@@ -96,6 +103,8 @@ public:
             .chronicle_sessions = std::move(owned_chronicle_sessions),
             .relationships = std::move(owned_relationships),
             .appearances = std::move(owned_appearances),
+            .tarot = std::move(owned_tarot),
+            .random = std::move(owned_random),
             .appearance_policy = test_appearance_policy(),
             .ai_client = std::move(owned_ai),
             .discord = std::move(owned_discord),
@@ -124,6 +133,7 @@ public:
   FakeChronicleSessionRepository *chronicle_sessions{};
   FakeRelationshipRepository *relationships{};
   FakeAppearanceRepository *appearances{};
+  FakeTarotRepository *tarot{};
   FakeAiClient *ai{};
   FakeDiscord *discord{};
   std::unique_ptr<Application> application;

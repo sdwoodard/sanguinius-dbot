@@ -59,6 +59,7 @@ sanguinius_embed_migrations(
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0006_chronicle_sessions.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0007_appearance_dry_run.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0008_appearance_live.sql"
+    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0009_tarot_ledger.sql"
 )
 
 function(sanguinius_enable_warnings target)
@@ -105,11 +106,13 @@ add_library(sanguinius_core STATIC
     src/pending_notice.cpp
     src/persistent_id.cpp
     src/prompt_compiler.cpp
+    src/random.cpp
     src/relationships.cpp
     src/repositories.cpp
     src/scheduler.cpp
     src/server_scope_policy.cpp
     src/snowflake.cpp
+    src/tarot.cpp
     src/work_queue.cpp
 )
 
@@ -140,6 +143,7 @@ add_library(sanguinius_persistence STATIC
     src/persistence/sqlite_durable_work_repository.cpp
     src/persistence/sqlite_relationship_repository.cpp
     src/persistence/sqlite_repositories.cpp
+    src/persistence/sqlite_tarot_repository.cpp
     src/persistence/transaction.cpp
 )
 
@@ -217,6 +221,7 @@ if(BUILD_TESTING)
         tests/unit/relationship_tests.cpp
         tests/unit/server_scope_policy_tests.cpp
         tests/unit/snowflake_tests.cpp
+        tests/unit/tarot_tests.cpp
         tests/unit/work_queue_tests.cpp
     )
     add_sanguinius_test(sanguinius_application_tests
@@ -236,6 +241,7 @@ if(BUILD_TESTING)
         tests/integration/repository_tests.cpp
         tests/integration/relationship_repository_tests.cpp
         tests/integration/sqlite_tests.cpp
+        tests/integration/tarot_repository_tests.cpp
         tests/unit/persistent_id_tests.cpp
     )
     target_compile_features(sanguinius_persistence_tests PRIVATE cxx_std_20)
@@ -278,6 +284,14 @@ if(BUILD_TESTING)
         --unset=SANGUINIUS_OPENAI_MODEL
         --unset=SANGUINIUS_PERSONA_FILE
         --unset=SANGUINIUS_APPEARANCE_POLICY_FILE
+        --unset=SANGUINIUS_TAROT_STARTING_FATE
+        --unset=SANGUINIUS_TAROT_GRACE_THRESHOLD
+        --unset=SANGUINIUS_TAROT_GRACE_TARGET
+        --unset=SANGUINIUS_TAROT_GRACE_COOLDOWN_HOURS
+        --unset=SANGUINIUS_TAROT_TRIAL_THRESHOLD
+        --unset=SANGUINIUS_TAROT_TRIAL_REWARD_MIN
+        --unset=SANGUINIUS_TAROT_TRIAL_REWARD_MAX
+        --unset=SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS
         --unset=SANGUINIUS_DATABASE_FILE
         --unset=SANGUINIUS_ADMIN_COMMANDS_ENABLED
         --unset=SANGUINIUS_TEST_MODE

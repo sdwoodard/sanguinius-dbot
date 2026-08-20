@@ -133,6 +133,28 @@ TEST_CASE("DPP translates owner appearance controls as one nested group",
   REQUIRE(appearance->options[0].options[0].choices.size() == 13);
 }
 
+TEST_CASE("DPP translates bounded Tarot integer adjustments",
+          "[discord][commands][tarot]") {
+  const auto translated =
+      sanguinius::dpp_adapter_detail::translate_command_catalog(
+          sanguinius::command_catalog(true, false, true), 42);
+  const auto admin = std::ranges::find(translated, std::string{"sang-admin"},
+                                       &dpp::slashcommand::name);
+  REQUIRE(admin != translated.end());
+  const auto tarot = std::ranges::find(admin->options, std::string{"tarot"},
+                                       &dpp::command_option::name);
+  REQUIRE(tarot != admin->options.end());
+  REQUIRE(tarot->type == dpp::co_sub_command_group);
+  const auto adjust = std::ranges::find(
+      tarot->options, std::string{"adjust"}, &dpp::command_option::name);
+  REQUIRE(adjust != tarot->options.end());
+  REQUIRE(adjust->options[0].type == dpp::co_integer);
+  REQUIRE(std::get<std::int64_t>(adjust->options[0].min_value) ==
+          sanguinius::minimum_tarot_adjustment);
+  REQUIRE(std::get<std::int64_t>(adjust->options[0].max_value) ==
+          sanguinius::maximum_tarot_adjustment);
+}
+
 TEST_CASE(
     "DPP retains owner appearance safety controls when administration is off",
     "[discord][commands][appearance][safety]") {

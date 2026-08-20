@@ -4,6 +4,7 @@
 #include "sanguinius/appearance_policy.hpp"
 #include "sanguinius/feature_config.hpp"
 #include "sanguinius/server_scope_policy.hpp"
+#include "sanguinius/tarot.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -35,6 +36,7 @@ struct DiscordCommandConfiguration {
   std::chrono::seconds request_timeout{10};
   bool admin_commands_enabled{};
   bool chronicle_enabled{};
+  bool tarot_enabled{};
 };
 
 struct AiConfiguration {
@@ -75,6 +77,7 @@ struct Config {
   FeatureConfiguration features;
   ConfigurationOrigins origins;
   AppearancePolicy appearance_policy;
+  TarotPolicy tarot_policy;
   std::string command_prefix{"!"};
   std::string timezone{"America/New_York"};
 

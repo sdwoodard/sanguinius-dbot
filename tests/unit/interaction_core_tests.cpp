@@ -22,10 +22,10 @@ namespace {
 
 } // namespace
 
-TEST_CASE("command catalog version seven is deterministic and feature gated",
+TEST_CASE("command catalog version eight is deterministic and feature gated",
           "[interaction][commands]") {
   const auto public_catalog = sanguinius::command_catalog(false);
-  REQUIRE(public_catalog.version == 7);
+  REQUIRE(public_catalog.version == 8);
   REQUIRE(public_catalog.commands.size() == 2);
   REQUIRE(public_catalog.commands[0].name == "sanguinius");
   REQUIRE(public_catalog.commands[0].subcommands.size() == 5);
@@ -74,6 +74,30 @@ TEST_CASE("command catalog version seven is deterministic and feature gated",
           sanguinius::ApplicationCommandKind::message_context);
   REQUIRE(chronicle_catalog.commands[2].name == "Canonize in the Chronicle");
   REQUIRE(chronicle_catalog.commands[3].name == "sang-admin");
+
+  const auto tarot_catalog = sanguinius::command_catalog(true, false, true);
+  REQUIRE(tarot_catalog.version == 8);
+  REQUIRE(tarot_catalog.commands.size() == 3);
+  REQUIRE(tarot_catalog.commands[1].name == "tarot");
+  REQUIRE(tarot_catalog.commands[1].subcommands.size() == 6);
+  const auto &standings_visibility =
+      tarot_catalog.commands[1].subcommands[3].options[0];
+  REQUIRE(standings_visibility.choices[0].name == "Public");
+  REQUIRE(standings_visibility.choices[0].value == "public");
+  const auto &grace_visibility =
+      tarot_catalog.commands[1].subcommands[4].options[0];
+  REQUIRE(grace_visibility.choices[0].name == "Public flavor");
+  REQUIRE(tarot_catalog.commands[2].name == "sang-admin");
+  REQUIRE(tarot_catalog.commands[2].subcommand_groups.size() == 2);
+  const auto &tarot_admin = tarot_catalog.commands[2].subcommand_groups[1];
+  REQUIRE(tarot_admin.name == "tarot");
+  REQUIRE(tarot_admin.subcommands.size() == 2);
+  REQUIRE(tarot_admin.subcommands[0].options[0].kind ==
+          sanguinius::CommandOptionKind::integer);
+  REQUIRE(tarot_admin.subcommands[0].options[0].minimum_integer ==
+          sanguinius::minimum_tarot_adjustment);
+  REQUIRE(tarot_admin.subcommands[0].options[0].maximum_integer ==
+          sanguinius::maximum_tarot_adjustment);
 }
 
 TEST_CASE("command registration reconciliation is guarded and retryable",

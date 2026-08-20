@@ -71,7 +71,15 @@ TEST_CASE("health snapshot renders build queues and configured modes",
                  .last_job_error = "handler_exception",
                  .last_outbox_error = "discord_transient",
              };
-           }}};
+           },
+       .tarot = [] {
+         return std::optional<sanguinius::TarotInvariantReport>{
+             sanguinius::TarotInvariantReport{
+                 .valid = true,
+                 .account_count = 4,
+                 .committed_transaction_count = 2,
+                 .posting_count = 4}};
+       }}};
 
   const auto snapshot = service.snapshot(
       {.capacity = 64, .queued = 3, .active = 1, .accepting = true},
@@ -99,6 +107,8 @@ TEST_CASE("health snapshot renders build queues and configured modes",
                    "retries"));
   REQUIRE(contains(rendered, "scheduler_lag_ms=700"));
   REQUIRE(contains(rendered, "last_outbox_error=discord_transient"));
+  REQUIRE(contains(rendered, "tarot_invariants=ok"));
+  REQUIRE(contains(rendered, "tarot_accounts=4"));
   REQUIRE(contains(rendered, "admin_commands=enabled"));
   REQUIRE(contains(rendered, "test_mode=enabled"));
   REQUIRE(contains(rendered, "appearances=dry_run"));
@@ -115,7 +125,8 @@ TEST_CASE("health snapshot renders build queues and configured modes",
        .scheduler_queue = [] { return sanguinius::QueueSnapshot{}; },
        .outbox_queue = [] { return sanguinius::QueueSnapshot{}; },
        .pending_notice_count = [] { return std::size_t{}; },
-       .durable_work = [] { return sanguinius::DurableWorkHealth{}; }}};
+       .durable_work = [] { return sanguinius::DurableWorkHealth{}; },
+       .tarot = {}}};
   const auto bounded = sanguinius::render_health(oversized_metadata.snapshot(
       {.capacity = 64, .queued = 1, .active = 1, .accepting = true},
       {.capacity = 64, .accepting = true}, true));
@@ -141,7 +152,8 @@ TEST_CASE("health types cannot expose secret configuration", "[health]") {
        .scheduler_queue = [] { return sanguinius::QueueSnapshot{}; },
        .outbox_queue = [] { return sanguinius::QueueSnapshot{}; },
        .pending_notice_count = [] { return std::size_t{}; },
-       .durable_work = [] { return sanguinius::DurableWorkHealth{}; }}};
+       .durable_work = [] { return sanguinius::DurableWorkHealth{}; },
+       .tarot = {}}};
   const auto rendered = sanguinius::render_health(
       service.snapshot({.capacity = 1}, {.capacity = 1}, true));
 

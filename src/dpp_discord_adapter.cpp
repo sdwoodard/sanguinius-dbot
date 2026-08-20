@@ -503,15 +503,24 @@ make_discord_commands(const CommandCatalog &catalog,
       dpp::command_option translated{dpp::co_sub_command, subcommand.name,
                                      subcommand.description};
       for (const auto &option : subcommand.options) {
+        const auto option_type = option.kind == CommandOptionKind::user
+                                     ? dpp::co_user
+                                 : option.kind == CommandOptionKind::integer
+                                     ? dpp::co_integer
+                                     : dpp::co_string;
         dpp::command_option translated_option{
-            option.kind == CommandOptionKind::user ? dpp::co_user
-                                                   : dpp::co_string,
+            option_type,
             option.name, option.description, option.required};
         if (option.kind == CommandOptionKind::string) {
           translated_option.set_min_length(
               static_cast<std::int64_t>(option.minimum_length));
           translated_option.set_max_length(
               static_cast<std::int64_t>(option.maximum_length));
+        } else if (option.kind == CommandOptionKind::integer) {
+          if (!option.minimum_integer || !option.maximum_integer)
+            throw std::invalid_argument{"Integer command bounds are required."};
+          translated_option.set_min_value(*option.minimum_integer);
+          translated_option.set_max_value(*option.maximum_integer);
         }
         for (const auto &choice : option.choices) {
           translated_option.add_choice(
@@ -528,15 +537,25 @@ make_discord_commands(const CommandCatalog &catalog,
         dpp::command_option translated{dpp::co_sub_command, subcommand.name,
                                        subcommand.description};
         for (const auto &option : subcommand.options) {
+          const auto option_type = option.kind == CommandOptionKind::user
+                                       ? dpp::co_user
+                                   : option.kind == CommandOptionKind::integer
+                                       ? dpp::co_integer
+                                       : dpp::co_string;
           dpp::command_option translated_option{
-              option.kind == CommandOptionKind::user ? dpp::co_user
-                                                     : dpp::co_string,
+              option_type,
               option.name, option.description, option.required};
           if (option.kind == CommandOptionKind::string) {
             translated_option.set_min_length(
                 static_cast<std::int64_t>(option.minimum_length));
             translated_option.set_max_length(
                 static_cast<std::int64_t>(option.maximum_length));
+          } else if (option.kind == CommandOptionKind::integer) {
+            if (!option.minimum_integer || !option.maximum_integer)
+              throw std::invalid_argument{
+                  "Integer command bounds are required."};
+            translated_option.set_min_value(*option.minimum_integer);
+            translated_option.set_max_value(*option.maximum_integer);
           }
           for (const auto &choice : option.choices)
             translated_option.add_choice(

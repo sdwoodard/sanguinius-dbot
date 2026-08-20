@@ -130,6 +130,14 @@ TEST_CASE("typed configuration loads safe defaults and full snowflakes",
   REQUIRE_FALSE(config.controls.test_mode);
   REQUIRE_FALSE(config.features.chronicle_enabled);
   REQUIRE_FALSE(config.features.tarot_enabled);
+  REQUIRE(config.tarot_policy.starting_fate == 100);
+  REQUIRE(config.tarot_policy.grace_threshold == 10);
+  REQUIRE(config.tarot_policy.grace_target == 25);
+  REQUIRE(config.tarot_policy.grace_cooldown_hours == 72);
+  REQUIRE(config.tarot_policy.trial_threshold == 50);
+  REQUIRE(config.tarot_policy.trial_reward_min == 5);
+  REQUIRE(config.tarot_policy.trial_reward_max == 15);
+  REQUIRE(config.tarot_policy.trial_cooldown_hours == 24);
   REQUIRE(config.features.appearances_mode == sanguinius::AppearanceMode::off);
   REQUIRE_FALSE(config.features.vox_enabled);
   REQUIRE_FALSE(config.features.voice_input_enabled);
@@ -146,6 +154,7 @@ TEST_CASE("Discord command configuration does not load application services",
   source.values.erase("SANGUINIUS_OWNER_USER_ID");
   source.values["SANGUINIUS_ADMIN_COMMANDS_ENABLED"] = "true";
   source.values["SANGUINIUS_CHRONICLE_ENABLED"] = "true";
+  source.values["SANGUINIUS_TAROT_ENABLED"] = "true";
   source.values["SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS"] = "17";
   source.files.clear();
 
@@ -156,7 +165,40 @@ TEST_CASE("Discord command configuration does not load application services",
   REQUIRE(config.request_timeout == std::chrono::seconds{17});
   REQUIRE(config.admin_commands_enabled);
   REQUIRE(config.chronicle_enabled);
+  REQUIRE(config.tarot_enabled);
   REQUIRE(source.read_paths.empty());
+}
+
+TEST_CASE("Tarot configuration parses confirmed overrides and relationships",
+          "[config][tarot]") {
+  FakeConfigSource source;
+  source.values["SANGUINIUS_TAROT_STARTING_FATE"] = "200";
+  source.values["SANGUINIUS_TAROT_GRACE_THRESHOLD"] = "12";
+  source.values["SANGUINIUS_TAROT_GRACE_TARGET"] = "30";
+  source.values["SANGUINIUS_TAROT_GRACE_COOLDOWN_HOURS"] = "48";
+  source.values["SANGUINIUS_TAROT_TRIAL_THRESHOLD"] = "60";
+  source.values["SANGUINIUS_TAROT_TRIAL_REWARD_MIN"] = "6";
+  source.values["SANGUINIUS_TAROT_TRIAL_REWARD_MAX"] = "12";
+  source.values["SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS"] = "36";
+  const auto config = sanguinius::Config::from_source(source);
+  REQUIRE(config.tarot_policy.starting_fate == 200);
+  REQUIRE(config.tarot_policy.grace_threshold == 12);
+  REQUIRE(config.tarot_policy.grace_target == 30);
+  REQUIRE(config.tarot_policy.grace_cooldown_hours == 48);
+  REQUIRE(config.tarot_policy.trial_threshold == 60);
+  REQUIRE(config.tarot_policy.trial_reward_min == 6);
+  REQUIRE(config.tarot_policy.trial_reward_max == 12);
+  REQUIRE(config.tarot_policy.trial_cooldown_hours == 36);
+
+  source.values["SANGUINIUS_TAROT_GRACE_TARGET"] = "12";
+  REQUIRE(contains(config_error(source), "Grace target above threshold"));
+  source.values["SANGUINIUS_TAROT_GRACE_TARGET"] = "30";
+  source.values["SANGUINIUS_TAROT_TRIAL_REWARD_MIN"] = "13";
+  REQUIRE(contains(config_error(source), "ordered Trial reward bounds"));
+  source.values["SANGUINIUS_TAROT_TRIAL_REWARD_MIN"] = "6";
+  source.values["SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS"] = "8761";
+  REQUIRE(contains(config_error(source),
+                   "SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS"));
 }
 
 TEST_CASE("typed configuration parses strict controls features and duration",

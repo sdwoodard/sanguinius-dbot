@@ -9,6 +9,7 @@
 
 #include <array>
 #include <chrono>
+#include <vector>
 
 namespace {
 
@@ -42,7 +43,7 @@ int deny_fts5_creation(void *, const int action, const char *,
 
 } // namespace
 
-TEST_CASE("production migration moves an empty database to version eight",
+TEST_CASE("production migration moves an empty database to version nine",
           "[migration]") {
   sanguinius::test::TemporaryDatabase temporary;
   sanguinius::test::FakeClock clock{
@@ -53,12 +54,12 @@ TEST_CASE("production migration moves an empty database to version eight",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::uninitialized);
   REQUIRE(before.current_version == 0);
-  REQUIRE(before.target_version == 8);
+  REQUIRE(before.target_version == 9);
 
   const auto applied = migrator.apply(database.connection());
   REQUIRE(applied.state == SchemaState::current);
-  REQUIRE(applied.current_version == 8);
-  REQUIRE(count(database.connection(), "schema_migrations") == 8);
+  REQUIRE(applied.current_version == 9);
+  REQUIRE(count(database.connection(), "schema_migrations") == 9);
   REQUIRE(count(database.connection(), "application_instance") == 0);
   REQUIRE(count(database.connection(), "guild_config") == 0);
   REQUIRE(count(database.connection(), "pending_notice") == 0);
@@ -89,6 +90,12 @@ TEST_CASE("production migration moves an empty database to version eight",
   REQUIRE(count(database.connection(), "appearance_decision") == 0);
   REQUIRE(count(database.connection(), "appearance_preview") == 0);
   REQUIRE(count(database.connection(), "appearance_delivery_participant") == 0);
+  REQUIRE(count(database.connection(), "tarot_account") == 0);
+  REQUIRE(count(database.connection(), "tarot_transaction") == 0);
+  REQUIRE(count(database.connection(), "tarot_posting") == 0);
+  REQUIRE(count(database.connection(), "tarot_draw") == 0);
+  REQUIRE(count(database.connection(), "tarot_recovery_claim") == 0);
+  REQUIRE(count(database.connection(), "tarot_history_cursor") == 0);
   auto relationship_indexes = database.connection().prepare(
       "SELECT count(*) FROM sqlite_schema WHERE type='index' AND name IN ("
       "'relationship_event_subject_time','relationship_event_source',"
@@ -152,12 +159,16 @@ TEST_CASE("production migration moves an empty database to version eight",
   REQUIRE(history.column_text(0) == "appearance_live");
   REQUIRE(history.column_text(1).size() == 64);
   REQUIRE(history.column_int64(2) == 123'000);
+  REQUIRE(history.step());
+  REQUIRE(history.column_text(0) == "tarot_ledger");
+  REQUIRE(history.column_text(1).size() == 64);
+  REQUIRE(history.column_int64(2) == 123'000);
   REQUIRE_FALSE(history.step());
 
   clock.set(std::chrono::sys_seconds{std::chrono::seconds{456}});
   const auto repeated = migrator.apply(database.connection());
   REQUIRE(repeated.state == SchemaState::current);
-  REQUIRE(count(database.connection(), "schema_migrations") == 8);
+  REQUIRE(count(database.connection(), "schema_migrations") == 9);
   auto unchanged = database.connection().prepare(
       "SELECT applied_at_ms FROM schema_migrations");
   REQUIRE(unchanged.step());
@@ -213,11 +224,11 @@ TEST_CASE("production migration upgrades version one atomically",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::pending);
   REQUIRE(before.current_version == 1);
-  REQUIRE(before.pending_count == 7);
+  REQUIRE(before.pending_count == 8);
 
   const auto applied = migrator.apply(database.connection());
   REQUIRE(applied.state == SchemaState::current);
-  REQUIRE(applied.current_version == 8);
+  REQUIRE(applied.current_version == 9);
   REQUIRE(count(database.connection(), "pending_notice") == 0);
   REQUIRE(count(database.connection(), "interaction_token") == 0);
   REQUIRE(count(database.connection(), "notice_reveal_attempt") == 0);
@@ -238,8 +249,8 @@ TEST_CASE("production migration upgrades version two through Chronicle",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::pending);
   REQUIRE(before.current_version == 2);
-  REQUIRE(before.pending_count == 6);
-  REQUIRE(migrator.apply(database.connection()).current_version == 8);
+  REQUIRE(before.pending_count == 7);
+  REQUIRE(migrator.apply(database.connection()).current_version == 9);
   REQUIRE(count(database.connection(), "event_journal") == 0);
   REQUIRE(count(database.connection(), "scheduled_job") == 0);
   REQUIRE(count(database.connection(), "outbox_message") == 0);
@@ -261,8 +272,8 @@ TEST_CASE("version four imports existing Chronicle consent once",
       "INSERT INTO user_preference (user_id,updated_at_ms) VALUES ('42',1)");
 
   auto migrator = production_migrator(clock);
-  REQUIRE(migrator.inspect(database.connection()).pending_count == 5);
-  REQUIRE(migrator.apply(database.connection()).current_version == 8);
+  REQUIRE(migrator.inspect(database.connection()).pending_count == 6);
+  REQUIRE(migrator.apply(database.connection()).current_version == 9);
   auto imported = database.connection().prepare(
       "SELECT chronicle_opt_in,memory_callback_opt_in FROM user_preference "
       "WHERE user_id='42'");
@@ -301,8 +312,8 @@ TEST_CASE(
   auto migrator = production_migrator(clock);
   const auto pending = migrator.inspect(database.connection());
   REQUIRE(pending.current_version == 4);
-  REQUIRE(pending.pending_count == 4);
-  REQUIRE(migrator.apply(database.connection()).current_version == 8);
+  REQUIRE(pending.pending_count == 5);
+  REQUIRE(migrator.apply(database.connection()).current_version == 9);
   REQUIRE(count(database.connection(), "relationship_event") == 0);
   REQUIRE(count(database.connection(), "relationship_state") == 0);
   REQUIRE(count(database.connection(), "ai_prompt_attempt") == 0);
@@ -374,7 +385,7 @@ TEST_CASE("version six preserves populated Chronicle children and projections",
       "projection_version,updated_at_ms) VALUES ('31',4,3,2,1,0,4,10,1,10);");
 
   const auto applied = production_migrator(clock).apply(database.connection());
-  REQUIRE(applied.current_version == 8);
+  REQUIRE(applied.current_version == 9);
   REQUIRE(count(database.connection(), "chronicle_entry") == 1);
   REQUIRE(count(database.connection(), "chronicle_participant") == 1);
   REQUIRE(count(database.connection(), "chronicle_tag") == 1);
@@ -431,7 +442,7 @@ TEST_CASE("version six rolls back when FTS5 preflight is unavailable",
   REQUIRE(anniversary_column.column_int64(0) == 0);
 }
 
-TEST_CASE("version eight upgrades an accepted version-six database atomically",
+TEST_CASE("version nine upgrades an accepted version-six database atomically",
           "[migration][appearance][rollback]") {
   sanguinius::test::TemporaryDatabase temporary;
   sanguinius::test::FakeClock clock;
@@ -450,9 +461,9 @@ TEST_CASE("version eight upgrades an accepted version-six database atomically",
       "INSERT INTO user_preference(user_id,updated_at_ms) VALUES('30',1)");
   const auto before = production_migrator(clock).inspect(database.connection());
   REQUIRE(before.current_version == 6);
-  REQUIRE(before.pending_count == 2);
+  REQUIRE(before.pending_count == 3);
   const auto applied = production_migrator(clock).apply(database.connection());
-  REQUIRE(applied.current_version == 8);
+  REQUIRE(applied.current_version == 9);
   REQUIRE(count(database.connection(), "discord_user") == 1);
   REQUIRE(count(database.connection(), "appearance_candidate") == 0);
   auto guard = database.connection().prepare(
@@ -503,7 +514,7 @@ TEST_CASE("version eight preserves accepted dry-run audit rows",
 
   REQUIRE(
       production_migrator(clock).apply(database.connection()).current_version ==
-      8);
+      9);
   REQUIRE(count(database.connection(), "appearance_candidate") == 1);
   REQUIRE(count(database.connection(), "appearance_decision") == 1);
   REQUIRE(count(database.connection(), "appearance_preview") == 1);
@@ -520,6 +531,66 @@ TEST_CASE("version eight preserves accepted dry-run audit rows",
   REQUIRE(preserved.column_int64(3) == 10);
   REQUIRE(preserved.column_int64(4) == 10);
   REQUIRE(count(database.connection(), "appearance_budget_reservation") == 0);
+}
+
+TEST_CASE("version nine adds an empty ledger to an accepted version-eight database",
+          "[migration][tarot][preservation]") {
+  sanguinius::test::TemporaryDatabase temporary;
+  sanguinius::test::FakeClock clock;
+  auto database = Database::open_migration(temporary.path(), 25ms);
+  const auto production = sanguinius::persistence::production_migrations();
+  const Migrator version_eight{
+      std::span<const Migration>{production.data(), 8},
+      {"test-version", "test-revision"}, clock};
+  REQUIRE(version_eight.apply(database.connection()).current_version == 8);
+  database.connection().execute_script(
+      "INSERT INTO discord_user VALUES('30','Owner','owner',0,1,1,1,1);"
+      "INSERT INTO guild_config(guild_id,primary_channel_id,owner_user_id,"
+      "created_at_ms,updated_at_ms) VALUES('10','20','30',1,1);"
+      "INSERT INTO user_preference(user_id,public_tarot_results_opt_in,"
+      "updated_at_ms) VALUES('30',0,1)");
+  const auto before = production_migrator(clock).inspect(database.connection());
+  REQUIRE(before.current_version == 8);
+  REQUIRE(before.pending_count == 1);
+  REQUIRE(production_migrator(clock)
+              .apply(database.connection())
+              .current_version == 9);
+  REQUIRE(count(database.connection(), "tarot_account") == 0);
+  REQUIRE(count(database.connection(), "tarot_transaction") == 0);
+  auto preference = database.connection().prepare(
+      "SELECT public_tarot_results_opt_in FROM user_preference WHERE user_id='30'");
+  REQUIRE(preference.step());
+  REQUIRE(preference.column_int64(0) == 0);
+}
+
+TEST_CASE("a failed Tarot migration leaves the accepted version-eight schema intact",
+          "[migration][tarot][rollback]") {
+  constexpr std::string_view checksum{
+      "0000000000000000000000000000000000000000000000000000000000000000"};
+  sanguinius::test::TemporaryDatabase temporary;
+  sanguinius::test::FakeClock clock;
+  auto database = Database::open_migration(temporary.path(), 25ms);
+  const auto production = sanguinius::persistence::production_migrations();
+  const Migrator version_eight{
+      std::span<const Migration>{production.data(), 8},
+      {"test-version", "test-revision"}, clock};
+  REQUIRE(version_eight.apply(database.connection()).current_version == 8);
+
+  std::vector<Migration> broken{production.begin(), production.begin() + 8};
+  broken.push_back(Migration{
+      9, "broken_tarot", checksum,
+      "CREATE TABLE partial_tarot_table (id INTEGER) STRICT; "
+      "THIS IS NOT SQL;"});
+  const Migrator broken_tarot{broken, {"test-version", "test-revision"},
+                              clock};
+  REQUIRE_THROWS_AS(broken_tarot.apply(database.connection()), DatabaseError);
+  REQUIRE(version_eight.inspect(database.connection()).state ==
+          SchemaState::current);
+  REQUIRE(count(database.connection(), "schema_migrations") == 8);
+  auto partial = database.connection().prepare(
+      "SELECT count(*) FROM sqlite_schema WHERE name='partial_tarot_table'");
+  REQUIRE(partial.step());
+  REQUIRE(partial.column_int64(0) == 0);
 }
 
 TEST_CASE("unmanaged schema and malformed migration table fail closed",

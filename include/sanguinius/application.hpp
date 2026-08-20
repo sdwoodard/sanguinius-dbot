@@ -17,7 +17,9 @@
 #include "sanguinius/persistent_id.hpp"
 #include "sanguinius/repositories.hpp"
 #include "sanguinius/relationships.hpp"
+#include "sanguinius/random.hpp"
 #include "sanguinius/server_scope_policy.hpp"
+#include "sanguinius/tarot.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -34,6 +36,7 @@ struct ApplicationOptions {
   ServerScopeConfiguration server_scope;
   ControlConfiguration controls;
   FeatureConfiguration features;
+  TarotPolicy tarot_policy;
   BuildInfo build;
   PersistenceHealth persistence;
   std::string instance_id;
@@ -62,6 +65,8 @@ struct ApplicationDependencies {
   std::unique_ptr<ChronicleSessionRepository> chronicle_sessions;
   std::unique_ptr<RelationshipRepository> relationships;
   std::unique_ptr<AppearanceRepository> appearances;
+  std::unique_ptr<TarotRepository> tarot;
+  std::unique_ptr<Random> random;
   std::optional<AppearancePolicy> appearance_policy;
   std::unique_ptr<AiClient> ai_client;
   std::unique_ptr<DiscordRuntime> discord;

@@ -42,7 +42,8 @@ status_message(const FeatureConfiguration &features,
 privacy_message(const FeatureConfiguration &features,
                 const UserPreferences &preferences,
                 const std::size_t pending_notices,
-                const std::string_view appearance_status) {
+                const std::string_view appearance_status,
+                const std::string_view tarot_status) {
   std::ostringstream output;
   output << "Your Sanguinius privacy summary\n"
          << "Discord identity cache: stored for stable account identity\n"
@@ -59,6 +60,7 @@ privacy_message(const FeatureConfiguration &features,
          << "\nYour voice-input opt-in: "
          << enabled(preferences.voice_input_opt_in)
          << "\nUnopened sealed notices: " << pending_notices
+         << "\n" << tarot_status
          << "\nDiscord DMs are never used. Raw received voice audio is never "
             "persisted.";
   return text_message(output.str());
@@ -74,11 +76,12 @@ InteractionHandler::InteractionHandler(
     const FeatureConfiguration features,
     std::function<QueueSnapshot()> message_queue,
     std::function<QueueSnapshot()> ai_queue, const std::size_t queue_capacity,
-    RelationshipService *relationships, AppearanceService *appearances)
+    RelationshipService *relationships, AppearanceService *appearances,
+    TarotService *tarot)
     : identities_{identities}, notices_{notices}, clock_{clock},
       durable_controls_{durable_controls}, chronicle_{chronicle},
       chronicle_sessions_{chronicle_sessions}, relationships_{relationships},
-      appearances_{appearances}, health_service_{health_service},
+      appearances_{appearances}, tarot_{tarot}, health_service_{health_service},
       diagnostics_{diagnostics}, features_{features},
       message_queue_{std::move(message_queue)}, ai_queue_{std::move(ai_queue)},
       callbacks_{std::make_shared<CallbackFence>()},
@@ -170,7 +173,18 @@ void InteractionHandler::process(const RoutedInteraction &request) {
          privacy_message(features_, *preferences,
                          notices_.pending_count(request.interaction.user_id),
                          appearances_ ? appearances_->member_status_summary()
-                                      : "unavailable"),
+                                      : "unavailable",
+                         tarot_ ? tarot_->privacy_summary(
+                                      request.interaction.user_id)
+                                : std::string{"Fate standings: "} +
+                                      (preferences
+                                               ->public_tarot_results_opt_in
+                                           ? "public"
+                                           : "private") +
+                                      "\nFate feature: disabled\nFate ledger: "
+                                      "retained as an immutable financial "
+                                      "audit; balances are derived from "
+                                      "postings."),
          "interaction.privacy");
     return;
   }
@@ -625,6 +639,61 @@ void InteractionHandler::process(const RoutedInteraction &request) {
              "appearance.kill:" + request.interaction.interaction_id.str(),
              request.interaction.correlation_id)),
          "interaction.appearance_kill_switch");
+    return;
+  case InteractionOperation::tarot_balance:
+    if (!tarot_)
+      throw std::runtime_error{"Tarot service is unavailable."};
+    edit(request.interaction, tarot_->balance(request.interaction),
+         "interaction.tarot_balance");
+    return;
+  case InteractionOperation::tarot_history:
+    if (!tarot_)
+      throw std::runtime_error{"Tarot service is unavailable."};
+    edit(request.interaction, tarot_->history(request.interaction),
+         "interaction.tarot_history");
+    return;
+  case InteractionOperation::tarot_standings:
+    if (!tarot_)
+      throw std::runtime_error{"Tarot service is unavailable."};
+    edit(request.interaction, tarot_->standings(request.interaction),
+         "interaction.tarot_standings");
+    return;
+  case InteractionOperation::tarot_standings_visibility:
+    if (!tarot_)
+      throw std::runtime_error{"Tarot service is unavailable."};
+    edit(request.interaction,
+         tarot_->set_standings_visibility(request.interaction),
+         "interaction.tarot_standings_visibility");
+    return;
+  case InteractionOperation::tarot_grace:
+    if (!tarot_)
+      throw std::runtime_error{"Tarot service is unavailable."};
+    edit(request.interaction, tarot_->start_grace(request.interaction),
+         "interaction.tarot_grace");
+    return;
+  case InteractionOperation::tarot_trial:
+    if (!tarot_)
+      throw std::runtime_error{"Tarot service is unavailable."};
+    edit(request.interaction, tarot_->start_trial(request.interaction),
+         "interaction.tarot_trial");
+    return;
+  case InteractionOperation::tarot_component:
+    if (!tarot_)
+      throw std::runtime_error{"Tarot service is unavailable."};
+    edit(request.interaction, tarot_->apply_component(request.interaction),
+         "interaction.tarot_component");
+    return;
+  case InteractionOperation::tarot_adjust:
+    if (!tarot_)
+      throw std::runtime_error{"Tarot service is unavailable."};
+    edit(request.interaction, tarot_->adjust(request.interaction),
+         "interaction.tarot_adjust");
+    return;
+  case InteractionOperation::tarot_reverse:
+    if (!tarot_)
+      throw std::runtime_error{"Tarot service is unavailable."};
+    edit(request.interaction, tarot_->reverse(request.interaction),
+         "interaction.tarot_reverse");
     return;
   }
 }

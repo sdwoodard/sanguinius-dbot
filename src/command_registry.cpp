@@ -7,7 +7,8 @@
 namespace sanguinius {
 
 CommandCatalog command_catalog(const bool admin_commands_enabled,
-                               const bool chronicle_enabled) {
+                               const bool chronicle_enabled,
+                               const bool tarot_enabled) {
   CommandCatalog catalog{
       .version = command_catalog_version,
       .commands =
@@ -244,6 +245,38 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
         .kind = ApplicationCommandKind::message_context,
     });
   }
+  if (tarot_enabled) {
+    const std::vector<CommandOptionChoiceDefinition> standings_choices{
+        {"Public", "public"}, {"Private", "private"}};
+    const std::vector<CommandOptionChoiceDefinition>
+        recovery_visibility_choices{{"Public flavor", "public"},
+                                    {"Private", "private"}};
+    catalog.commands.push_back(CommandDefinition{
+        .name = "tarot",
+        .description = "Consult the Emperor's Tarot Fate ledger.",
+        .subcommands =
+            {
+                {"balance", "Show your private Fate balance."},
+                {"history", "Show your private immutable Fate history."},
+                {"standings", "Show public opted-in Fate standings."},
+                {"standings-visibility",
+                 "Choose whether you appear in public standings.",
+                 {{CommandOptionKind::string, "mode",
+                   "Public standings preference.", true, 6, 7,
+                   standings_choices}}},
+                {"grace",
+                 "Seek Grace of the Throne when Fate is nearly gone.",
+                 {{CommandOptionKind::string, "visibility",
+                   "Visibility of the neutral completion flavor.", false, 6, 7,
+                   recovery_visibility_choices}}},
+                {"trial",
+                 "Take a Trial of Renewal when Fate is low.",
+                 {{CommandOptionKind::string, "visibility",
+                   "Visibility of the neutral completion flavor.", false, 6, 7,
+                   recovery_visibility_choices}}},
+            },
+    });
+  }
   CommandDefinition owner_controls{
       .name = "sang-admin",
       .description = "Owner-only Sanguinius controls.",
@@ -315,6 +348,50 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
       owner_controls.subcommands.push_back(
           {"test-anniversary", "Exercise an exactly-once test anniversary."});
     }
+    if (tarot_enabled) {
+      owner_controls.subcommand_groups.push_back(
+          CommandSubcommandGroupDefinition{
+              .name = "tarot",
+              .description = "Owner-only self-targeted Tarot test controls.",
+              .subcommands = {
+                  CommandSubcommandDefinition{
+                      .name = "adjust",
+                      .description = "Apply a balanced [TEST] adjustment.",
+                      .options =
+                          {CommandOptionDefinition{
+                               .kind = CommandOptionKind::integer,
+                               .name = "amount",
+                               .description = "Nonzero signed Fate delta.",
+                               .required = true,
+                               .minimum_integer = minimum_tarot_adjustment,
+                               .maximum_integer = maximum_tarot_adjustment},
+                           CommandOptionDefinition{
+                               .kind = CommandOptionKind::string,
+                               .name = "reason",
+                               .description = "Audited test reason.",
+                               .required = true,
+                               .minimum_length = 1,
+                               .maximum_length = 200}}},
+                  CommandSubcommandDefinition{
+                      .name = "reverse",
+                      .description =
+                          "Exactly reverse an eligible [TEST] transaction.",
+                      .options = {CommandOptionDefinition{
+                                      .kind = CommandOptionKind::string,
+                                      .name = "transaction",
+                                      .description = "Full transaction UUID.",
+                                      .required = true,
+                                      .minimum_length = 36,
+                                      .maximum_length = 36},
+                                  CommandOptionDefinition{
+                                      .kind = CommandOptionKind::string,
+                                      .name = "reason",
+                                      .description = "Audited reversal reason.",
+                                      .required = true,
+                                      .minimum_length = 1,
+                                      .maximum_length = 200}}},
+              }});
+    }
   }
   catalog.commands.push_back(std::move(owner_controls));
   return catalog;
@@ -333,7 +410,15 @@ std::string canonical_command_snapshot(const CommandCatalog &catalog) {
         output << "option=" << static_cast<int>(option.kind) << '|'
                << option.name << '|' << option.description << '|'
                << option.required << '|' << option.minimum_length << '|'
-               << option.maximum_length << '\n';
+               << option.maximum_length << '|'
+               << (option.minimum_integer
+                       ? std::to_string(*option.minimum_integer)
+                       : "none")
+               << '|'
+               << (option.maximum_integer
+                       ? std::to_string(*option.maximum_integer)
+                       : "none")
+               << '\n';
         for (const auto &choice : option.choices) {
           output << "choice=" << choice.name << '|' << choice.value << '\n';
         }
@@ -348,7 +433,15 @@ std::string canonical_command_snapshot(const CommandCatalog &catalog) {
           output << "option=" << static_cast<int>(option.kind) << '|'
                  << option.name << '|' << option.description << '|'
                  << option.required << '|' << option.minimum_length << '|'
-                 << option.maximum_length << '\n';
+                 << option.maximum_length << '|'
+                 << (option.minimum_integer
+                         ? std::to_string(*option.minimum_integer)
+                         : "none")
+                 << '|'
+                 << (option.maximum_integer
+                         ? std::to_string(*option.maximum_integer)
+                         : "none")
+                 << '\n';
           for (const auto &choice : option.choices)
             output << "choice=" << choice.name << '|' << choice.value << '\n';
         }

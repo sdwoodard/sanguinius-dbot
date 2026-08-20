@@ -102,6 +102,26 @@ optional_nonempty(const ConfigSource &source, const std::string_view variable) {
                            " must be exactly true or false."};
 }
 
+[[nodiscard]] std::int64_t optional_integer(
+    const ConfigSource &source, const std::string_view variable,
+    const std::int64_t default_value, const std::int64_t minimum,
+    const std::int64_t maximum) {
+  const auto value = source.environment(variable);
+  if (!value.has_value())
+    return default_value;
+  std::int64_t parsed{};
+  const auto result =
+      std::from_chars(value->data(), value->data() + value->size(), parsed, 10);
+  if (value->empty() || result.ec != std::errc{} ||
+      result.ptr != value->data() + value->size() || parsed < minimum ||
+      parsed > maximum) {
+    throw std::runtime_error{std::string{variable} + " must be an integer from " +
+                             std::to_string(minimum) + " through " +
+                             std::to_string(maximum) + "."};
+  }
+  return parsed;
+}
+
 [[nodiscard]] DiscordSnowflake
 required_snowflake(const ConfigSource &source,
                    const std::string_view variable) {
@@ -202,6 +222,8 @@ discord_command_configuration_from_source(const ConfigSource &source) {
       optional_boolean(source, "SANGUINIUS_ADMIN_COMMANDS_ENABLED", false);
   config.chronicle_enabled =
       optional_boolean(source, "SANGUINIUS_CHRONICLE_ENABLED", false);
+  config.tarot_enabled =
+      optional_boolean(source, "SANGUINIUS_TAROT_ENABLED", false);
   return config;
 }
 
@@ -311,6 +333,29 @@ Config Config::from_source(const ConfigSource &source) {
       optional_boolean(source, "SANGUINIUS_CHRONICLE_ENABLED", false);
   config.features.tarot_enabled =
       optional_boolean(source, "SANGUINIUS_TAROT_ENABLED", false);
+  config.tarot_policy.starting_fate = optional_integer(
+      source, "SANGUINIUS_TAROT_STARTING_FATE", 100, 1, 1'000'000'000);
+  config.tarot_policy.grace_threshold = optional_integer(
+      source, "SANGUINIUS_TAROT_GRACE_THRESHOLD", 10, 1, 1'000'000'000);
+  config.tarot_policy.grace_target = optional_integer(
+      source, "SANGUINIUS_TAROT_GRACE_TARGET", 25, 1, 1'000'000'000);
+  config.tarot_policy.grace_cooldown_hours = optional_integer(
+      source, "SANGUINIUS_TAROT_GRACE_COOLDOWN_HOURS", 72, 1, 8'760);
+  config.tarot_policy.trial_threshold = optional_integer(
+      source, "SANGUINIUS_TAROT_TRIAL_THRESHOLD", 50, 1, 1'000'000'000);
+  config.tarot_policy.trial_reward_min = optional_integer(
+      source, "SANGUINIUS_TAROT_TRIAL_REWARD_MIN", 5, 1, 1'000'000'000);
+  config.tarot_policy.trial_reward_max = optional_integer(
+      source, "SANGUINIUS_TAROT_TRIAL_REWARD_MAX", 15, 1, 1'000'000'000);
+  config.tarot_policy.trial_cooldown_hours = optional_integer(
+      source, "SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS", 24, 1, 8'760);
+  try {
+    config.tarot_policy.validate();
+  } catch (const std::invalid_argument &) {
+    throw std::runtime_error{
+        "Tarot settings require Grace target above threshold and ordered "
+        "Trial reward bounds."};
+  }
   config.features.appearances_mode = appearance_mode(source);
   config.features.vox_enabled =
       optional_boolean(source, "SANGUINIUS_VOX_ENABLED", false);
@@ -387,6 +432,14 @@ std::string redacted_config_summary(const Config &config,
          << "test_mode=" << enabled(config.controls.test_mode) << '\n'
          << "chronicle=" << enabled(config.features.chronicle_enabled) << '\n'
          << "tarot=" << enabled(config.features.tarot_enabled) << '\n'
+         << "tarot_starting_fate=" << config.tarot_policy.starting_fate << '\n'
+         << "tarot_grace=" << config.tarot_policy.grace_threshold << "->"
+         << config.tarot_policy.grace_target << "/"
+         << config.tarot_policy.grace_cooldown_hours << "h\n"
+         << "tarot_trial=" << config.tarot_policy.trial_threshold << "/"
+         << config.tarot_policy.trial_reward_min << "-"
+         << config.tarot_policy.trial_reward_max << "/"
+         << config.tarot_policy.trial_cooldown_hours << "h\n"
          << "appearances="
          << appearance_mode_name(config.features.appearances_mode) << '\n'
          << "vox=" << enabled(config.features.vox_enabled) << '\n'

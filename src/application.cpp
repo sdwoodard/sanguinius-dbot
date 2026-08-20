@@ -69,6 +69,8 @@ public:
             std::move(dependencies.chronicle_sessions)},
         relationship_repository_{std::move(dependencies.relationships)},
         appearance_repository_{std::move(dependencies.appearances)},
+        tarot_repository_{std::move(dependencies.tarot)},
+        random_{std::move(dependencies.random)},
         appearance_policy_{std::move(dependencies.appearance_policy)},
         ai_client_{std::move(dependencies.ai_client)},
         discord_{std::move(dependencies.discord)} {
@@ -98,6 +100,17 @@ public:
         (!appearance_repository_ || !appearance_policy_)) {
       throw std::invalid_argument{
           "Appearance persistence is required when appearances are enabled."};
+    }
+    if (options_.features.tarot_enabled && (!tarot_repository_ || !random_)) {
+      throw std::invalid_argument{
+          "Tarot persistence and randomness are required when enabled."};
+    }
+    if (options_.features.tarot_enabled) {
+      tarot_service_ = std::make_unique<TarotService>(
+          *tarot_repository_, *clock_, *persistent_id_generator_, *random_,
+          options_.tarot_policy, options_.server_scope,
+          options_.controls.test_mode, *diagnostics_,
+          [this] { outbox_->wake(); });
     }
     if (appearance_repository_ && appearance_policy_) {
       appearance_service_ = std::make_unique<AppearanceService>(
@@ -293,6 +306,13 @@ public:
                 [this] {
                   return durable_work_->health(unix_milliseconds(*clock_));
                 },
+            .tarot =
+                [this]() -> std::optional<TarotInvariantReport> {
+              return tarot_service_
+                         ? std::optional<TarotInvariantReport>{
+                               tarot_service_->check_invariants()}
+                         : std::nullopt;
+            },
         });
     owner_admin_ = std::make_unique<OwnerAdminService>(
         options_.controls, *scope_policy_, *health_service_);
@@ -389,7 +409,7 @@ public:
         [this] { return message_handler_->queue_snapshot(); },
         [this] { return ai_responder_->queue_snapshot(); },
         options_.interaction_queue_capacity, relationship_service_.get(),
-        appearance_service_.get());
+        appearance_service_.get(), tarot_service_.get());
     interaction_router_ = std::make_unique<InteractionRouter>(
         *scope_policy_, options_.controls, options_.features,
         *interaction_handler_, *diagnostics_);
@@ -414,6 +434,8 @@ public:
           .started_at_ms = unix_milliseconds(*clock_),
       });
       instance_started_ = true;
+      if (tarot_service_)
+        tarot_service_->initialize();
       if (relationship_service_) {
         static_cast<void>(relationship_service_->recover());
         if (!relationship_service_->check_projection().valid) {
@@ -471,7 +493,8 @@ public:
             }
           },
           command_catalog(options_.controls.admin_commands_enabled,
-                          options_.features.chronicle_enabled));
+                          options_.features.chronicle_enabled,
+                          options_.features.tarot_enabled));
       const std::scoped_lock lock{state_mutex_};
       state_ = ApplicationState::running;
     } catch (...) {
@@ -567,6 +590,8 @@ private:
   std::unique_ptr<ChronicleSessionRepository> chronicle_session_repository_;
   std::unique_ptr<RelationshipRepository> relationship_repository_;
   std::unique_ptr<AppearanceRepository> appearance_repository_;
+  std::unique_ptr<TarotRepository> tarot_repository_;
+  std::unique_ptr<Random> random_;
   std::optional<AppearancePolicy> appearance_policy_;
   std::unique_ptr<AiClient> ai_client_;
   std::unique_ptr<DiscordRuntime> discord_;
@@ -582,6 +607,7 @@ private:
   std::unique_ptr<ChronicleSessionService> chronicle_session_service_;
   std::unique_ptr<RelationshipService> relationship_service_;
   std::unique_ptr<AppearanceService> appearance_service_;
+  std::unique_ptr<TarotService> tarot_service_;
   std::unique_ptr<SchedulerService> scheduler_;
   std::unique_ptr<DurableWorkControlService> durable_controls_;
   std::unique_ptr<InteractionHandler> interaction_handler_;

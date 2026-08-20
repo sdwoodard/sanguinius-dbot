@@ -16,9 +16,9 @@ bot's feature boundary to one guild, one primary text channel, and one owner.
 | `!help` | List the supported commands. |
 | `!repo` | Link to this source repository. |
 
-The configured guild receives command catalog version 7. Chronicle commands
-are registered only when `SANGUINIUS_CHRONICLE_ENABLED=true`; owner commands
-remain separately gated:
+The configured guild receives command catalog version 8. Chronicle and Tarot
+commands are registered only when their corresponding feature flag is enabled;
+owner commands remain separately gated:
 
 | Command | Visibility and behavior |
 | --- | --- |
@@ -42,6 +42,12 @@ remain separately gated:
 | `/chronicle session edit\|approve\|reject` | Owner-only slash fallbacks for revision-fenced chapter draft review controls. Approval alone creates shared canon and a public card. |
 | `/chronicle title propose\|list\|approve\|reject\|feature\|revoke` | Curates persistent title grants. Lists show five retained grants per page with the full mutation reference. Only the owner activates/rejects; recipients control their featured title and may revoke it. |
 | `/chronicle anniversaries on\|off` | Controls Chronicle anniversary eligibility for the invoking opted-in member. |
+| `/tarot balance` | Ephemerally shows the invoking member's current Fate balance from the immutable ledger. |
+| `/tarot history` | Ephemerally shows up to 50 immutable ledger entries in invoker-bound five-item pages. |
+| `/tarot standings` | Publicly ranks opted-in participants by Fate balance and canonical user ID. |
+| `/tarot standings-visibility public\|private` | Ephemerally changes whether the invoking member appears in public standings without changing the ledger. |
+| `/tarot grace [visibility:public\|private]` | Ephemerally prepares Grace of the Throne when eligible; successful public claims enqueue only neutral flavor. |
+| `/tarot trial [visibility:public\|private]` | Ephemerally prepares three persisted Renewal vows plus Abandon; any vow awards the preselected reward exactly once. |
 | `/sang-admin health` | Ephemeral owner-only health; registered only when admin commands are enabled. |
 | `/sang-admin work-recent` | Ephemeral owner-only inspection of the ten most recent redacted event/job/outbox summaries. |
 | `/sang-admin work-dead` | Ephemeral owner-only inspection of the ten most recent dead jobs and failed/dead outbox rows. |
@@ -55,6 +61,8 @@ remain separately gated:
 | `/sang-admin appearance trigger fixture:owner_live_safe` | Owner-only, admin/test-mode-gated, visibly tagged one-person live delivery through the normal transaction and outbox. Configured mode must be `live`. |
 | `/sang-admin appearance disable` | Owner-only persistent global kill switch; cancels appearance rows that have never been submitted. Available without test mode or the full admin-control catalog. |
 | `/sang-admin appearance enable` | Owner-only clearing of the global kill switch; it never overrides configured `off` or `dry_run`. |
+| `/sang-admin tarot adjust amount:<integer> reason:<text>` | Owner-only, admin/test-mode-gated balanced adjustment of the owner's account. |
+| `/sang-admin tarot reverse transaction:<uuid> reason:<text>` | Owner-only, admin/test-mode-gated exact reversal of one eligible unreversed test transaction. |
 
 Command names are case-insensitive. Messages written by bots are logged but are
 not treated as commands.
@@ -284,7 +292,15 @@ Optional settings are:
 | `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Register the full owner diagnostic/test catalog and enable transitional prefix health. The owner-only appearance kill-switch commands remain registered when this is `false`. |
 | `SANGUINIUS_TEST_MODE` | `false` | Enable auditable, self-targeted durable-work test controls. |
 | `SANGUINIUS_CHRONICLE_ENABLED` | `false` | Register and enable the Living Chronicle context/slash flows. Durable memory expiry remains safe while UI access is disabled. |
-| `SANGUINIUS_TAROT_ENABLED` | `false` | Configured Tarot mode; no Tarot behavior exists yet. |
+| `SANGUINIUS_TAROT_ENABLED` | `false` | Register and enable Fate balance, history, standings, recovery, and owner test-ledger controls. |
+| `SANGUINIUS_TAROT_STARTING_FATE` | `100` | Balanced first-use starting grant (1–1,000,000,000). |
+| `SANGUINIUS_TAROT_GRACE_THRESHOLD` | `10` | Grace is eligible strictly below this Fate balance. |
+| `SANGUINIUS_TAROT_GRACE_TARGET` | `25` | Grace tops the account up to this balance; must exceed its threshold. |
+| `SANGUINIUS_TAROT_GRACE_COOLDOWN_HOURS` | `72` | Grace cooldown (1–8,760 hours). |
+| `SANGUINIUS_TAROT_TRIAL_THRESHOLD` | `50` | Trial is eligible strictly below this Fate balance. |
+| `SANGUINIUS_TAROT_TRIAL_REWARD_MIN` | `5` | Inclusive deterministic Trial reward minimum. |
+| `SANGUINIUS_TAROT_TRIAL_REWARD_MAX` | `15` | Inclusive deterministic Trial reward maximum. |
+| `SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS` | `24` | Trial cooldown (1–8,760 hours). |
 | `SANGUINIUS_APPEARANCES_MODE` | `off` | Appearance engine mode: `off`, inspection-only `dry_run`, or conservatively budgeted `live`. |
 | `SANGUINIUS_VOX_ENABLED` | `false` | Configured Vox mode; no voice connection exists yet. |
 | `SANGUINIUS_VOICE_INPUT_ENABLED` | `false` | Reserved privacy gate; voice input remains unavailable. |
@@ -325,6 +341,7 @@ credentials, or contact the network:
 ./build/release/sanguinius db integrity
 ./build/release/sanguinius db relationships check
 ./build/release/sanguinius db relationships rebuild --confirm
+./build/release/sanguinius db tarot check
 ./build/release/sanguinius db backup /restricted/backup/sanguinius.sqlite3
 ```
 
@@ -339,6 +356,10 @@ never creates or upgrades the schema.
 append-only event chain and prints only counts/status. The guarded rebuild
 replaces only that projection under the offline exclusive database lock and
 verifies the result before committing.
+`db tarot check` folds the complete committed ledger and prints only invariant
+status/counts. When Tarot is enabled, normal startup performs the same check
+and fails closed on prepared rows, imbalance, negative human history, overflow,
+illegal reversal, recovery mismatch, or orphaned linkage.
 
 Migration `0001_core_foundation` contains only shared identity and
 configuration state: migration history, application instances, Discord users,
@@ -399,6 +420,16 @@ to reject appearance outbox inserts in `off` and `dry_run`, including unrelated
 rows inserted after a deferred reservation. It is forward-only: binary rollback
 restores a verified schema-v7 backup and the accepted Milestone 9 artifact
 rather than applying reverse SQL.
+Migration `0009_tarot_ledger` adds unique human/system accounts, monotonic
+prepared/sealed double-entry transactions, immutable postings and Trial draws,
+single-terminal recovery claims, and bounded invoker-scoped history snapshots.
+It has no balance column, cache, wager table, or direct balance setter. Starting
+grants, Grace, Trial rewards, owner test adjustments, and test reversals are
+balanced exact-shape transactions protected by SQL constraints/triggers,
+checked arithmetic, non-negative human balances, and idempotency keys. Public
+recovery flavor is linked atomically to one neutral durable outbox row. It is
+forward-only: binary rollback restores a verified schema-v8 backup and the
+accepted Milestone 10 artifact/catalog rather than applying reverse SQL.
 The readable SQL for each ordered migration is
 embedded independently with its SHA-256
 checksum. Applied history must be ordered, contiguous, and byte-for-byte

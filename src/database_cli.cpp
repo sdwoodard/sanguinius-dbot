@@ -4,6 +4,7 @@
 #include "sanguinius/persistence/database.hpp"
 #include "sanguinius/persistence/migrator.hpp"
 #include "sanguinius/persistence/sqlite_relationship_repository.hpp"
+#include "sanguinius/persistence/sqlite_tarot_repository.hpp"
 
 #include <filesystem>
 #include <ostream>
@@ -144,6 +145,26 @@ int run_database_command(const DatabaseCommand &command,
              << "projections=" << result.projection_count << '\n'
              << "mismatches=" << result.mismatch_count << '\n';
       return 0;
+    }
+    case DatabaseCommandType::tarot_check: {
+      auto opened = Database::open_inspection(database);
+      migrator.require_current(opened.connection());
+      auto context = std::make_shared<persistence::SqliteRepositoryContext>(
+          std::move(opened));
+      persistence::SqliteTarotRepository tarot{context};
+      const auto result = tarot.check_invariants();
+      output << "tarot=" << (result.valid ? "ok" : "failed") << '\n'
+             << "accounts=" << result.account_count << '\n'
+             << "transactions=" << result.committed_transaction_count << '\n'
+             << "postings=" << result.posting_count << '\n'
+             << "prepared=" << result.prepared_transaction_count << '\n'
+             << "unbalanced=" << result.unbalanced_transaction_count << '\n'
+             << "negative_history=" << result.negative_history_count << '\n'
+             << "overflow=" << result.overflow_count << '\n'
+             << "illegal_reversals=" << result.illegal_reversal_count << '\n'
+             << "claim_mismatches=" << result.claim_mismatch_count << '\n'
+             << "orphaned_links=" << result.orphaned_link_count << '\n';
+      return result.valid ? 0 : 1;
     }
     }
   } catch (const DatabaseError &error) {

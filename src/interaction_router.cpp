@@ -4,6 +4,7 @@
 #include "sanguinius/command_registry.hpp"
 #include "sanguinius/pending_notice.hpp"
 #include "sanguinius/persistent_id.hpp"
+#include "sanguinius/tarot.hpp"
 
 #include <algorithm>
 #include <mutex>
@@ -50,6 +51,12 @@ slash_operation(const IncomingInteraction &interaction) {
       return InteractionOperation::appearance_feedback;
   }
   if (interaction.command_name == "sang-admin") {
+    if (interaction.subcommand_group_name == "tarot") {
+      if (interaction.subcommand_name == "adjust")
+        return InteractionOperation::tarot_adjust;
+      if (interaction.subcommand_name == "reverse")
+        return InteractionOperation::tarot_reverse;
+    }
     if (interaction.subcommand_name == "health") {
       return InteractionOperation::admin_health;
     }
@@ -84,6 +91,20 @@ slash_operation(const IncomingInteraction &interaction) {
       if (interaction.subcommand_name == "enable")
         return InteractionOperation::appearance_enable;
     }
+  }
+  if (interaction.command_name == "tarot") {
+    if (interaction.subcommand_name == "balance")
+      return InteractionOperation::tarot_balance;
+    if (interaction.subcommand_name == "history")
+      return InteractionOperation::tarot_history;
+    if (interaction.subcommand_name == "standings")
+      return InteractionOperation::tarot_standings;
+    if (interaction.subcommand_name == "standings-visibility")
+      return InteractionOperation::tarot_standings_visibility;
+    if (interaction.subcommand_name == "grace")
+      return InteractionOperation::tarot_grace;
+    if (interaction.subcommand_name == "trial")
+      return InteractionOperation::tarot_trial;
   }
   if (interaction.command_name == "chronicle") {
     if (interaction.subcommand_group_name == "session") {
@@ -135,7 +156,7 @@ slash_operation(const IncomingInteraction &interaction) {
 }
 
 [[nodiscard]] bool valid_slash_shape(const IncomingInteraction &interaction) {
-  const auto catalog = command_catalog(true, true);
+  const auto catalog = command_catalog(true, true, true);
   const auto command = std::ranges::find(
       catalog.commands, interaction.command_name, &CommandDefinition::name);
   if (command == catalog.commands.end() ||
@@ -178,6 +199,12 @@ slash_operation(const IncomingInteraction &interaction) {
     if (expected.kind == CommandOptionKind::user) {
       const auto *value = std::get_if<DiscordId>(&found->value);
       if (value == nullptr || !value->is_set())
+        return false;
+    } else if (expected.kind == CommandOptionKind::integer) {
+      const auto *value = std::get_if<std::int64_t>(&found->value);
+      if (value == nullptr || !expected.minimum_integer ||
+          !expected.maximum_integer || *value < *expected.minimum_integer ||
+          *value > *expected.maximum_integer)
         return false;
     } else {
       const auto *value = std::get_if<std::string>(&found->value);
@@ -337,6 +364,12 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       }
       if (parse_component_token(interaction.custom_id)) {
         operation = InteractionOperation::open_component;
+      } else if (parse_tarot_component(interaction.custom_id)) {
+        if (!state_->features.tarot_enabled) {
+          reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+          return;
+        }
+        operation = InteractionOperation::tarot_component;
       } else if (interaction.custom_id.starts_with(
                      appearance_feedback_component_prefix) &&
                  valid_uuid_v4(interaction.custom_id.substr(
@@ -403,6 +436,14 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
     return;
   }
 
+  const bool tarot_operation =
+      *operation >= InteractionOperation::tarot_balance &&
+      *operation <= InteractionOperation::tarot_reverse;
+  if (tarot_operation && !state_->features.tarot_enabled) {
+    reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+    return;
+  }
+
   const bool admin_operation =
       *operation == InteractionOperation::admin_health ||
       *operation == InteractionOperation::work_recent ||
@@ -413,7 +454,9 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::appearance_simulate ||
       *operation == InteractionOperation::appearance_preview ||
       *operation == InteractionOperation::appearance_recent ||
-      *operation == InteractionOperation::appearance_trigger;
+      *operation == InteractionOperation::appearance_trigger ||
+      *operation == InteractionOperation::tarot_adjust ||
+      *operation == InteractionOperation::tarot_reverse;
   const bool appearance_safety_operation =
       *operation == InteractionOperation::appearance_disable ||
       *operation == InteractionOperation::appearance_enable;
@@ -422,7 +465,9 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::test_schedule_notice ||
       *operation == InteractionOperation::test_public_retry ||
       *operation == InteractionOperation::appearance_simulate ||
-      *operation == InteractionOperation::appearance_trigger;
+      *operation == InteractionOperation::appearance_trigger ||
+      *operation == InteractionOperation::tarot_adjust ||
+      *operation == InteractionOperation::tarot_reverse;
   if (admin_operation || anniversary_test || appearance_safety_operation) {
     if (!appearance_safety_operation &&
         !state_->controls.admin_commands_enabled) {
@@ -478,7 +523,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
   }
   auto queued = RoutedInteraction{std::move(interaction), *operation};
   queued.interaction.responder->defer(
-      (*operation == InteractionOperation::chronicle_timeline || public_profile)
+      (*operation == InteractionOperation::chronicle_timeline || public_profile ||
+       *operation == InteractionOperation::tarot_standings)
           ? ResponseVisibility::public_message
           : ResponseVisibility::ephemeral,
       [shared_state,

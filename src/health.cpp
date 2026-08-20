@@ -91,6 +91,7 @@ HealthSnapshot HealthService::snapshot(const QueueSnapshot message_queue,
                      : runtime_.discord_status->status(),
       .pending_notice_count = runtime_.pending_notice_count(),
       .durable_work = runtime_.durable_work(),
+      .tarot = runtime_.tarot ? runtime_.tarot() : std::nullopt,
       .scope_matched = scope_matched,
   };
 }
@@ -149,6 +150,24 @@ std::string render_health(const HealthSnapshot &snapshot) {
   if (snapshot.durable_work.last_outbox_error.has_value()) {
     output << "last_outbox_error="
            << safe_build_metadata(*snapshot.durable_work.last_outbox_error)
+           << '\n';
+  }
+  if (snapshot.tarot) {
+    output << "tarot_invariants=" << (snapshot.tarot->valid ? "ok" : "failed")
+           << '\n'
+           << "tarot_accounts=" << snapshot.tarot->account_count << '\n'
+           << "tarot_transactions="
+           << snapshot.tarot->committed_transaction_count << '\n'
+           << "tarot_postings=" << snapshot.tarot->posting_count << '\n'
+           << "tarot_prepared=" << snapshot.tarot->prepared_transaction_count
+           << '\n'
+           << "tarot_violations="
+           << snapshot.tarot->unbalanced_transaction_count +
+                  snapshot.tarot->negative_history_count +
+                  snapshot.tarot->overflow_count +
+                  snapshot.tarot->illegal_reversal_count +
+                  snapshot.tarot->claim_mismatch_count +
+                  snapshot.tarot->orphaned_link_count
            << '\n';
   }
   output << "admin_commands="

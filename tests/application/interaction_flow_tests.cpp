@@ -28,6 +28,7 @@ admin_options(const std::size_t interaction_capacity = 64) {
       .server_scope = {10, 20, 30},
       .controls = {.admin_commands_enabled = true, .test_mode = true},
       .features = {},
+      .tarot_policy = {},
       .build = {"test-version", "test-revision"},
       .persistence = {true, 3, 3, "3.53.4",
                       "00000000-0000-4000-8000-000000000001"},
@@ -47,6 +48,15 @@ admin_options(const std::size_t interaction_capacity = 64) {
   options.features.chronicle_enabled = true;
   options.persistence.schema_version = 5;
   options.persistence.target_schema_version = 5;
+  return options;
+}
+
+[[nodiscard]] sanguinius::ApplicationOptions tarot_options() {
+  auto options = admin_options();
+  options.controls.test_mode = true;
+  options.features.tarot_enabled = true;
+  options.persistence.schema_version = 9;
+  options.persistence.target_schema_version = 9;
   return options;
 }
 
@@ -103,12 +113,134 @@ durable_outbox(std::string outbox_id, std::string kind, std::string key) {
 
 } // namespace
 
+TEST_CASE("Tarot commands preserve private authority and public standings",
+          "[application][interaction][tarot][privacy]") {
+  sanguinius::test::ApplicationFixture fixture{tarot_options()};
+  fixture.application->start();
+  REQUIRE(fixture.tarot->initialize_calls == 1);
+  REQUIRE(fixture.discord->command_catalog().version == 8);
+  REQUIRE(fixture.discord->command_catalog().commands.size() == 3);
+
+  auto balance = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(balance, "tarot", "balance", 160));
+  REQUIRE(balance->wait_for_edit_count(1, 2s));
+  REQUIRE(balance->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(contains(balance->edits()[0].content, "100"));
+
+  auto standings =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(standings, "tarot", "standings", 161));
+  REQUIRE(standings->wait_for_edit_count(1, 2s));
+  REQUIRE(standings->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::public_message});
+  REQUIRE(contains(standings->edits()[0].content, "Owner"));
+
+  fixture.tarot->current_balance = 40;
+  auto trial = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(trial, "tarot", "trial", 162));
+  REQUIRE(trial->wait_for_edit_count(1, 2s));
+  REQUIRE(trial->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(trial->edits()[0].buttons.size() == 4);
+  REQUIRE(fixture.tarot->last_reward == 5);
+  REQUIRE(fixture.tarot->last_prompt_variant == 0);
+
+  auto adjust = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto adjustment = slash(adjust, "sang-admin", "adjust", 163);
+  adjustment.subcommand_group_name = "tarot";
+  adjustment.command_options = {{"amount", std::int64_t{-40}},
+                                {"reason", std::string{"live flow setup"}}};
+  fixture.discord->emit(std::move(adjustment));
+  REQUIRE(adjust->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(adjust->edits()[0].content, "[TEST]"));
+  REQUIRE(fixture.tarot->current_balance == 0);
+
+  auto nonowner =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto rejected = slash(nonowner, "sang-admin", "adjust", 164);
+  rejected.subcommand_group_name = "tarot";
+  rejected.user_id = 31;
+  rejected.command_options = {{"amount", std::int64_t{1}},
+                              {"reason", std::string{"must reject"}}};
+  fixture.discord->emit(std::move(rejected));
+  REQUIRE(nonowner->replies().size() == 1);
+  REQUIRE(contains(nonowner->replies()[0].first.content, "owner-only"));
+
+  auto privacy = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(privacy, "sanguinius", "privacy", 165));
+  REQUIRE(privacy->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(privacy->edits()[0].content, "immutable financial audit"));
+
+  auto health = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(health, "sang-admin", "health", 166));
+  REQUIRE(health->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(health->edits()[0].content, "tarot_invariants=ok"));
+  fixture.application->stop();
+
+  auto disabled_options = tarot_options();
+  disabled_options.controls.test_mode = false;
+  sanguinius::test::ApplicationFixture disabled{disabled_options};
+  disabled.application->start();
+  auto gated = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto gated_request = slash(gated, "sang-admin", "adjust", 167);
+  gated_request.subcommand_group_name = "tarot";
+  gated_request.command_options = {{"amount", std::int64_t{1}},
+                                   {"reason", std::string{"must reject"}}};
+  disabled.discord->emit(std::move(gated_request));
+  REQUIRE(gated->replies().size() == 1);
+  REQUIRE(contains(gated->replies()[0].first.content, "test mode"));
+  disabled.application->stop();
+}
+
+TEST_CASE("privacy discloses retained Tarot data while Tarot is disabled",
+          "[application][interaction][tarot][privacy]") {
+  sanguinius::test::ApplicationFixture fixture{admin_options()};
+  fixture.identities->set_tarot_standings_visibility(30, false);
+  fixture.application->start();
+
+  auto privacy = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(privacy, "sanguinius", "privacy", 183));
+  REQUIRE(privacy->wait_for_edit_count(1, 2s));
+  REQUIRE(privacy->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(contains(privacy->edits()[0].content, "Fate feature: disabled"));
+  REQUIRE(contains(privacy->edits()[0].content, "Fate standings: private"));
+  REQUIRE(contains(privacy->edits()[0].content,
+                   "retained as an immutable financial audit"));
+
+  fixture.application->stop();
+}
+
+TEST_CASE("Tarot starting grant survives a failed response and duplicate delivery",
+          "[application][interaction][tarot][delivery][idempotency]") {
+  sanguinius::test::ApplicationFixture fixture{tarot_options()};
+  fixture.application->start();
+
+  auto failed = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  failed->set_edit_result(sanguinius::DeliveryResult::transient_failure);
+  fixture.discord->emit(slash(failed, "tarot", "balance", 168));
+  REQUIRE(failed->wait_for_edit_count(1, 2s));
+  REQUIRE(fixture.tarot->ensure_calls == 1);
+  REQUIRE(fixture.tarot->starting_grant_count == 1);
+  REQUIRE(fixture.diagnostics->contains_category("interaction.tarot_balance"));
+
+  auto retry = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(retry, "tarot", "balance", 168));
+  REQUIRE(retry->wait_for_edit_count(1, 2s));
+  REQUIRE(retry->edits()[0].content == failed->edits()[0].content);
+  REQUIRE(fixture.tarot->ensure_calls == 2);
+  REQUIRE(fixture.tarot->starting_grant_count == 1);
+
+  fixture.application->stop();
+}
+
 TEST_CASE(
     "Chronicle interactions preserve immediate and deferred response rules",
     "[application][interaction][chronicle]") {
   sanguinius::test::ApplicationFixture fixture{chronicle_options()};
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 7);
+  REQUIRE(fixture.discord->command_catalog().version == 8);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 4);
 
   auto remember =
@@ -729,7 +861,7 @@ TEST_CASE(
   sanguinius::test::ApplicationFixture fixture{options};
   fixture.clock->set(std::chrono::sys_seconds{std::chrono::seconds{1'000}});
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 7);
+  REQUIRE(fixture.discord->command_catalog().version == 8);
 
   auto quiet = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto quiet_request = slash(quiet, "sanguinius", "tonight", 520);

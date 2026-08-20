@@ -23,6 +23,7 @@ void print_usage(std::ostream &stream, const std::string_view executable) {
          << "       " << executable << " db <status|check|migrate|integrity>\n"
          << "       " << executable << " db backup <destination>\n"
          << "       " << executable << " db relationships check\n"
+         << "       " << executable << " db tarot check\n"
          << "       " << executable
          << " db relationships rebuild --confirm\n"
          << "       " << executable << " discord commands sync\n"
@@ -63,6 +64,11 @@ database_command(const int argc, char **argv) {
       std::string_view{argv[3]} == "check") {
     return sanguinius::DatabaseCommand{
         sanguinius::DatabaseCommandType::relationships_check, std::nullopt};
+  }
+  if (argc == 4 && operation == "tarot" &&
+      std::string_view{argv[3]} == "check") {
+    return sanguinius::DatabaseCommand{
+        sanguinius::DatabaseCommandType::tarot_check, std::nullopt};
   }
   if (argc == 5 && operation == "relationships" &&
       std::string_view{argv[3]} == "rebuild" &&
@@ -106,7 +112,8 @@ int main(const int argc, char **argv) {
           command_config.request_timeout,
           sanguinius::DiscordId{command_config.guild_id.value()},
           sanguinius::command_catalog(command_config.admin_commands_enabled,
-                                      command_config.chronicle_enabled),
+                                      command_config.chronicle_enabled,
+                                      command_config.tarot_enabled),
           std::cout, std::cerr);
     }
     if (argc > 2) {
