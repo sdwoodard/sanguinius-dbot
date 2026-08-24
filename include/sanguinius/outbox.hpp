@@ -63,6 +63,8 @@ private:
                      std::stop_token stop_token);
   void handle_public(const ClaimedOutboxMessage &outbox,
                      std::stop_token stop_token);
+  void handle_public_edit(const ClaimedOutboxMessage &outbox,
+                          std::stop_token stop_token);
   void handle_receipt(ClaimedOutboxMessage outbox,
                       PublicDeliveryReceipt receipt) noexcept;
 

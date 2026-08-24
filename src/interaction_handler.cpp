@@ -77,11 +77,12 @@ InteractionHandler::InteractionHandler(
     std::function<QueueSnapshot()> message_queue,
     std::function<QueueSnapshot()> ai_queue, const std::size_t queue_capacity,
     RelationshipService *relationships, AppearanceService *appearances,
-    TarotService *tarot)
+    TarotService *tarot, TarotWagerService *wagers)
     : identities_{identities}, notices_{notices}, clock_{clock},
       durable_controls_{durable_controls}, chronicle_{chronicle},
       chronicle_sessions_{chronicle_sessions}, relationships_{relationships},
-      appearances_{appearances}, tarot_{tarot}, health_service_{health_service},
+      appearances_{appearances}, tarot_{tarot}, wagers_{wagers},
+      health_service_{health_service},
       diagnostics_{diagnostics}, features_{features},
       message_queue_{std::move(message_queue)}, ai_queue_{std::move(ai_queue)},
       callbacks_{std::make_shared<CallbackFence>()},
@@ -695,19 +696,104 @@ void InteractionHandler::process(const RoutedInteraction &request) {
     edit(request.interaction, tarot_->reverse(request.interaction),
          "interaction.tarot_reverse");
     return;
+  case InteractionOperation::wager_create:
+    if (!wagers_)
+      throw std::runtime_error{"Wager service is unavailable."};
+    edit(request.interaction, wagers_->create(request.interaction),
+         "interaction.wager_create");
+    return;
+  case InteractionOperation::wager_preview:
+    if (!wagers_)
+      throw std::runtime_error{"Wager service is unavailable."};
+    edit(request.interaction, wagers_->preview(request.interaction),
+         "interaction.wager_preview");
+    return;
+  case InteractionOperation::wager_component:
+    if (!wagers_)
+      throw std::runtime_error{"Wager service is unavailable."};
+    edit(request.interaction, wagers_->apply_component(request.interaction),
+         "interaction.wager_component");
+    return;
+  case InteractionOperation::wager_action:
+    if (!wagers_)
+      throw std::runtime_error{"Wager service is unavailable."};
+    edit(request.interaction, wagers_->action(request.interaction),
+         "interaction.wager_action");
+    return;
+  case InteractionOperation::wager_outcome:
+    if (!wagers_)
+      throw std::runtime_error{"Wager service is unavailable."};
+    edit(request.interaction, wagers_->outcome(request.interaction),
+         "interaction.wager_outcome");
+    return;
+  case InteractionOperation::wager_evidence:
+    if (!wagers_)
+      throw std::runtime_error{"Wager service is unavailable."};
+    edit(request.interaction, wagers_->evidence(request.interaction),
+         "interaction.wager_evidence");
+    return;
+  case InteractionOperation::wager_judgment:
+    if (!wagers_)
+      throw std::runtime_error{"Wager service is unavailable."};
+    edit(request.interaction, wagers_->judgment(request.interaction),
+         "interaction.wager_judgment");
+    return;
+  case InteractionOperation::wager_history:
+    if (!wagers_)
+      throw std::runtime_error{"Wager service is unavailable."};
+    edit(request.interaction, wagers_->wagers(request.interaction),
+         "interaction.wager_history");
+    return;
+  case InteractionOperation::wager_disputes:
+    if (!wagers_)
+      throw std::runtime_error{"Wager service is unavailable."};
+    edit(request.interaction, wagers_->disputes(request.interaction),
+         "interaction.wager_disputes");
+    return;
+  case InteractionOperation::wager_test_role:
+    if (!wagers_)
+      throw std::runtime_error{"Wager service is unavailable."};
+    edit(request.interaction, wagers_->set_test_role(request.interaction),
+         "interaction.wager_test_role");
+    return;
+  case InteractionOperation::wager_test_deadline:
+    if (!wagers_)
+      throw std::runtime_error{"Wager service is unavailable."};
+    edit(request.interaction,
+         wagers_->force_test_deadline(request.interaction),
+         "interaction.wager_test_deadline");
+    return;
+  case InteractionOperation::wager_test_cleanup:
+    if (!wagers_)
+      throw std::runtime_error{"Wager service is unavailable."};
+    edit(request.interaction,
+         wagers_->cleanup_test_wager(request.interaction),
+         "interaction.wager_test_cleanup");
+    return;
   }
 }
 
 void InteractionHandler::ensure_user(const IncomingInteraction &interaction) {
+  const auto observed_at_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          clock_.now().time_since_epoch())
+          .count();
   identities_.ensure_user(DiscordUserRecord{
       .user_id = interaction.user_id,
       .display_name = cache_value(interaction.display_name),
       .username = cache_value(interaction.username),
       .is_bot = false,
-      .observed_at_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            clock_.now().time_since_epoch())
-                            .count(),
+      .observed_at_ms = observed_at_ms,
   });
+  for (const auto &resolved : interaction.resolved_users) {
+    identities_.ensure_user(DiscordUserRecord{
+        .user_id = resolved.user_id,
+        .display_name = cache_value(resolved.display_name),
+        .username = cache_value(resolved.username),
+        .is_bot = resolved.is_bot,
+        .observed_at_ms = observed_at_ms,
+    });
+  }
 }
 
 void InteractionHandler::edit(

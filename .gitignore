@@ -1,5 +1,6 @@
 # CMake and compiled output
 /build/
+/build-*/
 /bin/
 compile_commands.json
 *.o

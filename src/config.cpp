@@ -349,12 +349,24 @@ Config Config::from_source(const ConfigSource &source) {
       source, "SANGUINIUS_TAROT_TRIAL_REWARD_MAX", 15, 1, 1'000'000'000);
   config.tarot_policy.trial_cooldown_hours = optional_integer(
       source, "SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS", 24, 1, 8'760);
+  config.wager_policy.minimum_stake = optional_integer(
+      source, "SANGUINIUS_TAROT_WAGER_MINIMUM_STAKE", 1, 1, 100);
+  config.wager_policy.maximum_stake = optional_integer(
+      source, "SANGUINIUS_TAROT_WAGER_MAXIMUM_STAKE", 100, 1, 100);
+  config.wager_policy.offer_expiry_hours = optional_integer(
+      source, "SANGUINIUS_TAROT_WAGER_OFFER_EXPIRY_HOURS", 24, 1, 8'760);
+  config.wager_policy.default_outcome_hours = optional_integer(
+      source, "SANGUINIUS_TAROT_WAGER_DEFAULT_OUTCOME_HOURS", 24, 1, 168);
+  config.wager_policy.resolution_grace_hours = optional_integer(
+      source, "SANGUINIUS_TAROT_WAGER_RESOLUTION_GRACE_HOURS", 48, 1, 168);
   try {
     config.tarot_policy.validate();
+    config.wager_policy.validate();
   } catch (const std::invalid_argument &) {
     throw std::runtime_error{
         "Tarot settings require Grace target above threshold and ordered "
-        "Trial reward bounds."};
+        "Trial reward bounds; wager stake bounds and durations must also be "
+        "ordered and positive."};
   }
   config.features.appearances_mode = appearance_mode(source);
   config.features.vox_enabled =
@@ -440,6 +452,11 @@ std::string redacted_config_summary(const Config &config,
          << config.tarot_policy.trial_reward_min << "-"
          << config.tarot_policy.trial_reward_max << "/"
          << config.tarot_policy.trial_cooldown_hours << "h\n"
+         << "tarot_wager_stake=" << config.wager_policy.minimum_stake << "-"
+         << config.wager_policy.maximum_stake << '\n'
+         << "tarot_wager_timing=" << config.wager_policy.offer_expiry_hours
+         << "/" << config.wager_policy.default_outcome_hours << "/"
+         << config.wager_policy.resolution_grace_hours << "h\n"
          << "appearances="
          << appearance_mode_name(config.features.appearances_mode) << '\n'
          << "vox=" << enabled(config.features.vox_enabled) << '\n'

@@ -80,7 +80,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 9);
+      REQUIRE(migrator.apply(database.connection()).current_version == 10);
     }
     context = std::make_shared<SqliteRepositoryContext>(
         Database::open_runtime(temporary.path()));
@@ -326,6 +326,7 @@ TEST_CASE("Tarot test transaction seals require complete audit provenance",
           "[tarot][ledger][audit][sql]") {
   TarotFixture fixture;
   static_cast<void>(fixture.provision(10));
+  static_cast<void>(fixture.provision(20, 31));
 
   {
     sanguinius::persistence::Transaction rollback{
@@ -387,6 +388,102 @@ TEST_CASE("Tarot test transaction seals require complete audit provenance",
     REQUIRE_THROWS(fixture.context->connection().execute(
         "UPDATE tarot_transaction SET state='committed',committed_at_ms=301 "
         "WHERE transaction_id='00000000-0000-4000-8000-000000006112'"));
+  }
+
+  {
+    sanguinius::persistence::Transaction rollback{
+        fixture.context->connection(),
+        sanguinius::persistence::TransactionMode::immediate};
+    fixture.context->connection().execute_script(
+        "INSERT INTO event_journal(event_id,event_type,aggregate_type,"
+        "aggregate_id,actor_user_id,guild_id,channel_id,occurred_at_ms,"
+        "recorded_at_ms,correlation_id,idempotency_key,payload_json) VALUES("
+        "'00000000-0000-4000-8000-000000006121',"
+        "'tarot.transaction_reversed.v1','tarot_transaction',"
+        "'00000000-0000-4000-8000-000000006122','30','10','20',302,302,"
+        "'test','tarot:wrong-adjustment-event-type','{}');"
+        "INSERT INTO tarot_transaction(transaction_id,transaction_type,state,"
+        "expected_posting_count,event_id,idempotency_key,actor_user_id,reason,"
+        "is_test,created_at_ms) VALUES("
+        "'00000000-0000-4000-8000-000000006122','TEST_ADJUSTMENT','prepared',"
+        "2,'00000000-0000-4000-8000-000000006121',"
+        "'tarot:wrong-adjustment-event-type:transaction','30','audited "
+        "reason',1,302);"
+        "INSERT INTO tarot_posting VALUES("
+        "'00000000-0000-4000-8000-000000006123',"
+        "'00000000-0000-4000-8000-000000006122',"
+        "'00000000-0000-4000-8000-000000000001',-5,302);"
+        "INSERT INTO tarot_posting VALUES("
+        "'00000000-0000-4000-8000-000000006124',"
+        "'00000000-0000-4000-8000-000000006122',"
+        "'00000000-0000-4000-8000-000000000010',5,302);");
+    REQUIRE_THROWS(fixture.context->connection().execute(
+        "UPDATE tarot_transaction SET state='committed',committed_at_ms=302 "
+        "WHERE transaction_id='00000000-0000-4000-8000-000000006122'"));
+  }
+
+  {
+    sanguinius::persistence::Transaction rollback{
+        fixture.context->connection(),
+        sanguinius::persistence::TransactionMode::immediate};
+    fixture.context->connection().execute_script(
+        "INSERT INTO event_journal(event_id,event_type,aggregate_type,"
+        "aggregate_id,actor_user_id,guild_id,channel_id,occurred_at_ms,"
+        "recorded_at_ms,correlation_id,idempotency_key,payload_json) VALUES("
+        "'00000000-0000-4000-8000-000000006131',"
+        "'tarot.admin_adjusted.v1','tarot_transaction',"
+        "'00000000-0000-4000-8000-000000006132','30','10','20',303,303,"
+        "'test','tarot:wrong-adjustment-account','{}');"
+        "INSERT INTO tarot_transaction(transaction_id,transaction_type,state,"
+        "expected_posting_count,event_id,idempotency_key,actor_user_id,reason,"
+        "is_test,created_at_ms) VALUES("
+        "'00000000-0000-4000-8000-000000006132','TEST_ADJUSTMENT','prepared',"
+        "2,'00000000-0000-4000-8000-000000006131',"
+        "'tarot:wrong-adjustment-account:transaction','30','audited reason',1,"
+        "303);"
+        "INSERT INTO tarot_posting VALUES("
+        "'00000000-0000-4000-8000-000000006133',"
+        "'00000000-0000-4000-8000-000000006132',"
+        "'00000000-0000-4000-8000-000000000001',-5,303);"
+        "INSERT INTO tarot_posting VALUES("
+        "'00000000-0000-4000-8000-000000006134',"
+        "'00000000-0000-4000-8000-000000006132',"
+        "'00000000-0000-4000-8000-000000000020',5,303);");
+    REQUIRE_THROWS(fixture.context->connection().execute(
+        "UPDATE tarot_transaction SET state='committed',committed_at_ms=303 "
+        "WHERE transaction_id='00000000-0000-4000-8000-000000006132'"));
+  }
+
+  {
+    sanguinius::persistence::Transaction rollback{
+        fixture.context->connection(),
+        sanguinius::persistence::TransactionMode::immediate};
+    fixture.context->connection().execute_script(
+        "INSERT INTO event_journal(event_id,event_type,aggregate_type,"
+        "aggregate_id,actor_user_id,guild_id,channel_id,occurred_at_ms,"
+        "recorded_at_ms,correlation_id,idempotency_key,payload_json) VALUES("
+        "'00000000-0000-4000-8000-000000006141',"
+        "'tarot.admin_adjusted.v1','tarot_transaction',"
+        "'00000000-0000-4000-8000-000000006142','30','10','20',304,304,"
+        "'test','tarot:whitespace-adjustment-reason','{}');"
+        "INSERT INTO tarot_transaction(transaction_id,transaction_type,state,"
+        "expected_posting_count,event_id,idempotency_key,actor_user_id,reason,"
+        "is_test,created_at_ms) VALUES("
+        "'00000000-0000-4000-8000-000000006142','TEST_ADJUSTMENT','prepared',"
+        "2,'00000000-0000-4000-8000-000000006141',"
+        "'tarot:whitespace-adjustment-reason:transaction','30',"
+        "char(9) || char(10) || char(11) || char(12) || char(13),1,304);"
+        "INSERT INTO tarot_posting VALUES("
+        "'00000000-0000-4000-8000-000000006143',"
+        "'00000000-0000-4000-8000-000000006142',"
+        "'00000000-0000-4000-8000-000000000001',-5,304);"
+        "INSERT INTO tarot_posting VALUES("
+        "'00000000-0000-4000-8000-000000006144',"
+        "'00000000-0000-4000-8000-000000006142',"
+        "'00000000-0000-4000-8000-000000000010',5,304);");
+    REQUIRE_THROWS(fixture.context->connection().execute(
+        "UPDATE tarot_transaction SET state='committed',committed_at_ms=304 "
+        "WHERE transaction_id='00000000-0000-4000-8000-000000006142'"));
   }
 
   REQUIRE(fixture.repository->check_invariants().valid);

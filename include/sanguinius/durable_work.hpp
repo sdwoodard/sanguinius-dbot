@@ -92,6 +92,12 @@ struct PublicOutboxPayload {
   bool fail_before_first_send{};
 };
 
+struct PublicEditOutboxPayload {
+  PublicMessageRequest replacement;
+  std::string source_outbox_id;
+  std::size_t wager_revision{};
+};
+
 struct MemoryExpiryJobPayload {
   std::string memory_id;
   std::size_t expected_revision{};
@@ -121,11 +127,19 @@ struct AppearancePurgeJobPayload {
   std::string policy_version;
 };
 
+struct WagerDeadlineJobPayload {
+  std::string wager_id;
+  std::string phase;
+  std::size_t expected_revision{};
+};
+
 using DurablePayload =
     std::variant<std::monostate, NoticeOutboxPayload, PublicOutboxPayload,
+                 PublicEditOutboxPayload,
                  MemoryExpiryJobPayload, SessionSummaryJobPayload,
                  SessionContextPurgeJobPayload, AnniversaryScanJobPayload,
-                 AppearanceScanJobPayload, AppearancePurgeJobPayload>;
+                 AppearanceScanJobPayload, AppearancePurgeJobPayload,
+                 WagerDeadlineJobPayload>;
 // Appearance jobs carry only the policy version; excerpts and generated prose
 // never enter durable scheduler payloads.
 
@@ -281,6 +295,10 @@ public:
               OutboxFailureMode mode) = 0;
   [[nodiscard]] virtual WorkMutationStatus
   cancel_outbox(std::string_view outbox_id, std::int64_t now_ms) = 0;
+  [[nodiscard]] virtual std::optional<DiscordSnowflake>
+  delivered_provider_message_id(std::string_view) {
+    return std::nullopt;
+  }
 
   [[nodiscard]] virtual DurableWorkHealth health(std::int64_t now_ms) = 0;
   [[nodiscard]] virtual std::vector<WorkInspectionEntry>

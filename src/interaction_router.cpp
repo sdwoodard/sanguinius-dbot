@@ -5,6 +5,7 @@
 #include "sanguinius/pending_notice.hpp"
 #include "sanguinius/persistent_id.hpp"
 #include "sanguinius/tarot.hpp"
+#include "sanguinius/wagers.hpp"
 
 #include <algorithm>
 #include <mutex>
@@ -56,6 +57,12 @@ slash_operation(const IncomingInteraction &interaction) {
         return InteractionOperation::tarot_adjust;
       if (interaction.subcommand_name == "reverse")
         return InteractionOperation::tarot_reverse;
+      if (interaction.subcommand_name == "wager-role")
+        return InteractionOperation::wager_test_role;
+      if (interaction.subcommand_name == "wager-deadline")
+        return InteractionOperation::wager_test_deadline;
+      if (interaction.subcommand_name == "wager-cleanup")
+        return InteractionOperation::wager_test_cleanup;
     }
     if (interaction.subcommand_name == "health") {
       return InteractionOperation::admin_health;
@@ -105,6 +112,20 @@ slash_operation(const IncomingInteraction &interaction) {
       return InteractionOperation::tarot_grace;
     if (interaction.subcommand_name == "trial")
       return InteractionOperation::tarot_trial;
+    if (interaction.subcommand_name == "wager")
+      return InteractionOperation::wager_create;
+    if (interaction.subcommand_name == "wagers")
+      return InteractionOperation::wager_history;
+    if (interaction.subcommand_name == "wager-action")
+      return InteractionOperation::wager_action;
+    if (interaction.subcommand_name == "outcome")
+      return InteractionOperation::wager_outcome;
+    if (interaction.subcommand_name == "evidence")
+      return InteractionOperation::wager_evidence;
+    if (interaction.subcommand_name == "judgment")
+      return InteractionOperation::wager_judgment;
+    if (interaction.subcommand_name == "disputes")
+      return InteractionOperation::wager_disputes;
   }
   if (interaction.command_name == "chronicle") {
     if (interaction.subcommand_group_name == "session") {
@@ -340,6 +361,35 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       }
       operation = InteractionOperation::chronicle_memory_preview;
     } else if (interaction.kind == InteractionKind::button) {
+      if (const auto form_token = parse_wager_form(interaction.custom_id)) {
+        if (!state_->features.tarot_enabled) {
+          reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+          return;
+        }
+        interaction.responder->show_modal(
+            TarotWagerService::wager_form(*form_token));
+        return;
+      }
+      if (const auto evidence_token =
+              parse_wager_evidence_form(interaction.custom_id)) {
+        if (!state_->features.tarot_enabled) {
+          reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+          return;
+        }
+        interaction.responder->show_modal(
+            TarotWagerService::evidence_form(*evidence_token));
+        return;
+      }
+      if (const auto outcome_token =
+              parse_wager_outcome_form(interaction.custom_id)) {
+        if (!state_->features.tarot_enabled) {
+          reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+          return;
+        }
+        interaction.responder->show_modal(
+            TarotWagerService::outcome_form(*outcome_token));
+        return;
+      }
       if (const auto edit_token = parse_chronicle_component(
               interaction.custom_id, chronicle_session_edit_prefix)) {
         if (!state_->features.chronicle_enabled) {
@@ -364,6 +414,18 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       }
       if (parse_component_token(interaction.custom_id)) {
         operation = InteractionOperation::open_component;
+      } else if (parse_wager_history(interaction.custom_id)) {
+        if (!state_->features.tarot_enabled) {
+          reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+          return;
+        }
+        operation = InteractionOperation::wager_history;
+      } else if (parse_wager_component(interaction.custom_id)) {
+        if (!state_->features.tarot_enabled) {
+          reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+          return;
+        }
+        operation = InteractionOperation::wager_component;
       } else if (parse_tarot_component(interaction.custom_id)) {
         if (!state_->features.tarot_enabled) {
           reply_ephemeral(interaction, "The Tarot is currently unavailable.");
@@ -393,6 +455,15 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
         }
         operation = InteractionOperation::chronicle_component;
       }
+    } else if (interaction.kind == InteractionKind::modal_submit &&
+               parse_wager_form(interaction.custom_id)) {
+      operation = InteractionOperation::wager_preview;
+    } else if (interaction.kind == InteractionKind::modal_submit &&
+               parse_wager_evidence_form(interaction.custom_id)) {
+      operation = InteractionOperation::wager_evidence;
+    } else if (interaction.kind == InteractionKind::modal_submit &&
+               parse_wager_outcome_form(interaction.custom_id)) {
+      operation = InteractionOperation::wager_outcome;
     } else if (interaction.kind == InteractionKind::modal_submit &&
                parse_chronicle_component(interaction.custom_id,
                                          chronicle_session_edit_prefix)) {
@@ -438,7 +509,7 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
 
   const bool tarot_operation =
       *operation >= InteractionOperation::tarot_balance &&
-      *operation <= InteractionOperation::tarot_reverse;
+      *operation <= InteractionOperation::wager_test_cleanup;
   if (tarot_operation && !state_->features.tarot_enabled) {
     reply_ephemeral(interaction, "The Tarot is currently unavailable.");
     return;
@@ -456,7 +527,10 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::appearance_recent ||
       *operation == InteractionOperation::appearance_trigger ||
       *operation == InteractionOperation::tarot_adjust ||
-      *operation == InteractionOperation::tarot_reverse;
+      *operation == InteractionOperation::tarot_reverse ||
+      *operation == InteractionOperation::wager_test_role ||
+      *operation == InteractionOperation::wager_test_deadline ||
+      *operation == InteractionOperation::wager_test_cleanup;
   const bool appearance_safety_operation =
       *operation == InteractionOperation::appearance_disable ||
       *operation == InteractionOperation::appearance_enable;
@@ -467,7 +541,10 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::appearance_simulate ||
       *operation == InteractionOperation::appearance_trigger ||
       *operation == InteractionOperation::tarot_adjust ||
-      *operation == InteractionOperation::tarot_reverse;
+      *operation == InteractionOperation::tarot_reverse ||
+      *operation == InteractionOperation::wager_test_role ||
+      *operation == InteractionOperation::wager_test_deadline ||
+      *operation == InteractionOperation::wager_test_cleanup;
   if (admin_operation || anniversary_test || appearance_safety_operation) {
     if (!appearance_safety_operation &&
         !state_->controls.admin_commands_enabled) {
@@ -523,8 +600,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
   }
   auto queued = RoutedInteraction{std::move(interaction), *operation};
   queued.interaction.responder->defer(
-      (*operation == InteractionOperation::chronicle_timeline || public_profile ||
-       *operation == InteractionOperation::tarot_standings)
+      (*operation == InteractionOperation::chronicle_timeline ||
+       public_profile || *operation == InteractionOperation::tarot_standings)
           ? ResponseVisibility::public_message
           : ResponseVisibility::ephemeral,
       [shared_state,

@@ -78,6 +78,11 @@ public:
   virtual void send_public(const PublicMessageRequest &request,
                            std::string_view provider_nonce,
                            PublicDeliveryCallback callback = {}) = 0;
+  virtual void edit_public(const PublicMessageEditRequest &,
+                           DeliveryCallback callback = {}) {
+    if (callback)
+      callback(DeliveryResult::permanent_failure);
+  }
 };
 
 class DiscordStatusProvider {

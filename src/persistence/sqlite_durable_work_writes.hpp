@@ -24,6 +24,10 @@ encode_public_payload(const PublicOutboxPayload &payload,
                       std::string_view correlation_id,
                       const std::optional<std::string> &causation_event_id);
 [[nodiscard]] std::string
+encode_public_edit_payload(const PublicEditOutboxPayload &payload,
+                           std::string_view correlation_id,
+                           const std::optional<std::string> &causation_event_id);
+[[nodiscard]] std::string
 encode_notice_payload(const NoticeOutboxPayload &payload,
                       std::string_view correlation_id,
                       const std::optional<std::string> &causation_event_id);
@@ -43,5 +47,9 @@ encode_session_summary_payload(const SessionSummaryJobPayload &payload,
 encode_anniversary_scan_payload(const AnniversaryScanJobPayload &payload,
                                 std::string_view correlation_id,
                                 const std::optional<std::string> &causation_event_id);
+[[nodiscard]] std::string
+encode_wager_deadline_payload(const WagerDeadlineJobPayload &payload,
+                              std::string_view correlation_id,
+                              const std::optional<std::string> &causation_event_id);
 
 } // namespace sanguinius::persistence::detail

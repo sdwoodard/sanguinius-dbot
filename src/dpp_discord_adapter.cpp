@@ -394,7 +394,7 @@ incoming_interaction(const dpp::interaction_create_t &event,
   if (display_name.empty()) {
     display_name = user.global_name.empty() ? user.username : user.global_name;
   }
-  return IncomingInteraction{
+  IncomingInteraction result{
       .correlation_id = {},
       .interaction_id = id(event.command.id),
       .guild_id = id(event.command.guild_id),
@@ -407,6 +407,7 @@ incoming_interaction(const dpp::interaction_create_t &event,
       .subcommand_group_name = {},
       .subcommand_name = {},
       .command_options = {},
+      .resolved_users = {},
       .custom_id = {},
       .selected_values = {},
       .modal_fields = {},
@@ -414,6 +415,29 @@ incoming_interaction(const dpp::interaction_create_t &event,
       .responder = std::make_shared<DppInteractionResponder>(
           event, std::move(callbacks)),
   };
+  if (event.command.resolved.users.size() > maximum_interaction_options)
+    throw std::invalid_argument{"Discord resolved users exceed safe bounds."};
+  for (const auto &[user_id, resolved_user] : event.command.resolved.users) {
+    const auto member = event.command.resolved.members.find(user_id);
+    auto resolved_display_name =
+        member == event.command.resolved.members.end()
+            ? std::string{}
+            : member->second.get_nickname();
+    if (resolved_display_name.empty())
+      resolved_display_name = resolved_user.global_name.empty()
+                                  ? resolved_user.username
+                                  : resolved_user.global_name;
+    if (resolved_user.username.empty() || resolved_user.username.size() > 128 ||
+        resolved_display_name.empty() || resolved_display_name.size() > 128)
+      throw std::invalid_argument{"Discord resolved user exceeds safe bounds."};
+    result.resolved_users.push_back(ResolvedUserSnapshot{
+        .user_id = id(user_id),
+        .username = resolved_user.username,
+        .display_name = std::move(resolved_display_name),
+        .is_bot = resolved_user.is_bot(),
+    });
+  }
+  return result;
 }
 
 void append_modal_fields(
@@ -1341,6 +1365,38 @@ void DppDiscordAdapter::send_public(const PublicMessageRequest &request,
     if (callback) {
       callback({DeliveryResult::unknown_outcome, std::nullopt});
     }
+  }
+}
+
+void DppDiscordAdapter::edit_public(const PublicMessageEditRequest &request,
+                                    DeliveryCallback callback) {
+  dpp::message message;
+  try {
+    if (!request.guild_id.is_set() || !request.channel_id.is_set() ||
+        !request.message_id.is_set())
+      throw std::invalid_argument{"Discord edit target is incomplete."};
+    message = discord_message(request.message);
+    message.id = dpp::snowflake{request.message_id.value()};
+    message.channel_id = dpp::snowflake{request.channel_id.value()};
+    message.guild_id = dpp::snowflake{request.guild_id.value()};
+  } catch (...) {
+    if (callback)
+      callback(DeliveryResult::permanent_failure);
+    return;
+  }
+  try {
+    impl_->bot_.message_edit(
+        message,
+        [callbacks = impl_->callbacks_, callback = std::move(callback)](
+            const dpp::confirmation_callback_t &confirmation) mutable {
+          invoke_callback(callbacks, [&callback, &confirmation] {
+            if (callback)
+              callback(delivery_result(confirmation));
+          });
+        });
+  } catch (...) {
+    if (callback)
+      callback(DeliveryResult::unknown_outcome);
   }
 }
 

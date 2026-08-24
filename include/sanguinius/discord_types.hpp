@@ -25,6 +25,13 @@ struct ContextUserSnapshot {
   bool is_bot{};
 };
 
+struct ResolvedUserSnapshot {
+  DiscordId user_id{};
+  std::string username;
+  std::string display_name;
+  bool is_bot{};
+};
+
 struct ContextAttachmentSnapshot {
   DiscordId attachment_id{};
   std::string filename;
@@ -251,6 +258,13 @@ struct PublicMessageRequest {
   InteractionMessage message;
 };
 
+struct PublicMessageEditRequest {
+  DiscordId guild_id{};
+  DiscordId channel_id{};
+  DiscordId message_id{};
+  InteractionMessage message;
+};
+
 struct PublicDeliveryReceipt {
   DeliveryResult result{DeliveryResult::permanent_failure};
   std::optional<DiscordId> provider_message_id;
@@ -271,6 +285,7 @@ struct IncomingInteraction {
   std::string subcommand_group_name;
   std::string subcommand_name;
   std::vector<InteractionOption> command_options;
+  std::vector<ResolvedUserSnapshot> resolved_users;
   std::string custom_id;
   std::vector<std::string> selected_values;
   std::vector<std::pair<std::string, std::string>> modal_fields;

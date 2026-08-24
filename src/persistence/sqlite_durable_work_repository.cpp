@@ -269,7 +269,7 @@ void add_trace(Json &value, const std::string_view correlation_id,
         .label = button.at("label").get<std::string>(),
         .disabled = button.at("disabled").get<bool>(),
         .style = style == "secondary" ? ButtonStyle::secondary
-                                        : ButtonStyle::primary,
+                                      : ButtonStyle::primary,
     });
   }
   for (const auto &mention : value.at("allowed_user_mentions")) {
@@ -291,6 +291,30 @@ void add_trace(Json &value, const std::string_view correlation_id,
           },
       .fail_before_first_send = value.at("fail_before_first_send").get<bool>(),
   };
+}
+
+[[nodiscard]] Json encode_public_edit(
+    const PublicEditOutboxPayload &payload,
+    const std::string_view correlation_id = {},
+    const std::optional<std::string> &causation_event_id = std::nullopt) {
+  auto result =
+      encode_message(PublicOutboxPayload{.request = payload.replacement},
+                     correlation_id, causation_event_id);
+  result["source_outbox_id"] = payload.source_outbox_id;
+  result["wager_revision"] = payload.wager_revision;
+  return result;
+}
+
+[[nodiscard]] PublicEditOutboxPayload decode_public_edit(const Json &value) {
+  auto decoded = decode_message(value);
+  PublicEditOutboxPayload result{
+      .replacement = std::move(decoded.request),
+      .source_outbox_id = value.at("source_outbox_id").get<std::string>(),
+      .wager_revision = value.at("wager_revision").get<std::size_t>(),
+  };
+  if (!valid_uuid_v4(result.source_outbox_id) || result.wager_revision == 0)
+    throw std::runtime_error{"Invalid public edit payload."};
+  return result;
 }
 
 [[nodiscard]] Json encode_memory_expiry(
@@ -407,6 +431,32 @@ template <typename Payload>
   return Payload{.policy_version = version};
 }
 
+[[nodiscard]] Json encode_wager_deadline(
+    const WagerDeadlineJobPayload &payload,
+    const std::string_view correlation_id = {},
+    const std::optional<std::string> &causation_event_id = std::nullopt) {
+  Json result{{"payload_version", 1},
+              {"wager_id", payload.wager_id},
+              {"phase", payload.phase},
+              {"expected_revision", payload.expected_revision}};
+  add_trace(result, correlation_id, causation_event_id);
+  return result;
+}
+
+[[nodiscard]] WagerDeadlineJobPayload decode_wager_deadline(const Json &value) {
+  if (!value.is_object() || value.at("payload_version").get<int>() != 1)
+    throw std::runtime_error{"Unsupported wager deadline payload."};
+  WagerDeadlineJobPayload result{
+      .wager_id = value.at("wager_id").get<std::string>(),
+      .phase = value.at("phase").get<std::string>(),
+      .expected_revision = value.at("expected_revision").get<std::size_t>(),
+  };
+  if (!valid_uuid_v4(result.wager_id) || result.phase.empty() ||
+      result.phase.size() > 32 || result.expected_revision == 0)
+    throw std::runtime_error{"Invalid wager deadline payload."};
+  return result;
+}
+
 [[nodiscard]] DurablePayload decode_payload(const std::string_view kind,
                                             const std::string &payload) {
   try {
@@ -419,6 +469,8 @@ template <typename Payload>
         kind == test_public_retry_outbox_kind) {
       return decode_message(value);
     }
+    if (kind == "discord.message_edit.v1")
+      return decode_public_edit(value);
     if (kind == "chronicle.memory-expire.v1") {
       return decode_memory_expiry(value);
     }
@@ -432,6 +484,8 @@ template <typename Payload>
       return decode_appearance_job<AppearanceScanJobPayload>(value);
     if (kind == "appearance.purge.v1")
       return decode_appearance_job<AppearancePurgeJobPayload>(value);
+    if (kind == "tarot.wager-deadline.v1")
+      return decode_wager_deadline(value);
   } catch (const std::exception &) {
     return std::monostate{};
   }
@@ -990,6 +1044,13 @@ encode_public_payload(const PublicOutboxPayload &payload,
   return encode_message(payload, correlation_id, causation_event_id).dump();
 }
 
+std::string encode_public_edit_payload(
+    const PublicEditOutboxPayload &payload,
+    const std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id) {
+  return encode_public_edit(payload, correlation_id, causation_event_id).dump();
+}
+
 std::string
 encode_notice_payload(const NoticeOutboxPayload &payload,
                       const std::string_view correlation_id,
@@ -1027,6 +1088,14 @@ std::string encode_anniversary_scan_payload(
     const std::string_view correlation_id,
     const std::optional<std::string> &causation_event_id) {
   return encode_anniversary_scan(payload, correlation_id, causation_event_id)
+      .dump();
+}
+
+std::string encode_wager_deadline_payload(
+    const WagerDeadlineJobPayload &payload,
+    const std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id) {
+  return encode_wager_deadline(payload, correlation_id, causation_event_id)
       .dump();
 }
 
@@ -1504,6 +1573,23 @@ SqliteDurableWorkRepository::claim_due_outbox(
       "predecessor.aggregate_id = candidate.aggregate_id AND "
       "predecessor.created_at_ms < candidate.created_at_ms AND "
       "predecessor.state IN ('pending','claimed'))) "
+      "AND (candidate.kind <> 'discord.message_edit.v1' OR NOT EXISTS ("
+      "SELECT 1 FROM tarot_wager_card_revision current_revision "
+      "JOIN tarot_wager_public_card card "
+      "ON card.wager_id = current_revision.wager_id "
+      "JOIN outbox_message source_outbox "
+      "ON source_outbox.outbox_id = card.create_outbox_id "
+      "WHERE current_revision.outbox_id = candidate.outbox_id "
+      "AND source_outbox.state IN ('pending','claimed'))) "
+      "AND (candidate.kind <> 'discord.message_edit.v1' OR NOT EXISTS ("
+      "SELECT 1 FROM tarot_wager_card_revision current_revision "
+      "JOIN tarot_wager_card_revision earlier_revision "
+      "ON earlier_revision.wager_id = current_revision.wager_id "
+      "AND earlier_revision.wager_revision < current_revision.wager_revision "
+      "JOIN outbox_message earlier_outbox "
+      "ON earlier_outbox.outbox_id = earlier_revision.outbox_id "
+      "WHERE current_revision.outbox_id = candidate.outbox_id "
+      "AND earlier_outbox.state IN ('pending','claimed'))) "
       "ORDER BY candidate.available_at_ms, candidate.outbox_id "
       "LIMIT 1");
   select.bind(1, now_ms);
@@ -1672,7 +1758,7 @@ WorkMutationStatus SqliteDurableWorkRepository::mark_public_outbox_submitted(
       "lease_until_ms = max(lease_until_ms, ?), "
       "updated_at_ms = max(?, updated_at_ms) "
       "WHERE outbox_id = ? AND state = 'claimed' AND lease_owner = ? "
-      "AND lease_token = ? AND kind IN (?, ?)");
+      "AND lease_token = ? AND kind IN (?, ?, ?)");
   update.bind(1, attempt.wall_time_ms);
   update.bind(2, attempt.elapsed_realtime_ms);
   update.bind(3, attempt.boot_session_id);
@@ -1684,6 +1770,7 @@ WorkMutationStatus SqliteDurableWorkRepository::mark_public_outbox_submitted(
   update.bind(9, outbox.lease_token);
   update.bind(10, std::string{public_discord_outbox_kind});
   update.bind(11, std::string{test_public_retry_outbox_kind});
+  update.bind(12, "discord.message_edit.v1");
   update.execute();
   if (context_->connection().changes() == 0) {
     return stale_outbox_status(context_->connection(), outbox.outbox_id);
@@ -1790,6 +1877,19 @@ SqliteDurableWorkRepository::cancel_outbox(const std::string_view outbox_id,
   return query.column_text(0) == "cancelled"
              ? WorkMutationStatus::unchanged
              : WorkMutationStatus::invalid_state;
+}
+
+std::optional<DiscordSnowflake>
+SqliteDurableWorkRepository::delivered_provider_message_id(
+    const std::string_view outbox_id) {
+  const std::scoped_lock lock{context_->mutex()};
+  auto query = context_->connection().prepare(
+      "SELECT provider_message_id FROM outbox_message "
+      "WHERE outbox_id = ? AND state = 'delivered'");
+  query.bind(1, outbox_id);
+  if (!query.step() || query.column_is_null(0))
+    return std::nullopt;
+  return DiscordSnowflake::parse(query.column_text(0));
 }
 
 DurableWorkHealth

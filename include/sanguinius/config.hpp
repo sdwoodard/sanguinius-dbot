@@ -5,6 +5,7 @@
 #include "sanguinius/feature_config.hpp"
 #include "sanguinius/server_scope_policy.hpp"
 #include "sanguinius/tarot.hpp"
+#include "sanguinius/wagers.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -78,6 +79,7 @@ struct Config {
   ConfigurationOrigins origins;
   AppearancePolicy appearance_policy;
   TarotPolicy tarot_policy;
+  WagerPolicy wager_policy;
   std::string command_prefix{"!"};
   std::string timezone{"America/New_York"};
 

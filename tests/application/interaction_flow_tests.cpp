@@ -29,6 +29,7 @@ admin_options(const std::size_t interaction_capacity = 64) {
       .controls = {.admin_commands_enabled = true, .test_mode = true},
       .features = {},
       .tarot_policy = {},
+      .wager_policy = {},
       .build = {"test-version", "test-revision"},
       .persistence = {true, 3, 3, "3.53.4",
                       "00000000-0000-4000-8000-000000000001"},
@@ -55,9 +56,41 @@ admin_options(const std::size_t interaction_capacity = 64) {
   auto options = admin_options();
   options.controls.test_mode = true;
   options.features.tarot_enabled = true;
-  options.persistence.schema_version = 9;
-  options.persistence.target_schema_version = 9;
+  options.persistence.schema_version = 10;
+  options.persistence.target_schema_version = 10;
   return options;
+}
+
+[[nodiscard]] sanguinius::WagerRecord application_wager() {
+  return {
+      .wager_id = "00000000-0000-4000-8000-000000000780",
+      .state = sanguinius::WagerState::draft,
+      .revision = 1,
+      .guild_id = 10,
+      .channel_id = 20,
+      .creator_user_id = 30,
+      .target_user_id = 31,
+      .judge_user_id = std::nullopt,
+      .creator_display_name = "Owner",
+      .target_display_name = "Target",
+      .judge_display_name = std::nullopt,
+      .visibility = sanguinius::WagerVisibility::sealed,
+      .resolution_policy = sanguinius::WagerResolutionPolicy::mutual,
+      .proposition = std::nullopt,
+      .stake = std::nullopt,
+      .evidence_instructions = std::nullopt,
+      .outcome_window_ms = 86'400'000,
+      .resolution_grace_ms = 172'800'000,
+      .offer_duration_ms = std::nullopt,
+      .offer_expires_at_ms = std::nullopt,
+      .outcome_due_at_ms = std::nullopt,
+      .resolution_grace_until_ms = std::nullopt,
+      .winner = std::nullopt,
+      .terminal_reason = std::nullopt,
+      .is_test = false,
+      .created_at_ms = 0,
+      .updated_at_ms = 0,
+  };
 }
 
 [[nodiscard]] sanguinius::IncomingInteraction
@@ -113,12 +146,25 @@ durable_outbox(std::string outbox_id, std::string kind, std::string key) {
 
 } // namespace
 
+TEST_CASE("application startup fails closed on wager escrow invariant failure",
+          "[application][wager][startup][invariant]") {
+  sanguinius::test::ApplicationFixture fixture{tarot_options()};
+  fixture.wagers->invariant_result.valid = false;
+  fixture.wagers->invariant_result.open_funded_obligation_count = 1;
+  fixture.wagers->invariant_result.open_funded_obligation_amount = 20;
+  fixture.wagers->invariant_result.escrow_balance = 0;
+  REQUIRE_THROWS_AS(fixture.application->start(), std::runtime_error);
+  REQUIRE(fixture.instances->stops().size() == 1);
+  REQUIRE(fixture.instances->stops().front().reason ==
+          sanguinius::ApplicationStopReason::startup_failure);
+}
+
 TEST_CASE("Tarot commands preserve private authority and public standings",
           "[application][interaction][tarot][privacy]") {
   sanguinius::test::ApplicationFixture fixture{tarot_options()};
   fixture.application->start();
   REQUIRE(fixture.tarot->initialize_calls == 1);
-  REQUIRE(fixture.discord->command_catalog().version == 8);
+  REQUIRE(fixture.discord->command_catalog().version == 9);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 3);
 
   auto balance = std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -193,6 +239,160 @@ TEST_CASE("Tarot commands preserve private authority and public standings",
   disabled.application->stop();
 }
 
+TEST_CASE(
+    "peer wager commands route through ephemeral modal and fallback flows",
+    "[application][interaction][wager][modal][privacy]") {
+  sanguinius::test::ApplicationFixture fixture{tarot_options()};
+  auto record = application_wager();
+  fixture.wagers->mutation_result = {
+      .status = sanguinius::WagerMutationStatus::applied,
+      .wager = record,
+      .controls = {{std::string{sanguinius::wager_form_prefix} +
+                        "00000000-0000-4000-8000-000000000781",
+                    "Open wager form"}},
+      .committed_event_types = {"tarot.wager_drafted.v1"},
+      .public_delivery_created = false,
+  };
+  fixture.application->start();
+
+  auto create = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto request = slash(create, "tarot", "wager", 300);
+  request.command_options = {{"target", sanguinius::DiscordId{31}},
+                             {"visibility", std::string{"sealed"}}};
+  request.resolved_users = {{.user_id = 31,
+                             .username = "target",
+                             .display_name = "Target",
+                             .is_bot = false}};
+  fixture.discord->emit(std::move(request));
+  REQUIRE(create->wait_for_edit_count(1, 2s));
+  REQUIRE(create->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(create->edits()[0].buttons.size() == 1);
+  REQUIRE(fixture.wagers->create_request.has_value());
+  REQUIRE(fixture.wagers->create_request->target_user_id ==
+          sanguinius::DiscordSnowflake{31});
+
+  auto launcher =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto button = sanguinius::test::interaction(
+      launcher, sanguinius::InteractionKind::button, 301);
+  button.custom_id = create->edits()[0].buttons[0].custom_id;
+  fixture.discord->emit(std::move(button));
+  REQUIRE(launcher->modals().size() == 1);
+  REQUIRE(launcher->deferrals().empty());
+  REQUIRE(launcher->modals()[0].fields.size() == 3);
+
+  record.proposition = "The Blood Angels win";
+  record.stake = 10;
+  record.offer_duration_ms = 86'400'000;
+  record.revision = 2;
+  fixture.wagers->mutation_result = {
+      .status = sanguinius::WagerMutationStatus::applied,
+      .wager = record,
+      .controls = {{std::string{sanguinius::wager_component_prefix} +
+                        "00000000-0000-4000-8000-000000000782",
+                    "Confirm offer"},
+                   {std::string{sanguinius::wager_component_prefix} +
+                        "00000000-0000-4000-8000-000000000783",
+                    "Discard"}},
+      .committed_event_types = {"tarot.wager_previewed.v1"},
+      .public_delivery_created = false,
+  };
+  auto preview = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto modal = sanguinius::test::interaction(
+      preview, sanguinius::InteractionKind::modal_submit, 302);
+  modal.custom_id = launcher->modals()[0].custom_id;
+  modal.modal_fields = {{"proposition", "The Blood Angels win"},
+                        {"stake", "10"},
+                        {"evidence_instructions", "Final score"}};
+  fixture.discord->emit(std::move(modal));
+  REQUIRE(preview->wait_for_edit_count(1, 2s));
+  REQUIRE(preview->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(preview->edits()[0].buttons.size() == 2);
+  REQUIRE(fixture.wagers->preview_request.has_value());
+  REQUIRE(fixture.wagers->preview_request->stake == 10);
+
+  fixture.wagers->mutation_result.status =
+      sanguinius::WagerMutationStatus::forbidden;
+  record.proposition = "NEVER DISCLOSE THIS SEALED TERM";
+  fixture.wagers->mutation_result.wager = record;
+  fixture.wagers->mutation_result.controls.clear();
+  fixture.wagers->mutation_result.committed_event_types.clear();
+  auto wrong_user =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto fallback = slash(wrong_user, "tarot", "wager-action", 303);
+  fallback.user_id = 32;
+  fallback.command_options = {{"reference", record.wager_id},
+                              {"action", std::string{"accept"}}};
+  fixture.discord->emit(std::move(fallback));
+  REQUIRE(wrong_user->wait_for_edit_count(1, 2s));
+  REQUIRE_FALSE(contains(wrong_user->edits()[0].content, "NEVER DISCLOSE"));
+  REQUIRE(contains(wrong_user->edits()[0].content, "not available"));
+
+  auto nonowner =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto role = slash(nonowner, "sang-admin", "wager-role", 304);
+  role.subcommand_group_name = "tarot";
+  role.user_id = 31;
+  role.command_options = {{"reference", record.wager_id},
+                          {"role", std::string{"target"}}};
+  fixture.discord->emit(std::move(role));
+  REQUIRE(nonowner->replies().size() == 1);
+  REQUIRE(contains(nonowner->replies()[0].first.content, "owner-only"));
+  REQUIRE_FALSE(fixture.wagers->test_role_request.has_value());
+
+  fixture.application->stop();
+}
+
+TEST_CASE("wager outcome buttons launch and submit an ephemeral modal",
+          "[application][interaction][wager][modal][outcome]") {
+  sanguinius::test::ApplicationFixture fixture{tarot_options()};
+  auto record = application_wager();
+  record.state = sanguinius::WagerState::accepted_funded;
+  record.revision = 4;
+  record.outcome_due_at_ms = 86'401'000;
+  record.resolution_grace_until_ms = 259'201'000;
+  fixture.wagers->mutation_result = {
+      .status = sanguinius::WagerMutationStatus::applied,
+      .wager = record,
+      .controls = {{std::string{sanguinius::wager_outcome_prefix} +
+                        "00000000-0000-4000-8000-000000000784",
+                    "Submit outcome"}},
+      .committed_event_types = {},
+      .public_delivery_created = false,
+  };
+  fixture.application->start();
+
+  auto launcher =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto button = sanguinius::test::interaction(
+      launcher, sanguinius::InteractionKind::button, 305);
+  button.custom_id = fixture.wagers->mutation_result.controls.front().custom_id;
+  fixture.discord->emit(std::move(button));
+  const auto modals = launcher->modals();
+  REQUIRE(modals.size() == 1);
+  REQUIRE(launcher->deferrals().empty());
+  REQUIRE(modals[0].fields.size() == 1);
+
+  auto outcome = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto modal = sanguinius::test::interaction(
+      outcome, sanguinius::InteractionKind::modal_submit, 306);
+  modal.custom_id = modals[0].custom_id;
+  modal.modal_fields = {{"winner", "target"}};
+  fixture.discord->emit(std::move(modal));
+  REQUIRE(outcome->wait_for_edit_count(1, 2s));
+  REQUIRE(outcome->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(fixture.wagers->outcome_request.has_value());
+  REQUIRE(fixture.wagers->outcome_request->token_id ==
+          "00000000-0000-4000-8000-000000000784");
+  REQUIRE(fixture.wagers->outcome_request->winner ==
+          sanguinius::WagerRole::target);
+
+  fixture.application->stop();
+}
+
 TEST_CASE("privacy discloses retained Tarot data while Tarot is disabled",
           "[application][interaction][tarot][privacy]") {
   sanguinius::test::ApplicationFixture fixture{admin_options()};
@@ -212,8 +412,9 @@ TEST_CASE("privacy discloses retained Tarot data while Tarot is disabled",
   fixture.application->stop();
 }
 
-TEST_CASE("Tarot starting grant survives a failed response and duplicate delivery",
-          "[application][interaction][tarot][delivery][idempotency]") {
+TEST_CASE(
+    "Tarot starting grant survives a failed response and duplicate delivery",
+    "[application][interaction][tarot][delivery][idempotency]") {
   sanguinius::test::ApplicationFixture fixture{tarot_options()};
   fixture.application->start();
 
@@ -240,7 +441,7 @@ TEST_CASE(
     "[application][interaction][chronicle]") {
   sanguinius::test::ApplicationFixture fixture{chronicle_options()};
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 8);
+  REQUIRE(fixture.discord->command_catalog().version == 9);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 4);
 
   auto remember =
@@ -861,7 +1062,7 @@ TEST_CASE(
   sanguinius::test::ApplicationFixture fixture{options};
   fixture.clock->set(std::chrono::sys_seconds{std::chrono::seconds{1'000}});
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 8);
+  REQUIRE(fixture.discord->command_catalog().version == 9);
 
   auto quiet = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto quiet_request = slash(quiet, "sanguinius", "tonight", 520);

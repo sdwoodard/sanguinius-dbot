@@ -16,6 +16,7 @@
 #include "support/fake_random.hpp"
 #include "support/fake_relationship_repository.hpp"
 #include "support/fake_tarot_repository.hpp"
+#include "support/fake_wager_repository.hpp"
 
 #include <memory>
 #include <utility>
@@ -32,6 +33,7 @@ public:
           .controls = {},
           .features = {},
           .tarot_policy = {},
+          .wager_policy = {},
           .build = {"test-version", "test-revision"},
           .persistence = {true, 1, 1, "3.53.4",
                           "00000000-0000-4000-8000-000000000001"},
@@ -66,6 +68,7 @@ public:
     auto owned_relationships = std::make_unique<FakeRelationshipRepository>();
     auto owned_appearances = std::make_unique<FakeAppearanceRepository>();
     auto owned_tarot = std::make_unique<FakeTarotRepository>();
+    auto owned_wagers = std::make_unique<FakeWagerRepository>();
     auto owned_random = std::make_unique<FakeRandom>(
         std::vector<std::uint64_t>(128, 0));
     auto owned_ai = std::make_unique<FakeAiClient>();
@@ -84,6 +87,7 @@ public:
     relationships = owned_relationships.get();
     appearances = owned_appearances.get();
     tarot = owned_tarot.get();
+    wagers = owned_wagers.get();
     ai = owned_ai.get();
     discord = owned_discord.get();
 
@@ -104,6 +108,7 @@ public:
             .relationships = std::move(owned_relationships),
             .appearances = std::move(owned_appearances),
             .tarot = std::move(owned_tarot),
+            .wagers = std::move(owned_wagers),
             .random = std::move(owned_random),
             .appearance_policy = test_appearance_policy(),
             .ai_client = std::move(owned_ai),
@@ -134,6 +139,7 @@ public:
   FakeRelationshipRepository *relationships{};
   FakeAppearanceRepository *appearances{};
   FakeTarotRepository *tarot{};
+  FakeWagerRepository *wagers{};
   FakeAiClient *ai{};
   FakeDiscord *discord{};
   std::unique_ptr<Application> application;

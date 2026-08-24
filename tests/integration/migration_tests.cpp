@@ -41,9 +41,17 @@ int deny_fts5_creation(void *, const int action, const char *,
   return SQLITE_OK;
 }
 
+int deny_v9_posting_drop(void *, const int action, const char *object_name,
+                         const char *, const char *, const char *) {
+  if (action == SQLITE_DROP_TABLE && object_name != nullptr &&
+      std::string_view{object_name} == "tarot_posting_v9")
+    return SQLITE_DENY;
+  return SQLITE_OK;
+}
+
 } // namespace
 
-TEST_CASE("production migration moves an empty database to version nine",
+TEST_CASE("production migration moves an empty database to version ten",
           "[migration]") {
   sanguinius::test::TemporaryDatabase temporary;
   sanguinius::test::FakeClock clock{
@@ -54,12 +62,12 @@ TEST_CASE("production migration moves an empty database to version nine",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::uninitialized);
   REQUIRE(before.current_version == 0);
-  REQUIRE(before.target_version == 9);
+  REQUIRE(before.target_version == 10);
 
   const auto applied = migrator.apply(database.connection());
   REQUIRE(applied.state == SchemaState::current);
-  REQUIRE(applied.current_version == 9);
-  REQUIRE(count(database.connection(), "schema_migrations") == 9);
+  REQUIRE(applied.current_version == 10);
+  REQUIRE(count(database.connection(), "schema_migrations") == 10);
   REQUIRE(count(database.connection(), "application_instance") == 0);
   REQUIRE(count(database.connection(), "guild_config") == 0);
   REQUIRE(count(database.connection(), "pending_notice") == 0);
@@ -96,6 +104,9 @@ TEST_CASE("production migration moves an empty database to version nine",
   REQUIRE(count(database.connection(), "tarot_draw") == 0);
   REQUIRE(count(database.connection(), "tarot_recovery_claim") == 0);
   REQUIRE(count(database.connection(), "tarot_history_cursor") == 0);
+  REQUIRE(count(database.connection(), "tarot_wager") == 0);
+  REQUIRE(count(database.connection(), "tarot_wager_transfer") == 0);
+  REQUIRE(count(database.connection(), "tarot_wager_evidence") == 0);
   auto relationship_indexes = database.connection().prepare(
       "SELECT count(*) FROM sqlite_schema WHERE type='index' AND name IN ("
       "'relationship_event_subject_time','relationship_event_source',"
@@ -163,12 +174,16 @@ TEST_CASE("production migration moves an empty database to version nine",
   REQUIRE(history.column_text(0) == "tarot_ledger");
   REQUIRE(history.column_text(1).size() == 64);
   REQUIRE(history.column_int64(2) == 123'000);
+  REQUIRE(history.step());
+  REQUIRE(history.column_text(0) == "peer_wagers");
+  REQUIRE(history.column_text(1).size() == 64);
+  REQUIRE(history.column_int64(2) == 123'000);
   REQUIRE_FALSE(history.step());
 
   clock.set(std::chrono::sys_seconds{std::chrono::seconds{456}});
   const auto repeated = migrator.apply(database.connection());
   REQUIRE(repeated.state == SchemaState::current);
-  REQUIRE(count(database.connection(), "schema_migrations") == 9);
+  REQUIRE(count(database.connection(), "schema_migrations") == 10);
   auto unchanged = database.connection().prepare(
       "SELECT applied_at_ms FROM schema_migrations");
   REQUIRE(unchanged.step());
@@ -224,11 +239,11 @@ TEST_CASE("production migration upgrades version one atomically",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::pending);
   REQUIRE(before.current_version == 1);
-  REQUIRE(before.pending_count == 8);
+  REQUIRE(before.pending_count == 9);
 
   const auto applied = migrator.apply(database.connection());
   REQUIRE(applied.state == SchemaState::current);
-  REQUIRE(applied.current_version == 9);
+  REQUIRE(applied.current_version == 10);
   REQUIRE(count(database.connection(), "pending_notice") == 0);
   REQUIRE(count(database.connection(), "interaction_token") == 0);
   REQUIRE(count(database.connection(), "notice_reveal_attempt") == 0);
@@ -249,8 +264,8 @@ TEST_CASE("production migration upgrades version two through Chronicle",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::pending);
   REQUIRE(before.current_version == 2);
-  REQUIRE(before.pending_count == 7);
-  REQUIRE(migrator.apply(database.connection()).current_version == 9);
+  REQUIRE(before.pending_count == 8);
+  REQUIRE(migrator.apply(database.connection()).current_version == 10);
   REQUIRE(count(database.connection(), "event_journal") == 0);
   REQUIRE(count(database.connection(), "scheduled_job") == 0);
   REQUIRE(count(database.connection(), "outbox_message") == 0);
@@ -272,8 +287,8 @@ TEST_CASE("version four imports existing Chronicle consent once",
       "INSERT INTO user_preference (user_id,updated_at_ms) VALUES ('42',1)");
 
   auto migrator = production_migrator(clock);
-  REQUIRE(migrator.inspect(database.connection()).pending_count == 6);
-  REQUIRE(migrator.apply(database.connection()).current_version == 9);
+  REQUIRE(migrator.inspect(database.connection()).pending_count == 7);
+  REQUIRE(migrator.apply(database.connection()).current_version == 10);
   auto imported = database.connection().prepare(
       "SELECT chronicle_opt_in,memory_callback_opt_in FROM user_preference "
       "WHERE user_id='42'");
@@ -312,8 +327,8 @@ TEST_CASE(
   auto migrator = production_migrator(clock);
   const auto pending = migrator.inspect(database.connection());
   REQUIRE(pending.current_version == 4);
-  REQUIRE(pending.pending_count == 5);
-  REQUIRE(migrator.apply(database.connection()).current_version == 9);
+  REQUIRE(pending.pending_count == 6);
+  REQUIRE(migrator.apply(database.connection()).current_version == 10);
   REQUIRE(count(database.connection(), "relationship_event") == 0);
   REQUIRE(count(database.connection(), "relationship_state") == 0);
   REQUIRE(count(database.connection(), "ai_prompt_attempt") == 0);
@@ -385,7 +400,7 @@ TEST_CASE("version six preserves populated Chronicle children and projections",
       "projection_version,updated_at_ms) VALUES ('31',4,3,2,1,0,4,10,1,10);");
 
   const auto applied = production_migrator(clock).apply(database.connection());
-  REQUIRE(applied.current_version == 9);
+  REQUIRE(applied.current_version == 10);
   REQUIRE(count(database.connection(), "chronicle_entry") == 1);
   REQUIRE(count(database.connection(), "chronicle_participant") == 1);
   REQUIRE(count(database.connection(), "chronicle_tag") == 1);
@@ -461,9 +476,9 @@ TEST_CASE("version nine upgrades an accepted version-six database atomically",
       "INSERT INTO user_preference(user_id,updated_at_ms) VALUES('30',1)");
   const auto before = production_migrator(clock).inspect(database.connection());
   REQUIRE(before.current_version == 6);
-  REQUIRE(before.pending_count == 3);
+  REQUIRE(before.pending_count == 4);
   const auto applied = production_migrator(clock).apply(database.connection());
-  REQUIRE(applied.current_version == 9);
+  REQUIRE(applied.current_version == 10);
   REQUIRE(count(database.connection(), "discord_user") == 1);
   REQUIRE(count(database.connection(), "appearance_candidate") == 0);
   auto guard = database.connection().prepare(
@@ -514,7 +529,7 @@ TEST_CASE("version eight preserves accepted dry-run audit rows",
 
   REQUIRE(
       production_migrator(clock).apply(database.connection()).current_version ==
-      9);
+      10);
   REQUIRE(count(database.connection(), "appearance_candidate") == 1);
   REQUIRE(count(database.connection(), "appearance_decision") == 1);
   REQUIRE(count(database.connection(), "appearance_preview") == 1);
@@ -533,15 +548,16 @@ TEST_CASE("version eight preserves accepted dry-run audit rows",
   REQUIRE(count(database.connection(), "appearance_budget_reservation") == 0);
 }
 
-TEST_CASE("version nine adds an empty ledger to an accepted version-eight database",
-          "[migration][tarot][preservation]") {
+TEST_CASE(
+    "version nine adds an empty ledger to an accepted version-eight database",
+    "[migration][tarot][preservation]") {
   sanguinius::test::TemporaryDatabase temporary;
   sanguinius::test::FakeClock clock;
   auto database = Database::open_migration(temporary.path(), 25ms);
   const auto production = sanguinius::persistence::production_migrations();
-  const Migrator version_eight{
-      std::span<const Migration>{production.data(), 8},
-      {"test-version", "test-revision"}, clock};
+  const Migrator version_eight{std::span<const Migration>{production.data(), 8},
+                               {"test-version", "test-revision"},
+                               clock};
   REQUIRE(version_eight.apply(database.connection()).current_version == 8);
   database.connection().execute_script(
       "INSERT INTO discord_user VALUES('30','Owner','owner',0,1,1,1,1);"
@@ -551,38 +567,218 @@ TEST_CASE("version nine adds an empty ledger to an accepted version-eight databa
       "updated_at_ms) VALUES('30',0,1)");
   const auto before = production_migrator(clock).inspect(database.connection());
   REQUIRE(before.current_version == 8);
-  REQUIRE(before.pending_count == 1);
-  REQUIRE(production_migrator(clock)
-              .apply(database.connection())
-              .current_version == 9);
+  REQUIRE(before.pending_count == 2);
+  REQUIRE(
+      production_migrator(clock).apply(database.connection()).current_version ==
+      10);
   REQUIRE(count(database.connection(), "tarot_account") == 0);
   REQUIRE(count(database.connection(), "tarot_transaction") == 0);
-  auto preference = database.connection().prepare(
-      "SELECT public_tarot_results_opt_in FROM user_preference WHERE user_id='30'");
+  auto preference =
+      database.connection().prepare("SELECT public_tarot_results_opt_in FROM "
+                                    "user_preference WHERE user_id='30'");
   REQUIRE(preference.step());
   REQUIRE(preference.column_int64(0) == 0);
 }
 
-TEST_CASE("a failed Tarot migration leaves the accepted version-eight schema intact",
-          "[migration][tarot][rollback]") {
+TEST_CASE("version ten preserves populated version-nine ledger order and rows",
+          "[migration][wager][ledger][preservation]") {
+  sanguinius::test::TemporaryDatabase temporary;
+  sanguinius::test::FakeClock clock;
+  auto database = Database::open_migration(temporary.path(), 25ms);
+  const auto production = sanguinius::persistence::production_migrations();
+  const Migrator version_nine{std::span<const Migration>{production.data(), 9},
+                              {"test-version", "test-revision"},
+                              clock};
+  REQUIRE(version_nine.apply(database.connection()).current_version == 9);
+  database.connection().execute_script(
+      "INSERT INTO discord_user VALUES('30','Owner','owner',0,1,1,1,1);"
+      "INSERT INTO guild_config(guild_id,primary_channel_id,owner_user_id,"
+      "created_at_ms,updated_at_ms) VALUES('10','20','30',1,1);"
+      "INSERT INTO event_journal(event_id,event_type,aggregate_type,"
+      "aggregate_id,actor_user_id,guild_id,channel_id,occurred_at_ms,"
+      "recorded_at_ms,correlation_id,idempotency_key,payload_json) VALUES("
+      "'00000000-0000-4000-8000-000000009001','tarot.account_provisioned.v1',"
+      "'tarot_account','00000000-0000-4000-8000-000000009003','30','10','20',"
+      "10,10,'migration-test','migration:event','{}');"
+      "INSERT INTO event_journal(event_id,event_type,aggregate_type,"
+      "aggregate_id,actor_user_id,guild_id,channel_id,occurred_at_ms,"
+      "recorded_at_ms,correlation_id,idempotency_key,payload_json) VALUES("
+      "'00000000-0000-4000-8000-000000009008','tarot.grace_started.v1',"
+      "'tarot_recovery_claim','00000000-0000-4000-8000-000000009007','30',"
+      "'10','20',11,11,'migration-test','migration:grace','{}');"
+      "INSERT INTO "
+      "tarot_account(account_id,account_kind,user_id,created_at_ms) "
+      "VALUES('00000000-0000-4000-8000-000000009002','MINT',NULL,10);"
+      "INSERT INTO "
+      "tarot_account(account_id,account_kind,user_id,created_at_ms) "
+      "VALUES('00000000-0000-4000-8000-000000009003','HUMAN','30',10);"
+      "INSERT INTO tarot_transaction(transaction_id,transaction_type,state,"
+      "expected_posting_count,event_id,idempotency_key,actor_user_id,is_test,"
+      "created_at_ms) VALUES('00000000-0000-4000-8000-000000009004',"
+      "'STARTING_GRANT','prepared',2,"
+      "'00000000-0000-4000-8000-000000009001','migration:grant','30',0,10);"
+      "INSERT INTO tarot_posting VALUES("
+      "'00000000-0000-4000-8000-000000009005',"
+      "'00000000-0000-4000-8000-000000009004',"
+      "'00000000-0000-4000-8000-000000009002',-100,10);"
+      "INSERT INTO tarot_posting VALUES("
+      "'00000000-0000-4000-8000-000000009006',"
+      "'00000000-0000-4000-8000-000000009004',"
+      "'00000000-0000-4000-8000-000000009003',100,10);"
+      "UPDATE tarot_transaction SET state='committed',committed_at_ms=10 "
+      "WHERE transaction_id='00000000-0000-4000-8000-000000009004';"
+      "INSERT INTO tarot_recovery_claim(claim_id,account_id,claim_type,state,"
+      "visibility,is_test,eligibility_threshold,grace_target,"
+      "eligibility_balance,reward,draw_id,transaction_id,started_event_id,"
+      "event_id,outbox_id,start_idempotency_key,completion_idempotency_key,"
+      "created_at_ms,expires_at_ms,completed_at_ms,cooldown_until_ms) VALUES("
+      "'00000000-0000-4000-8000-000000009007',"
+      "'00000000-0000-4000-8000-000000009003','GRACE','pending','private',"
+      "0,10,25,0,NULL,NULL,NULL,"
+      "'00000000-0000-4000-8000-000000009008',NULL,NULL,"
+      "'migration:grace-start',NULL,11,1000,NULL,NULL);"
+      "INSERT INTO tarot_interaction_receipt(idempotency_key,operation,"
+      "account_id,request_json,result_json,claim_id,transaction_id,"
+      "created_at_ms) VALUES('migration:visibility','standings_visibility',"
+      "'00000000-0000-4000-8000-000000009003','{}','{}',NULL,NULL,12);"
+      "INSERT INTO tarot_history_cursor(cursor_id,account_id,item_count,"
+      "created_at_ms,expires_at_ms) VALUES("
+      "'00000000-0000-4000-8000-000000009009',"
+      "'00000000-0000-4000-8000-000000009003',1,13,913);"
+      "INSERT INTO tarot_history_item(cursor_id,position,transaction_id) "
+      "VALUES('00000000-0000-4000-8000-000000009009',0,"
+      "'00000000-0000-4000-8000-000000009004');");
+
+  REQUIRE(
+      production_migrator(clock).apply(database.connection()).current_version ==
+      10);
+  REQUIRE(count(database.connection(), "tarot_transaction") == 1);
+  REQUIRE(count(database.connection(), "tarot_posting") == 2);
+  REQUIRE(count(database.connection(), "tarot_recovery_claim") == 1);
+  REQUIRE(count(database.connection(), "tarot_interaction_receipt") == 1);
+  REQUIRE(count(database.connection(), "tarot_history_item") == 1);
+  auto preserved = database.connection().prepare(
+      "SELECT ledger_sequence,transaction_type,state FROM tarot_transaction");
+  REQUIRE(preserved.step());
+  REQUIRE(preserved.column_int64(0) == 1);
+  REQUIRE(preserved.column_text(1) == "STARTING_GRANT");
+  REQUIRE(preserved.column_text(2) == "committed");
+  auto sequence = database.connection().prepare(
+      "SELECT seq FROM sqlite_sequence WHERE name='tarot_transaction'");
+  REQUIRE(sequence.step());
+  REQUIRE(sequence.column_int64(0) == 1);
+  auto dependents = database.connection().prepare(
+      "SELECT claim.state,receipt.operation,item.position,item.transaction_id "
+      "FROM tarot_recovery_claim claim JOIN tarot_interaction_receipt receipt "
+      "ON receipt.account_id=claim.account_id JOIN tarot_history_cursor cursor "
+      "ON cursor.account_id=claim.account_id JOIN tarot_history_item item ON "
+      "item.cursor_id=cursor.cursor_id");
+  REQUIRE(dependents.step());
+  REQUIRE(dependents.column_text(0) == "pending");
+  REQUIRE(dependents.column_text(1) == "standings_visibility");
+  REQUIRE(dependents.column_int64(2) == 0);
+  REQUIRE(dependents.column_text(3) == "00000000-0000-4000-8000-000000009004");
+  auto foreign_keys = database.connection().prepare("PRAGMA foreign_key_check");
+  REQUIRE_FALSE(foreign_keys.step());
+  REQUIRE_THROWS(database.connection().execute(
+      "UPDATE tarot_posting SET amount=99 WHERE amount=100"));
+  REQUIRE_THROWS(database.connection().execute(
+      "UPDATE tarot_interaction_receipt SET result_json='{\"changed\":true}'"));
+}
+
+TEST_CASE("a failed wager migration leaves accepted version nine intact",
+          "[migration][wager][rollback]") {
+  sanguinius::test::TemporaryDatabase temporary;
+  sanguinius::test::FakeClock clock;
+  auto database = Database::open_migration(temporary.path(), 25ms);
+  const auto production = sanguinius::persistence::production_migrations();
+  const Migrator version_nine{std::span<const Migration>{production.data(), 9},
+                              {"test-version", "test-revision"},
+                              clock};
+  REQUIRE(version_nine.apply(database.connection()).current_version == 9);
+  database.connection().execute_script(
+      "INSERT INTO discord_user VALUES('30','Owner','owner',0,1,1,1,1);"
+      "INSERT INTO guild_config(guild_id,primary_channel_id,owner_user_id,"
+      "created_at_ms,updated_at_ms) VALUES('10','20','30',1,1);"
+      "INSERT INTO event_journal(event_id,event_type,aggregate_type,"
+      "aggregate_id,actor_user_id,guild_id,channel_id,occurred_at_ms,"
+      "recorded_at_ms,correlation_id,idempotency_key,payload_json) VALUES("
+      "'00000000-0000-4000-8000-000000009101','tarot.account_provisioned.v1',"
+      "'tarot_account','00000000-0000-4000-8000-000000009103','30','10','20',"
+      "10,10,'rollback-test','rollback:event','{}');"
+      "INSERT INTO "
+      "tarot_account(account_id,account_kind,user_id,created_at_ms) "
+      "VALUES('00000000-0000-4000-8000-000000009102','MINT',NULL,10);"
+      "INSERT INTO "
+      "tarot_account(account_id,account_kind,user_id,created_at_ms) "
+      "VALUES('00000000-0000-4000-8000-000000009103','HUMAN','30',10);"
+      "INSERT INTO tarot_transaction(transaction_id,transaction_type,state,"
+      "expected_posting_count,event_id,idempotency_key,actor_user_id,is_test,"
+      "created_at_ms) VALUES('00000000-0000-4000-8000-000000009104',"
+      "'STARTING_GRANT','prepared',2,"
+      "'00000000-0000-4000-8000-000000009101','rollback:grant','30',0,10);"
+      "INSERT INTO tarot_posting VALUES("
+      "'00000000-0000-4000-8000-000000009105',"
+      "'00000000-0000-4000-8000-000000009104',"
+      "'00000000-0000-4000-8000-000000009102',-100,10);"
+      "INSERT INTO tarot_posting VALUES("
+      "'00000000-0000-4000-8000-000000009106',"
+      "'00000000-0000-4000-8000-000000009104',"
+      "'00000000-0000-4000-8000-000000009103',100,10);"
+      "UPDATE tarot_transaction SET state='committed',committed_at_ms=10 "
+      "WHERE transaction_id='00000000-0000-4000-8000-000000009104';");
+
+  REQUIRE(sqlite3_set_authorizer(database.connection().native_handle(),
+                                 deny_v9_posting_drop, nullptr) == SQLITE_OK);
+  REQUIRE_THROWS_AS(production_migrator(clock).apply(database.connection()),
+                    DatabaseError);
+  REQUIRE(sqlite3_set_authorizer(database.connection().native_handle(), nullptr,
+                                 nullptr) == SQLITE_OK);
+  REQUIRE(version_nine.inspect(database.connection()).state ==
+          SchemaState::current);
+  REQUIRE(count(database.connection(), "schema_migrations") == 9);
+  REQUIRE(count(database.connection(), "tarot_transaction") == 1);
+  REQUIRE(count(database.connection(), "tarot_posting") == 2);
+  REQUIRE(count(database.connection(), "tarot_recovery_claim") == 0);
+  auto renamed = database.connection().prepare(
+      "SELECT count(*) FROM sqlite_schema WHERE name IN "
+      "('tarot_transaction_v9','tarot_posting_v9',"
+      "'tarot_recovery_claim_v9','tarot_interaction_receipt_v9',"
+      "'tarot_history_item_v9')");
+  REQUIRE(renamed.step());
+  REQUIRE(renamed.column_int64(0) == 0);
+  auto wager = database.connection().prepare(
+      "SELECT count(*) FROM sqlite_schema WHERE name='tarot_wager'");
+  REQUIRE(wager.step());
+  REQUIRE(wager.column_int64(0) == 0);
+  auto preserved = database.connection().prepare(
+      "SELECT ledger_sequence,state FROM tarot_transaction WHERE "
+      "transaction_id='00000000-0000-4000-8000-000000009104'");
+  REQUIRE(preserved.step());
+  REQUIRE(preserved.column_int64(0) == 1);
+  REQUIRE(preserved.column_text(1) == "committed");
+}
+
+TEST_CASE(
+    "a failed Tarot migration leaves the accepted version-eight schema intact",
+    "[migration][tarot][rollback]") {
   constexpr std::string_view checksum{
       "0000000000000000000000000000000000000000000000000000000000000000"};
   sanguinius::test::TemporaryDatabase temporary;
   sanguinius::test::FakeClock clock;
   auto database = Database::open_migration(temporary.path(), 25ms);
   const auto production = sanguinius::persistence::production_migrations();
-  const Migrator version_eight{
-      std::span<const Migration>{production.data(), 8},
-      {"test-version", "test-revision"}, clock};
+  const Migrator version_eight{std::span<const Migration>{production.data(), 8},
+                               {"test-version", "test-revision"},
+                               clock};
   REQUIRE(version_eight.apply(database.connection()).current_version == 8);
 
   std::vector<Migration> broken{production.begin(), production.begin() + 8};
-  broken.push_back(Migration{
-      9, "broken_tarot", checksum,
-      "CREATE TABLE partial_tarot_table (id INTEGER) STRICT; "
-      "THIS IS NOT SQL;"});
-  const Migrator broken_tarot{broken, {"test-version", "test-revision"},
-                              clock};
+  broken.push_back(
+      Migration{9, "broken_tarot", checksum,
+                "CREATE TABLE partial_tarot_table (id INTEGER) STRICT; "
+                "THIS IS NOT SQL;"});
+  const Migrator broken_tarot{broken, {"test-version", "test-revision"}, clock};
   REQUIRE_THROWS_AS(broken_tarot.apply(database.connection()), DatabaseError);
   REQUIRE(version_eight.inspect(database.connection()).state ==
           SchemaState::current);

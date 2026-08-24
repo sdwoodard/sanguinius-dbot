@@ -55,6 +55,8 @@ public:
   void send_public(const PublicMessageRequest &request,
                    std::string_view provider_nonce,
                    PublicDeliveryCallback callback = {}) override;
+  void edit_public(const PublicMessageEditRequest &request,
+                   DeliveryCallback callback = {}) override;
   [[nodiscard]] DiscordRuntimeStatus status() const noexcept override;
 
   [[nodiscard]] std::vector<ConversationEntry>

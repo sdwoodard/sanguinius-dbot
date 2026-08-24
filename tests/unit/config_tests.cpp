@@ -138,6 +138,11 @@ TEST_CASE("typed configuration loads safe defaults and full snowflakes",
   REQUIRE(config.tarot_policy.trial_reward_min == 5);
   REQUIRE(config.tarot_policy.trial_reward_max == 15);
   REQUIRE(config.tarot_policy.trial_cooldown_hours == 24);
+  REQUIRE(config.wager_policy.minimum_stake == 1);
+  REQUIRE(config.wager_policy.maximum_stake == 100);
+  REQUIRE(config.wager_policy.offer_expiry_hours == 24);
+  REQUIRE(config.wager_policy.default_outcome_hours == 24);
+  REQUIRE(config.wager_policy.resolution_grace_hours == 48);
   REQUIRE(config.features.appearances_mode == sanguinius::AppearanceMode::off);
   REQUIRE_FALSE(config.features.vox_enabled);
   REQUIRE_FALSE(config.features.voice_input_enabled);
@@ -180,6 +185,11 @@ TEST_CASE("Tarot configuration parses confirmed overrides and relationships",
   source.values["SANGUINIUS_TAROT_TRIAL_REWARD_MIN"] = "6";
   source.values["SANGUINIUS_TAROT_TRIAL_REWARD_MAX"] = "12";
   source.values["SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS"] = "36";
+  source.values["SANGUINIUS_TAROT_WAGER_MINIMUM_STAKE"] = "2";
+  source.values["SANGUINIUS_TAROT_WAGER_MAXIMUM_STAKE"] = "75";
+  source.values["SANGUINIUS_TAROT_WAGER_OFFER_EXPIRY_HOURS"] = "12";
+  source.values["SANGUINIUS_TAROT_WAGER_DEFAULT_OUTCOME_HOURS"] = "72";
+  source.values["SANGUINIUS_TAROT_WAGER_RESOLUTION_GRACE_HOURS"] = "36";
   const auto config = sanguinius::Config::from_source(source);
   REQUIRE(config.tarot_policy.starting_fate == 200);
   REQUIRE(config.tarot_policy.grace_threshold == 12);
@@ -189,6 +199,11 @@ TEST_CASE("Tarot configuration parses confirmed overrides and relationships",
   REQUIRE(config.tarot_policy.trial_reward_min == 6);
   REQUIRE(config.tarot_policy.trial_reward_max == 12);
   REQUIRE(config.tarot_policy.trial_cooldown_hours == 36);
+  REQUIRE(config.wager_policy.minimum_stake == 2);
+  REQUIRE(config.wager_policy.maximum_stake == 75);
+  REQUIRE(config.wager_policy.offer_expiry_hours == 12);
+  REQUIRE(config.wager_policy.default_outcome_hours == 72);
+  REQUIRE(config.wager_policy.resolution_grace_hours == 36);
 
   source.values["SANGUINIUS_TAROT_GRACE_TARGET"] = "12";
   REQUIRE(contains(config_error(source), "Grace target above threshold"));
@@ -199,6 +214,13 @@ TEST_CASE("Tarot configuration parses confirmed overrides and relationships",
   source.values["SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS"] = "8761";
   REQUIRE(contains(config_error(source),
                    "SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS"));
+  source.values["SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS"] = "36";
+  source.values["SANGUINIUS_TAROT_WAGER_MINIMUM_STAKE"] = "76";
+  REQUIRE(contains(config_error(source), "wager stake bounds"));
+  source.values["SANGUINIUS_TAROT_WAGER_MINIMUM_STAKE"] = "2";
+  source.values["SANGUINIUS_TAROT_WAGER_RESOLUTION_GRACE_HOURS"] = "169";
+  REQUIRE(contains(config_error(source),
+                   "SANGUINIUS_TAROT_WAGER_RESOLUTION_GRACE_HOURS"));
 }
 
 TEST_CASE("typed configuration parses strict controls features and duration",

@@ -60,6 +60,7 @@ sanguinius_embed_migrations(
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0007_appearance_dry_run.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0008_appearance_live.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0009_tarot_ledger.sql"
+    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0010_peer_wagers.sql"
 )
 
 function(sanguinius_enable_warnings target)
@@ -113,6 +114,7 @@ add_library(sanguinius_core STATIC
     src/server_scope_policy.cpp
     src/snowflake.cpp
     src/tarot.cpp
+    src/wagers.cpp
     src/work_queue.cpp
 )
 
@@ -144,6 +146,7 @@ add_library(sanguinius_persistence STATIC
     src/persistence/sqlite_relationship_repository.cpp
     src/persistence/sqlite_repositories.cpp
     src/persistence/sqlite_tarot_repository.cpp
+    src/persistence/sqlite_wager_repository.cpp
     src/persistence/transaction.cpp
 )
 
@@ -222,6 +225,7 @@ if(BUILD_TESTING)
         tests/unit/server_scope_policy_tests.cpp
         tests/unit/snowflake_tests.cpp
         tests/unit/tarot_tests.cpp
+        tests/unit/wager_tests.cpp
         tests/unit/work_queue_tests.cpp
     )
     add_sanguinius_test(sanguinius_application_tests
@@ -242,6 +246,7 @@ if(BUILD_TESTING)
         tests/integration/relationship_repository_tests.cpp
         tests/integration/sqlite_tests.cpp
         tests/integration/tarot_repository_tests.cpp
+        tests/integration/wager_repository_tests.cpp
         tests/unit/persistent_id_tests.cpp
     )
     target_compile_features(sanguinius_persistence_tests PRIVATE cxx_std_20)

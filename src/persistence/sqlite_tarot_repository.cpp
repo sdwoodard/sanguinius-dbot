@@ -1567,7 +1567,7 @@ SqliteTarotRepository::reverse(const TarotReversalRequest &request) {
       original.column_text(1) == "committed" && original.column_int64(2) == 1 &&
       !original.column_is_null(3) &&
       original.column_text(3) == request.invocation.user_id.str() &&
-      original.column_text(0) != "TEST_REVERSAL";
+      original.column_text(0) == "TEST_ADJUSTMENT";
   auto prior_reversal = connection.prepare(
       "SELECT 1 FROM tarot_transaction "
       "WHERE reversal_of_transaction_id = ? AND state = 'committed'");
@@ -1685,13 +1685,18 @@ TarotInvariantReport SqliteTarotRepository::check_invariants() {
       "AND (original.transaction_id IS NULL OR original.is_test <> 1 "
       "OR original.state <> 'committed' "
       "OR original.transaction_type IN ('STARTING_GRANT', 'TEST_REVERSAL') "
+      "OR (original.transaction_type <> 'TEST_ADJUSTMENT' AND NOT EXISTS ("
+      "    SELECT 1 FROM tarot_wager_test_cleanup cleanup "
+      "    WHERE cleanup.reversal_transaction_id = reversal.transaction_id "
+      "      AND cleanup.original_transaction_id = original.transaction_id)) "
+      "OR reversal.expected_posting_count <> original.expected_posting_count "
       "OR (SELECT count(*) FROM tarot_posting original_post "
       "    JOIN tarot_posting inverse_post "
       "      ON inverse_post.transaction_id = reversal.transaction_id "
       "     AND inverse_post.account_id = original_post.account_id "
       "     AND inverse_post.amount = -original_post.amount "
       "    WHERE original_post.transaction_id = original.transaction_id) <> "
-      "2) UNION ALL SELECT transaction_id FROM tarot_transaction "
+      "reversal.expected_posting_count) UNION ALL SELECT transaction_id FROM tarot_transaction "
       "WHERE transaction_type = 'STARTING_GRANT' AND is_test <> 0)");
   report.claim_mismatch_count = scalar_count(
       connection,

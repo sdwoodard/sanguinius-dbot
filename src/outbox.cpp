@@ -1,6 +1,7 @@
 #include "sanguinius/outbox.hpp"
 
 #include "sanguinius/pending_notice.hpp"
+#include "sanguinius/wagers.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -132,6 +133,11 @@ OutboxService::OutboxService(
                 [this](const ClaimedOutboxMessage &outbox,
                        const std::stop_token stop_token) {
                   handle_public(outbox, stop_token);
+                });
+  handlers_.add(std::string{wager_public_edit_outbox_kind},
+                [this](const ClaimedOutboxMessage &outbox,
+                       const std::stop_token stop_token) {
+                  handle_public_edit(outbox, stop_token);
                 });
   handlers_.freeze();
 }
@@ -425,6 +431,99 @@ void OutboxService::handle_public(const ClaimedOutboxMessage &outbox,
     handle_receipt(std::move(submitted_outbox),
                    {DeliveryResult::unknown_outcome, std::nullopt});
   }
+}
+
+void OutboxService::handle_public_edit(const ClaimedOutboxMessage &outbox,
+                                       const std::stop_token stop_token) {
+  const auto *payload = std::get_if<PublicEditOutboxPayload>(&outbox.payload);
+  const auto current = now_ms(clock_);
+  if (payload == nullptr) {
+    static_cast<void>(repository_.fail_outbox(
+        outbox, current, current, "payload_invalid", OutboxFailureMode::dead));
+    return;
+  }
+  if (payload->replacement.guild_id != scope_.guild_id ||
+      payload->replacement.channel_id != scope_.primary_channel_id) {
+    static_cast<void>(repository_.fail_outbox(
+        outbox, current, current, "scope_rejected", OutboxFailureMode::dead));
+    return;
+  }
+  if (!discord_status_.status().ready) {
+    static_cast<void>(repository_.release_outbox(outbox, current));
+    return;
+  }
+  const auto provider_message =
+      repository_.delivered_provider_message_id(payload->source_outbox_id);
+  if (!provider_message) {
+    static_cast<void>(repository_.fail_outbox(
+        outbox, current, current + retry_delay_ms(outbox.attempt_count),
+        "edit_target_pending", OutboxFailureMode::retryable));
+    wake();
+    return;
+  }
+  if (stop_token.stop_requested()) {
+    static_cast<void>(repository_.release_outbox(outbox, current));
+    return;
+  }
+  const auto stamp = attempt_stamp(clock_);
+  if (repository_.mark_public_outbox_submitted(
+          outbox, stamp,
+          submission_lease_until(stamp.wall_time_ms, receipt_wait_timeout_)) !=
+      WorkMutationStatus::applied)
+    return;
+
+  const auto awaited = std::make_shared<AwaitedReceipt>();
+  try {
+    delivery_.edit_public(
+        PublicMessageEditRequest{
+            .guild_id = payload->replacement.guild_id,
+            .channel_id = payload->replacement.channel_id,
+            .message_id = *provider_message,
+            .message = payload->replacement.message,
+        },
+        [awaited, provider_message](const DeliveryResult result) {
+          const std::scoped_lock lock{awaited->mutex};
+          if (!awaited->receipt)
+            awaited->receipt = PublicDeliveryReceipt{result, provider_message};
+          awaited->changed.notify_all();
+        });
+  } catch (...) {
+    const auto retry_at = current + retry_delay_ms(outbox.attempt_count);
+    static_cast<void>(repository_.fail_outbox(
+        outbox, current, retry_at, "discord_edit_unknown",
+        OutboxFailureMode::retryable));
+    wake();
+    return;
+  }
+  std::optional<PublicDeliveryReceipt> receipt;
+  {
+    std::unique_lock lock{awaited->mutex};
+    if (awaited->changed.wait_for(lock, stop_token, receipt_wait_timeout_,
+                                  [&awaited] { return awaited->receipt.has_value(); }))
+      receipt = awaited->receipt;
+  }
+  if (!receipt && stop_token.stop_requested())
+    return;
+  const auto result = receipt ? receipt->result : DeliveryResult::unknown_outcome;
+  if (result == DeliveryResult::success) {
+    static_cast<void>(repository_.complete_public_outbox(
+        outbox, *provider_message, now_ms(clock_)));
+    return;
+  }
+  const auto completion_time = now_ms(clock_);
+  if (result == DeliveryResult::permanent_failure) {
+    static_cast<void>(repository_.fail_outbox(
+        outbox, completion_time, completion_time, "discord_edit_permanent",
+        OutboxFailureMode::failed));
+    return;
+  }
+  static_cast<void>(repository_.fail_outbox(
+      outbox, completion_time,
+      completion_time + retry_delay_ms(outbox.attempt_count),
+      result == DeliveryResult::unknown_outcome ? "discord_edit_unknown"
+                                                : "discord_edit_transient",
+      OutboxFailureMode::retryable));
+  wake();
 }
 
 void OutboxService::handle_receipt(ClaimedOutboxMessage outbox,

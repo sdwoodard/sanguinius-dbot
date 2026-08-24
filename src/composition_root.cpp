@@ -14,6 +14,7 @@
 #include "sanguinius/persistence/sqlite_repositories.hpp"
 #include "sanguinius/persistence/sqlite_relationship_repository.hpp"
 #include "sanguinius/persistence/sqlite_tarot_repository.hpp"
+#include "sanguinius/persistence/sqlite_wager_repository.hpp"
 #include "sanguinius/persistent_id.hpp"
 #include "sanguinius/random.hpp"
 
@@ -87,6 +88,8 @@ std::unique_ptr<Application> make_application(const Config &config) {
       std::make_unique<persistence::SqliteAppearanceRepository>(repository_context);
   auto tarot =
       std::make_unique<persistence::SqliteTarotRepository>(repository_context);
+  auto wagers =
+      std::make_unique<persistence::SqliteWagerRepository>(repository_context);
   auto random = std::make_unique<SystemRandom>();
 
   auto id_generator = std::make_unique<ProcessIdGenerator>();
@@ -107,6 +110,7 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .controls = config.controls,
           .features = config.features,
           .tarot_policy = config.tarot_policy,
+          .wager_policy = config.wager_policy,
           .build = current_build_info(),
           .persistence =
               PersistenceHealth{
@@ -140,6 +144,7 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .relationships = std::move(relationships),
           .appearances = std::move(appearances),
           .tarot = std::move(tarot),
+          .wagers = std::move(wagers),
           .random = std::move(random),
           .appearance_policy = config.appearance_policy,
           .ai_client = std::move(ai_client),

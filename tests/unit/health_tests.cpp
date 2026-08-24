@@ -79,6 +79,15 @@ TEST_CASE("health snapshot renders build queues and configured modes",
                  .account_count = 4,
                  .committed_transaction_count = 2,
                  .posting_count = 4}};
+       },
+       .wagers = [] {
+         return std::optional<sanguinius::WagerInvariantReport>{
+             sanguinius::WagerInvariantReport{
+                 .valid = true,
+                 .open_funded_obligation_count = 2,
+                 .open_funded_obligation_amount = 40,
+                 .escrow_balance = 40,
+                 .disputed_count = 1}};
        }}};
 
   const auto snapshot = service.snapshot(
@@ -109,6 +118,9 @@ TEST_CASE("health snapshot renders build queues and configured modes",
   REQUIRE(contains(rendered, "last_outbox_error=discord_transient"));
   REQUIRE(contains(rendered, "tarot_invariants=ok"));
   REQUIRE(contains(rendered, "tarot_accounts=4"));
+  REQUIRE(contains(rendered, "wager_invariants=ok"));
+  REQUIRE(contains(rendered, "wager_open_funded=2"));
+  REQUIRE(contains(rendered, "wager_escrow_fate=40"));
   REQUIRE(contains(rendered, "admin_commands=enabled"));
   REQUIRE(contains(rendered, "test_mode=enabled"));
   REQUIRE(contains(rendered, "appearances=dry_run"));
@@ -126,7 +138,8 @@ TEST_CASE("health snapshot renders build queues and configured modes",
        .outbox_queue = [] { return sanguinius::QueueSnapshot{}; },
        .pending_notice_count = [] { return std::size_t{}; },
        .durable_work = [] { return sanguinius::DurableWorkHealth{}; },
-       .tarot = {}}};
+       .tarot = {},
+       .wagers = {}}};
   const auto bounded = sanguinius::render_health(oversized_metadata.snapshot(
       {.capacity = 64, .queued = 1, .active = 1, .accepting = true},
       {.capacity = 64, .accepting = true}, true));
@@ -153,7 +166,8 @@ TEST_CASE("health types cannot expose secret configuration", "[health]") {
        .outbox_queue = [] { return sanguinius::QueueSnapshot{}; },
        .pending_notice_count = [] { return std::size_t{}; },
        .durable_work = [] { return sanguinius::DurableWorkHealth{}; },
-       .tarot = {}}};
+       .tarot = {},
+       .wagers = {}}};
   const auto rendered = sanguinius::render_health(
       service.snapshot({.capacity = 1}, {.capacity = 1}, true));
 

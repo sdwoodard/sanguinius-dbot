@@ -20,6 +20,7 @@
 #include "sanguinius/random.hpp"
 #include "sanguinius/server_scope_policy.hpp"
 #include "sanguinius/tarot.hpp"
+#include "sanguinius/wagers.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -37,6 +38,7 @@ struct ApplicationOptions {
   ControlConfiguration controls;
   FeatureConfiguration features;
   TarotPolicy tarot_policy;
+  WagerPolicy wager_policy;
   BuildInfo build;
   PersistenceHealth persistence;
   std::string instance_id;
@@ -66,6 +68,7 @@ struct ApplicationDependencies {
   std::unique_ptr<RelationshipRepository> relationships;
   std::unique_ptr<AppearanceRepository> appearances;
   std::unique_ptr<TarotRepository> tarot;
+  std::unique_ptr<TarotWagerRepository> wagers;
   std::unique_ptr<Random> random;
   std::optional<AppearancePolicy> appearance_policy;
   std::unique_ptr<AiClient> ai_client;

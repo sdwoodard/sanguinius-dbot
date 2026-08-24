@@ -16,7 +16,7 @@ bot's feature boundary to one guild, one primary text channel, and one owner.
 | `!help` | List the supported commands. |
 | `!repo` | Link to this source repository. |
 
-The configured guild receives command catalog version 8. Chronicle and Tarot
+The configured guild receives command catalog version 9. Chronicle and Tarot
 commands are registered only when their corresponding feature flag is enabled;
 owner commands remain separately gated:
 
@@ -48,6 +48,13 @@ owner commands remain separately gated:
 | `/tarot standings-visibility public\|private` | Ephemerally changes whether the invoking member appears in public standings without changing the ledger. |
 | `/tarot grace [visibility:public\|private]` | Ephemerally prepares Grace of the Throne when eligible; successful public claims enqueue only neutral flavor. |
 | `/tarot trial [visibility:public\|private]` | Ephemerally prepares three persisted Renewal vows plus Abandon; any vow awards the preselected reward exactly once. |
+| `/tarot wager target:<user> [visibility] [resolution] [judge] [outcome-in]` | Starts the ephemeral equal-stake peer-wager form and immutable preview. Confirmation creates a public offer or a sealed target-bound notice. |
+| `/tarot wagers [reference]` | Shows participant-only five-item history or exact private details with current role-authorized controls. |
+| `/tarot wager-action reference:<uuid> action:<accept\|decline\|cancel\|agree\|dispute\|void>` | Slash fallback for wager buttons. Acceptance atomically funds both equal stakes. |
+| `/tarot outcome reference:<uuid> winner:<creator\|target>` | Records one participant's mutual-resolution submission; the equivalent **Submit outcome** button opens a bounded ephemeral winner modal. |
+| `/tarot evidence reference:<uuid> evidence:<text>` | Appends immutable private participant evidence. |
+| `/tarot judgment reference:<uuid> result:<creator\|target\|void> reason:<text>` | Allows the designated judge before dispute or the owner after dispute to enter a bounded reasoned result. |
+| `/tarot disputes [reference]` | Shows only disputes visible to a participant or the owner. |
 | `/sang-admin health` | Ephemeral owner-only health; registered only when admin commands are enabled. |
 | `/sang-admin work-recent` | Ephemeral owner-only inspection of the ten most recent redacted event/job/outbox summaries. |
 | `/sang-admin work-dead` | Ephemeral owner-only inspection of the ten most recent dead jobs and failed/dead outbox rows. |
@@ -62,7 +69,10 @@ owner commands remain separately gated:
 | `/sang-admin appearance disable` | Owner-only persistent global kill switch; cancels appearance rows that have never been submitted. Available without test mode or the full admin-control catalog. |
 | `/sang-admin appearance enable` | Owner-only clearing of the global kill switch; it never overrides configured `off` or `dry_run`. |
 | `/sang-admin tarot adjust amount:<integer> reason:<text>` | Owner-only, admin/test-mode-gated balanced adjustment of the owner's account. |
-| `/sang-admin tarot reverse transaction:<uuid> reason:<text>` | Owner-only, admin/test-mode-gated exact reversal of one eligible unreversed test transaction. |
+| `/sang-admin tarot reverse transaction:<uuid> reason:<text>` | Owner-only, admin/test-mode-gated exact reversal of one eligible unreversed `TEST_ADJUSTMENT`; wager transfers require terminal wager cleanup. |
+| `/sang-admin tarot wager-role reference:<uuid> role:<creator\|target\|judge\|owner>` | Owner-only, test-mode-gated selection of one simulated role for a self-wager. |
+| `/sang-admin tarot wager-deadline reference:<uuid> phase:<draft\|offer\|reminder\|outcome\|grace>` | Owner-only, test-mode-gated forcing of one persisted deadline phase. |
+| `/sang-admin tarot wager-cleanup reference:<uuid> reason:<text>` | Owner-only, test-mode-gated exact reversal of every terminal test-wager transfer; audit rows are retained. |
 
 Command names are case-insensitive. Messages written by bots are logged but are
 not treated as commands.
@@ -80,6 +90,39 @@ private proactive content is stored as a pending notice. A neutral public card
 may mention only its target and contains no private title/body or database
 identifier. The target retrieves the content by clicking its opaque,
 expiring button or by running `/sanguinius inbox`.
+
+Peer wagers use one immutable equal stake of 1–100 Fate per participant; M12
+does not support asymmetric stakes, counteroffers, pools, House odds, or AI
+judgment. A confirmed offer expires unfunded after 24 hours by default.
+Acceptance debits both participants and credits `ESCROW` in one `BEGIN
+IMMEDIATE` transaction. Matching mutual outcomes pay the complete escrow once;
+conflicting outcomes or the 48-hour post-deadline grace boundary dispute the
+wager without moving Fate. Both participants may instead consent to an exact
+refund. A designated judge may decide only before dispute; once disputed, only
+participant agreement, mutual void, or a reasoned owner judgment can settle it.
+Mutual participants may submit through an opaque, revision-bound **Submit
+outcome** control and bounded modal or use the slash fallback. Designated
+self-test wagers pin the simulated judge to the owner, so an external member is
+never named as a judge who cannot exercise that role.
+Scheduler retries, duplicate interactions, and restarts replay durable state and
+never award Fate by timeout.
+The offer duration, outcome window, and resolution-grace duration are
+snapshotted before the offer is confirmed, so a configuration change cannot
+alter previewed or accepted terms.
+Authorized ephemeral responses and participant history expose the complete UUID
+needed by slash fallbacks; public cards use only public-safe shortened labels.
+An offered sealed wager is omitted from the target's participant history, and
+exact lookup fails closed, until the target's sealed notice has actually been
+delivered. Reserving or failing an ephemeral reveal does not unlock the terms.
+Sealed acceptance uses the same delivery fence and moves no Fate until the
+target has successfully received the complete offer.
+
+Public offers show the proposition, equal stake, participants, resolution
+method, deadlines, and public-safe status. Sealed public cards contain only a
+neutral target-bound prompt and later neutral states; proposition, stake,
+evidence, judge, and result remain in ephemeral notices and, after the initial
+reveal, participant history. The original card is updated through a revisioned
+durable message-edit outbox and loses its controls after the state changes.
 
 Chronicle proposals retain only bounded source text and approved attachment
 metadata—never attachment bytes, URLs, embeds, or surrounding history. Shared
@@ -292,7 +335,7 @@ Optional settings are:
 | `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Register the full owner diagnostic/test catalog and enable transitional prefix health. The owner-only appearance kill-switch commands remain registered when this is `false`. |
 | `SANGUINIUS_TEST_MODE` | `false` | Enable auditable, self-targeted durable-work test controls. |
 | `SANGUINIUS_CHRONICLE_ENABLED` | `false` | Register and enable the Living Chronicle context/slash flows. Durable memory expiry remains safe while UI access is disabled. |
-| `SANGUINIUS_TAROT_ENABLED` | `false` | Register and enable Fate balance, history, standings, recovery, and owner test-ledger controls. |
+| `SANGUINIUS_TAROT_ENABLED` | `false` | Register and enable Fate balance, history, standings, recovery, peer wagers, and owner test-ledger controls. |
 | `SANGUINIUS_TAROT_STARTING_FATE` | `100` | Balanced first-use starting grant (1–1,000,000,000). |
 | `SANGUINIUS_TAROT_GRACE_THRESHOLD` | `10` | Grace is eligible strictly below this Fate balance. |
 | `SANGUINIUS_TAROT_GRACE_TARGET` | `25` | Grace tops the account up to this balance; must exceed its threshold. |
@@ -301,6 +344,11 @@ Optional settings are:
 | `SANGUINIUS_TAROT_TRIAL_REWARD_MIN` | `5` | Inclusive deterministic Trial reward minimum. |
 | `SANGUINIUS_TAROT_TRIAL_REWARD_MAX` | `15` | Inclusive deterministic Trial reward maximum. |
 | `SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS` | `24` | Trial cooldown (1–8,760 hours). |
+| `SANGUINIUS_TAROT_WAGER_MINIMUM_STAKE` | `1` | Inclusive peer-wager stake minimum; must not exceed the maximum. |
+| `SANGUINIUS_TAROT_WAGER_MAXIMUM_STAKE` | `100` | Inclusive equal-stake maximum; schema v10 caps this at 100. |
+| `SANGUINIUS_TAROT_WAGER_OFFER_EXPIRY_HOURS` | `24` | Confirmed offer lifetime (1–8,760 hours). |
+| `SANGUINIUS_TAROT_WAGER_DEFAULT_OUTCOME_HOURS` | `24` | Default outcome window after acceptance (1–168 hours). |
+| `SANGUINIUS_TAROT_WAGER_RESOLUTION_GRACE_HOURS` | `48` | Grace after the outcome deadline before owner escalation (1–168 hours). |
 | `SANGUINIUS_APPEARANCES_MODE` | `off` | Appearance engine mode: `off`, inspection-only `dry_run`, or conservatively budgeted `live`. |
 | `SANGUINIUS_VOX_ENABLED` | `false` | Configured Vox mode; no voice connection exists yet. |
 | `SANGUINIUS_VOICE_INPUT_ENABLED` | `false` | Reserved privacy gate; voice input remains unavailable. |
@@ -359,7 +407,11 @@ verifies the result before committing.
 `db tarot check` folds the complete committed ledger and prints only invariant
 status/counts. When Tarot is enabled, normal startup performs the same check
 and fails closed on prepared rows, imbalance, negative human history, overflow,
-illegal reversal, recovery mismatch, or orphaned linkage.
+illegal reversal, recovery mismatch, orphaned linkage, malformed wager
+transfers/deadlines, or a difference between the `ESCROW` balance and unresolved
+funded obligations. Health reports only the open-funded count, escrow amount,
+dispute count, and redacted invariant counts—never terms, evidence, balances,
+or ledger identifiers.
 
 Migration `0001_core_foundation` contains only shared identity and
 configuration state: migration history, application instances, Discord users,
@@ -430,6 +482,20 @@ checked arithmetic, non-negative human balances, and idempotency keys. Public
 recovery flavor is linked atomically to one neutral durable outbox row. It is
 forward-only: binary rollback restores a verified schema-v8 backup and the
 accepted Milestone 10 artifact/catalog rather than applying reverse SQL.
+Migration `0010_peer_wagers` rebuilds the ledger family with count-verified
+copy/swap steps so schema-v9 order and `AUTOINCREMENT` continuity survive while
+adding exact-shape `WAGER_ESCROW_FUND`, `WAGER_PAYOUT`, and `WAGER_REFUND`
+transactions. It adds immutable equal-stake terms, append-only actions,
+outcomes, void consents, evidence and resolutions, revision/user-bound controls
+and receipts, linked deadline jobs/notices, revisioned public-card edits,
+participant history snapshots, simulated roles, and exact test-cleanup
+reversals. SQL triggers enforce role/state authority, term immutability,
+terminal cancellation, exact terminal-resolution audit metadata,
+owner-contained self-test roles, event/transfer linkage, and public/sealed
+payload rules.
+It is forward-only: rollback preserves the failed v10 database, restores the
+checksum-verified schema-v9 backup, and runs the accepted Milestone 11
+artifact/catalog rather than applying reverse SQL.
 The readable SQL for each ordered migration is
 embedded independently with its SHA-256
 checksum. Applied history must be ordered, contiguous, and byte-for-byte

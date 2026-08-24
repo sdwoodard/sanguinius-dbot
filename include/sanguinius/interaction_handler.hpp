@@ -14,6 +14,7 @@
 #include "sanguinius/relationships.hpp"
 #include "sanguinius/repositories.hpp"
 #include "sanguinius/tarot.hpp"
+#include "sanguinius/wagers.hpp"
 #include "sanguinius/work_queue.hpp"
 
 #include <cstddef>
@@ -81,6 +82,18 @@ enum class InteractionOperation {
   tarot_component,
   tarot_adjust,
   tarot_reverse,
+  wager_create,
+  wager_preview,
+  wager_component,
+  wager_action,
+  wager_outcome,
+  wager_evidence,
+  wager_judgment,
+  wager_history,
+  wager_disputes,
+  wager_test_role,
+  wager_test_deadline,
+  wager_test_cleanup,
 };
 
 struct RoutedInteraction {
@@ -102,7 +115,8 @@ public:
                      std::size_t queue_capacity = 64,
                      RelationshipService *relationships = nullptr,
                      AppearanceService *appearances = nullptr,
-                     TarotService *tarot = nullptr);
+                     TarotService *tarot = nullptr,
+                     TarotWagerService *wagers = nullptr);
   ~InteractionHandler();
 
   InteractionHandler(const InteractionHandler &) = delete;
@@ -131,6 +145,7 @@ private:
   RelationshipService *relationships_{};
   AppearanceService *appearances_{};
   TarotService *tarot_{};
+  TarotWagerService *wagers_{};
   HealthService &health_service_;
   Diagnostics &diagnostics_;
   FeatureConfiguration features_;

@@ -263,6 +263,19 @@ public:
     }
   }
 
+  void edit_public(const PublicMessageEditRequest &request,
+                   DeliveryCallback callback = {}) override {
+    DeliveryResult result;
+    {
+      const std::scoped_lock lock{mutex_};
+      public_edits_.push_back(request);
+      result = public_edit_result_;
+      changed_.notify_all();
+    }
+    if (callback)
+      callback(result);
+  }
+
   [[nodiscard]] DiscordRuntimeStatus status() const noexcept override {
     try {
       const std::scoped_lock lock{mutex_};
@@ -422,6 +435,14 @@ public:
     });
   }
 
+  [[nodiscard]] bool
+  wait_for_public_edit_count(const std::size_t count,
+                             const std::chrono::milliseconds timeout) const {
+    std::unique_lock lock{mutex_};
+    return changed_.wait_for(lock, timeout,
+                             [this, count] { return public_edits_.size() >= count; });
+  }
+
   [[nodiscard]] std::vector<ReplyRequest> replies() const {
     const std::scoped_lock lock{mutex_};
     return replies_;
@@ -440,6 +461,16 @@ public:
   [[nodiscard]] std::vector<PublicMessageRequest> public_messages() const {
     const std::scoped_lock lock{mutex_};
     return public_messages_;
+  }
+
+  [[nodiscard]] std::vector<PublicMessageEditRequest> public_edits() const {
+    const std::scoped_lock lock{mutex_};
+    return public_edits_;
+  }
+
+  void set_public_edit_result(const DeliveryResult result) {
+    const std::scoped_lock lock{mutex_};
+    public_edit_result_ = result;
   }
 
   [[nodiscard]] CommandCatalog command_catalog() const {
@@ -463,6 +494,7 @@ private:
   std::unordered_map<DiscordId, ConversationEntry> fetched_;
   std::vector<ReplyRequest> replies_;
   std::vector<PublicMessageRequest> public_messages_;
+  std::vector<PublicMessageEditRequest> public_edits_;
   std::unordered_map<std::string, DiscordId> public_nonces_;
   std::vector<std::pair<PublicDeliveryCallback, PublicDeliveryReceipt>>
       held_public_callbacks_;
@@ -476,6 +508,7 @@ private:
   bool reply_context_failure_{false};
   bool delivery_failure_{false};
   DeliveryResult public_delivery_result_{DeliveryResult::success};
+  DeliveryResult public_edit_result_{DeliveryResult::success};
   std::vector<DeliveryResult> public_delivery_results_;
   bool accept_unknown_delivery_{};
   bool omit_next_success_message_id_{};
@@ -520,6 +553,7 @@ interaction(std::shared_ptr<DiscordInteractionResponder> responder,
       .subcommand_group_name = {},
       .subcommand_name = {},
       .command_options = {},
+      .resolved_users = {},
       .custom_id = {},
       .selected_values = {},
       .modal_fields = {},

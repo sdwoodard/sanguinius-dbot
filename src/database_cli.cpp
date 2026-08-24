@@ -5,6 +5,7 @@
 #include "sanguinius/persistence/migrator.hpp"
 #include "sanguinius/persistence/sqlite_relationship_repository.hpp"
 #include "sanguinius/persistence/sqlite_tarot_repository.hpp"
+#include "sanguinius/persistence/sqlite_wager_repository.hpp"
 
 #include <filesystem>
 #include <ostream>
@@ -152,7 +153,9 @@ int run_database_command(const DatabaseCommand &command,
       auto context = std::make_shared<persistence::SqliteRepositoryContext>(
           std::move(opened));
       persistence::SqliteTarotRepository tarot{context};
+      persistence::SqliteWagerRepository wagers{context};
       const auto result = tarot.check_invariants();
+      const auto wager_result = wagers.check_invariants();
       output << "tarot=" << (result.valid ? "ok" : "failed") << '\n'
              << "accounts=" << result.account_count << '\n'
              << "transactions=" << result.committed_transaction_count << '\n'
@@ -163,8 +166,21 @@ int run_database_command(const DatabaseCommand &command,
              << "overflow=" << result.overflow_count << '\n'
              << "illegal_reversals=" << result.illegal_reversal_count << '\n'
              << "claim_mismatches=" << result.claim_mismatch_count << '\n'
-             << "orphaned_links=" << result.orphaned_link_count << '\n';
-      return result.valid ? 0 : 1;
+             << "orphaned_links=" << result.orphaned_link_count << '\n'
+             << "wagers=" << (wager_result.valid ? "ok" : "failed") << '\n'
+             << "wager_open_funded="
+             << wager_result.open_funded_obligation_count << '\n'
+             << "wager_obligation_fate="
+             << wager_result.open_funded_obligation_amount << '\n'
+             << "wager_escrow_fate=" << wager_result.escrow_balance << '\n'
+             << "wager_disputes=" << wager_result.disputed_count << '\n'
+             << "wager_malformed_transfers="
+             << wager_result.malformed_transfer_count << '\n'
+             << "wager_invalid_deadline_action_links="
+             << wager_result.invalid_deadline_action_link_count << '\n'
+             << "wager_orphaned_links=" << wager_result.orphaned_link_count
+             << '\n';
+      return result.valid && wager_result.valid ? 0 : 1;
     }
     }
   } catch (const DatabaseError &error) {

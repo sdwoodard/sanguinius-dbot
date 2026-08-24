@@ -92,6 +92,7 @@ HealthSnapshot HealthService::snapshot(const QueueSnapshot message_queue,
       .pending_notice_count = runtime_.pending_notice_count(),
       .durable_work = runtime_.durable_work(),
       .tarot = runtime_.tarot ? runtime_.tarot() : std::nullopt,
+      .wagers = runtime_.wagers ? runtime_.wagers() : std::nullopt,
       .scope_matched = scope_matched,
   };
 }
@@ -168,6 +169,21 @@ std::string render_health(const HealthSnapshot &snapshot) {
                   snapshot.tarot->illegal_reversal_count +
                   snapshot.tarot->claim_mismatch_count +
                   snapshot.tarot->orphaned_link_count
+           << '\n';
+  }
+  if (snapshot.wagers) {
+    output << "wager_invariants="
+           << (snapshot.wagers->valid ? "ok" : "failed") << '\n'
+           << "wager_open_funded="
+           << snapshot.wagers->open_funded_obligation_count << '\n'
+           << "wager_obligation_fate="
+           << snapshot.wagers->open_funded_obligation_amount << '\n'
+           << "wager_escrow_fate=" << snapshot.wagers->escrow_balance << '\n'
+           << "wager_disputes=" << snapshot.wagers->disputed_count << '\n'
+           << "wager_violations="
+           << snapshot.wagers->malformed_transfer_count +
+                  snapshot.wagers->invalid_deadline_action_link_count +
+                  snapshot.wagers->orphaned_link_count
            << '\n';
   }
   output << "admin_commands="
