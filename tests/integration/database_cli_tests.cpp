@@ -56,7 +56,7 @@ TEST_CASE(
           temporary.path(), clock);
   REQUIRE(migrated.exit_code == 0);
   REQUIRE(migrated.output.find("database=current") != std::string::npos);
-  REQUIRE(migrated.output.find("current_schema=11") != std::string::npos);
+  REQUIRE(migrated.output.find("current_schema=12") != std::string::npos);
 
   const auto checked =
       run({sanguinius::DatabaseCommandType::check, std::nullopt},

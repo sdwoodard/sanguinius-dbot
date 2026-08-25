@@ -543,6 +543,28 @@ decode_tarot_house_weekly_offer(const Json &value) {
   return result;
 }
 
+[[nodiscard]] Json encode_vox_timeout(
+    const VoxTimeoutJobPayload &payload,
+    const std::string_view correlation_id = {},
+    const std::optional<std::string> &causation_event_id = std::nullopt) {
+  Json result{{"payload_version", 1},
+              {"session_id", payload.session_id},
+              {"expected_revision", payload.expected_revision}};
+  add_trace(result, correlation_id, causation_event_id);
+  return result;
+}
+
+[[nodiscard]] VoxTimeoutJobPayload decode_vox_timeout(const Json &value) {
+  if (!value.is_object() || value.at("payload_version").get<int>() != 1)
+    throw std::runtime_error{"Unsupported Vox timeout payload."};
+  VoxTimeoutJobPayload result{
+      .session_id = value.at("session_id").get<std::string>(),
+      .expected_revision = value.at("expected_revision").get<std::size_t>()};
+  if (!valid_uuid_v4(result.session_id) || result.expected_revision == 0)
+    throw std::runtime_error{"Invalid Vox timeout payload."};
+  return result;
+}
+
 [[nodiscard]] DurablePayload decode_payload(const std::string_view kind,
                                             const std::string &payload) {
   try {
@@ -580,6 +602,11 @@ decode_tarot_house_weekly_offer(const Json &value) {
       return decode_tarot_integration_scan(value);
     if (kind == "tarot.house-weekly-offer.v1")
       return decode_tarot_house_weekly_offer(value);
+    if (kind == "vox.connect_timeout.v1" ||
+        kind == "vox.reconnect_timeout.v1" ||
+        kind == "vox.leave_timeout.v1" ||
+        kind == "vox.empty_timeout.v1")
+      return decode_vox_timeout(value);
   } catch (const std::exception &) {
     return std::monostate{};
   }
@@ -1223,8 +1250,14 @@ std::string encode_tarot_house_weekly_offer_payload(
     const std::string_view correlation_id,
     const std::optional<std::string> &causation_event_id) {
   return encode_tarot_house_weekly_offer(payload, correlation_id,
-                                         causation_event_id)
+                                          causation_event_id)
       .dump();
+}
+
+std::string encode_vox_timeout_payload(
+    const VoxTimeoutJobPayload &payload, const std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id) {
+  return encode_vox_timeout(payload, correlation_id, causation_event_id).dump();
 }
 
 } // namespace detail
@@ -1735,6 +1768,10 @@ SqliteDurableWorkRepository::claim_due_outbox(
       "AND candidate.attempt_count < candidate.max_attempts "
       "AND (? OR candidate.kind NOT IN (?, ?)) "
       "AND NOT EXISTS (SELECT 1 FROM tarot_public_outbox_dependency "
+      "dependency JOIN outbox_message predecessor ON predecessor.outbox_id="
+      "dependency.predecessor_outbox_id WHERE dependency.successor_outbox_id="
+      "candidate.outbox_id AND predecessor.state IN ('pending','claimed')) "
+      "AND NOT EXISTS (SELECT 1 FROM voice_public_outbox_dependency "
       "dependency JOIN outbox_message predecessor ON predecessor.outbox_id="
       "dependency.predecessor_outbox_id WHERE dependency.successor_outbox_id="
       "candidate.outbox_id AND predecessor.state IN ('pending','claimed')) "

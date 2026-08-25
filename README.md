@@ -4,7 +4,8 @@ Sanguinius is a Discord bot built with modern C++ and [D++](https://dpp.dev/).
 It supports guild-scoped slash commands, sealed notices, an optional Living
 Chronicle, a persistent original Emperor's Tarot and Fate economy, and
 persistent unsolicited appearances with off, dry-run, and conservatively
-budgeted live modes. It
+budgeted live modes, plus feature-flagged output-only Discord voice sessions
+with a deterministic static proof chime. It
 preserves two public prefix commands, answers messages that begin with a bot
 mention through the OpenAI Responses API, and writes every visible guild
 message-create event to an append-only text log. Typed configuration fixes the
@@ -17,7 +18,8 @@ bot's feature boundary to one guild, one primary text channel, and one owner.
 | `!help` | List the supported commands. |
 | `!repo` | Link to this source repository. |
 
-The configured guild receives command catalog version 10. Chronicle and Tarot
+The configured guild receives command catalog version 11. Chronicle, Tarot,
+and Vox
 commands are registered only when their corresponding feature flag is enabled;
 owner commands remain separately gated:
 
@@ -61,6 +63,9 @@ owner commands remain separately gated:
 | `/tarot evidence reference:<uuid> evidence:<text>` | Appends immutable private participant evidence. |
 | `/tarot judgment reference:<uuid> result:<creator\|target\|void> reason:<text>` | Allows the designated judge before dispute or the owner after dispute to enter a bounded reasoned result. |
 | `/tarot disputes [reference]` | Shows only disputes visible to a participant or the owner. |
+| `/vox summon` | Ephemerally resolves the invoker's current ordinary voice channel, persists one output-only session, connects with required DAVE/E2EE, and plays the original 600 ms proof chime once. |
+| `/vox status` | Publicly reports only the active state, voice-channel mention, elapsed seconds, reconnect count, and static-proof state. |
+| `/vox leave` | Ephemerally dismisses the active session for its summoner or the configured owner. |
 | `/sang-admin health` | Ephemeral owner-only health; registered only when admin commands are enabled. |
 | `/sang-admin work-recent` | Ephemeral owner-only inspection of the ten most recent redacted event/job/outbox summaries. |
 | `/sang-admin work-dead` | Ephemeral owner-only inspection of the ten most recent dead jobs and failed/dead outbox rows. |
@@ -88,6 +93,7 @@ owner commands remain separately gated:
 | `/sang-admin tarot house-cleanup reference:<uuid> reason:<text>` | Owner-only, admin/test-mode-gated exact reversal of terminal test House transfers while retaining audit. |
 | `/sang-admin tarot integration-preview` | Owner-only redacted inspection of pending or failed Tarot integration work. |
 | `/sang-admin tarot integration-retry reference:<uuid>` | Owner-only, admin/test-mode-gated retry of one failed test observation. |
+| `/sang-admin vox disconnect` | Owner-only, admin/test-mode-gated one-shot reconnect exercise; it never replays the proof chime. |
 
 Command names are case-insensitive. Messages written by bots are logged but are
 not treated as commands.
@@ -273,7 +279,8 @@ AI work run outside D++ gateway callbacks.
 - A C++20 compiler
 - CMake 3.25 or newer
 - Ninja (for the supplied presets)
-- D++ with its CMake package configuration installed
+- D++ 10.1.7 or newer with shared-library voice, Opus, OpenSSL, zlib, and
+  integrated DAVE/MLS support enabled
 - libcurl
 - nlohmann-json
 - SQLite 3.51.3 or newer, or the fixed 3.50.7/3.44.6 backport
@@ -294,17 +301,25 @@ OpenAI-specific third-party SDK is required.
 The locally built D++ 10.1.7 installation under `/usr/local` is discovered by
 its exported `dpp::dpp` CMake target. If D++ is installed under a different
 prefix, configure with `-DCMAKE_PREFIX_PATH=/path/to/prefix`.
+CMake compiles and links a configure-time probe for the Guild Voice States
+intent, DAVE-enabled `connect_voice`, E2EE status, raw PCM send, marker, and
+disconnect APIs. Configuration fails with a voice-support diagnostic when the
+installed package cannot supply that surface; no separate libdave, decoder, or
+FFmpeg dependency is part of Milestone 14.
 
 Catch2 is a development-only dependency. CMake requires it only when
 `BUILD_TESTING=ON`; a prebuilt production executable does not require Catch2 on
 the runtime host.
 
 The Discord application must have the **Message Content Intent** enabled in the
-Developer Portal. The gateway requests only guild, guild-message, and message
-content intents; direct-message and voice-state intents are deliberately not
-requested. The bot also needs permission to view channels, read message
-history, and send messages wherever it is expected to operate. Voice-state
-intent and permissions remain deferred to the Vox milestone.
+Developer Portal. The gateway always requests guild, guild-message, and message
+content intents and never requests direct-message intents. When
+`SANGUINIUS_VOX_ENABLED=true`, it additionally requests **Guild Voice States**;
+when Vox is disabled that intent and all voice callbacks are omitted. The bot
+needs the ordinary text permissions plus effective **View Channel**,
+**Connect**, and **Speak** permissions in the invoker's current ordinary voice
+channel. A full channel additionally requires **Move Members**. Stage channels
+are rejected. Output-only voice still requires bidirectional UDP reachability.
 
 ## Configure
 
@@ -400,8 +415,8 @@ Optional settings are:
 | `SANGUINIUS_TAROT_HOUSE_PROFIT_CAP` | `20` | Maximum integral profit promised by any one House wager. |
 | `SANGUINIUS_TAROT_INTEGRATION_ENABLED` | `true` | Enable idempotent post-settlement integration observations and derived effects. |
 | `SANGUINIUS_APPEARANCES_MODE` | `off` | Appearance engine mode: `off`, inspection-only `dry_run`, or conservatively budgeted `live`. |
-| `SANGUINIUS_VOX_ENABLED` | `false` | Configured Vox mode; no voice connection exists yet. |
-| `SANGUINIUS_VOICE_INPUT_ENABLED` | `false` | Reserved privacy gate; voice input remains unavailable. |
+| `SANGUINIUS_VOX_ENABLED` | `false` | Register output-only Vox commands/callbacks and the Guild Voice States intent. Disabled startup still closes stale persisted sessions. |
+| `SANGUINIUS_VOICE_INPUT_ENABLED` | `false` | Reserved privacy gate. Setting this to `true` is rejected because receive/transcription is not implemented. |
 
 Boolean variables accept only the exact lowercase values `true` and `false`.
 Every explicitly supplied variable must have a nonempty value; omit an
@@ -563,6 +578,18 @@ retroactive effects are emitted. It is forward-only: rollback preserves the
 v11 database and diagnostics, restores the checksum-verified database captured
 immediately before migration, and selects the matching accepted binary and
 catalogs rather than applying reverse SQL.
+Migration `0012_vox_foundation` adds the revisioned `voice_session` state
+machine, append-only transition history, immutable interaction receipts,
+partial uniqueness for one active session, and links to durable connect,
+reconnect, leave-cleanup, and empty-channel timeout jobs. Ready and terminal
+public cards use the existing `discord.public.v1` outbox with an immutable
+ready-before-terminal dependency; shutdown quarantines an already-submitted
+card as an unknown outcome rather than relabeling it unsent. It stores session
+metadata and static fixture state only—never D++ objects, TTS data, received
+audio, or transcripts.
+It is forward-only: rollback preserves the failed schema-v12 database and
+diagnostics, then restores a checksum-verified schema-v11 backup and its
+matching catalog-v10 artifact rather than applying reverse SQL.
 The readable SQL for each ordered migration is
 embedded independently with its SHA-256
 checksum. Applied history must be ordered, contiguous, and byte-for-byte

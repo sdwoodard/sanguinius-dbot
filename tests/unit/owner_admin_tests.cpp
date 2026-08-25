@@ -35,7 +35,8 @@ TEST_CASE("owner admin service applies enabled scope and owner boundaries",
        .durable_work = [] { return sanguinius::DurableWorkHealth{}; },
        .tarot = {},
        .wagers = {},
-       .house = {}}};
+       .house = {},
+       .vox = {}}};
   const sanguinius::OwnerAdminService service{
       {.admin_commands_enabled = true, .test_mode = false}, policy, health};
 
@@ -84,7 +85,8 @@ TEST_CASE("owner admin service is disabled independently of owner identity",
        .durable_work = [] { return sanguinius::DurableWorkHealth{}; },
        .tarot = {},
        .wagers = {},
-       .house = {}}};
+       .house = {},
+       .vox = {}}};
   const sanguinius::OwnerAdminService service{{}, policy, health};
 
   const auto result = service.handle(

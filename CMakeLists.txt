@@ -22,11 +22,60 @@ else()
     endif()
 endif()
 
-find_package(dpp CONFIG REQUIRED)
+find_package(dpp 10.1.7 CONFIG REQUIRED)
 find_package(CURL REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
+
+include(CheckCXXSourceCompiles)
+include(CheckCXXSourceRuns)
+set(CMAKE_REQUIRED_LIBRARIES dpp::dpp)
+check_cxx_source_compiles([[
+#include <cstdint>
+#include <dpp/dpp.h>
+static_assert(DPP_VERSION_SHORT >= 100107);
+void sanguinius_voice_api_probe(dpp::discord_client& shard,
+                                dpp::discord_voice_client& voice) {
+  shard.connect_voice(dpp::snowflake{1}, dpp::snowflake{2}, false, true, true);
+  static_cast<void>(voice.is_end_to_end_encrypted());
+  std::uint16_t samples[2]{};
+  voice.send_audio_raw(samples, sizeof(samples));
+  voice.insert_marker("sanguinius-voice-api-probe");
+  shard.disconnect_voice(dpp::snowflake{1});
+  static_cast<void>(dpp::i_guild_voice_states);
+}
+int main() { return 0; }
+]] SANGUINIUS_DPP_VOICE_API_AVAILABLE)
+if(NOT SANGUINIUS_DPP_VOICE_API_AVAILABLE)
+    message(FATAL_ERROR
+        "D++ 10.1.7+ was found, but required voice/DAVE APIs did not compile "
+        "and link. Rebuild D++ with BUILD_VOICE_SUPPORT=ON and integrated "
+        "DAVE/MLS support.")
+endif()
+if(DEFINED ENV{LSAN_OPTIONS})
+    set(sanguinius_saved_lsan_options "$ENV{LSAN_OPTIONS}")
+    set(sanguinius_had_lsan_options TRUE)
+endif()
+set(ENV{LSAN_OPTIONS} "detect_leaks=0")
+check_cxx_source_runs([[
+#include <dpp/dpp.h>
+int main() { return dpp::utility::has_voice() ? 0 : 1; }
+]] SANGUINIUS_DPP_VOICE_RUNTIME_AVAILABLE)
+if(sanguinius_had_lsan_options)
+    set(ENV{LSAN_OPTIONS} "${sanguinius_saved_lsan_options}")
+else()
+    unset(ENV{LSAN_OPTIONS})
+endif()
+unset(sanguinius_saved_lsan_options)
+unset(sanguinius_had_lsan_options)
+unset(CMAKE_REQUIRED_LIBRARIES)
+if(NOT SANGUINIUS_DPP_VOICE_RUNTIME_AVAILABLE)
+    message(FATAL_ERROR
+        "D++ 10.1.7+ was found, but dpp::utility::has_voice() reports that this library "
+        "was built without voice support. Rebuild D++ with "
+        "BUILD_VOICE_SUPPORT=ON and integrated DAVE/MLS support.")
+endif()
 
 if(NOT SQLite3_VERSION)
     message(FATAL_ERROR "SQLite version could not be determined")
@@ -62,6 +111,7 @@ sanguinius_embed_migrations(
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0009_tarot_ledger.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0010_peer_wagers.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0011_tarot_house_integration.sql"
+    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0012_vox_foundation.sql"
 )
 
 function(sanguinius_enable_warnings target)
@@ -119,6 +169,7 @@ add_library(sanguinius_core STATIC
     src/tarot_house.cpp
     src/tarot_integration.cpp
     src/wagers.cpp
+    src/vox.cpp
     src/work_queue.cpp
 )
 
@@ -155,6 +206,7 @@ add_library(sanguinius_persistence STATIC
     src/persistence/sqlite_tarot_house_repository.cpp
     src/persistence/sqlite_tarot_integration_repository.cpp
     src/persistence/sqlite_wager_repository.cpp
+    src/persistence/sqlite_vox_repository.cpp
     src/persistence/transaction.cpp
 )
 
@@ -173,8 +225,10 @@ target_link_libraries(sanguinius_persistence
 
 add_library(sanguinius_runtime STATIC
     src/composition_root.cpp
+    src/dpp_cluster_host.cpp
     src/dpp_command_registry.cpp
     src/dpp_discord_adapter.cpp
+    src/dpp_voice_gateway.cpp
     src/openai_client.cpp
     src/process_signals.cpp
 )
@@ -195,6 +249,7 @@ target_link_libraries(sanguinius_runtime
 add_executable(sanguinius src/main.cpp)
 sanguinius_enable_warnings(sanguinius)
 target_link_libraries(sanguinius PRIVATE sanguinius_runtime)
+set_target_properties(sanguinius PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 if(BUILD_TESTING)
     find_package(Catch2 3 CONFIG REQUIRED)
@@ -235,6 +290,7 @@ if(BUILD_TESTING)
         tests/unit/tarot_tests.cpp
         tests/unit/tarot_catalog_tests.cpp
         tests/unit/wager_tests.cpp
+        tests/unit/vox_tests.cpp
         tests/unit/work_queue_tests.cpp
     )
     add_sanguinius_test(sanguinius_application_tests
@@ -257,6 +313,7 @@ if(BUILD_TESTING)
         tests/integration/tarot_repository_tests.cpp
         tests/integration/tarot_house_repository_tests.cpp
         tests/integration/wager_repository_tests.cpp
+        tests/integration/vox_repository_tests.cpp
         tests/unit/persistent_id_tests.cpp
     )
     target_compile_features(sanguinius_persistence_tests PRIVATE cxx_std_20)

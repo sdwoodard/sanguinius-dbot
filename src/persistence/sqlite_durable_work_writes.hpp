@@ -66,5 +66,8 @@ encode_wager_deadline_payload(const WagerDeadlineJobPayload &payload,
     const TarotHouseWeeklyOfferJobPayload &payload,
     std::string_view correlation_id,
     const std::optional<std::string> &causation_event_id);
+[[nodiscard]] std::string encode_vox_timeout_payload(
+    const VoxTimeoutJobPayload &payload, std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id);
 
 } // namespace sanguinius::persistence::detail

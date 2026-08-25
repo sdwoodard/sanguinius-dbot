@@ -8,6 +8,7 @@
 #include "sanguinius/tarot.hpp"
 #include "sanguinius/tarot_house.hpp"
 #include "sanguinius/wagers.hpp"
+#include "sanguinius/vox.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -45,6 +46,7 @@ struct HealthSnapshot {
   std::optional<TarotInvariantReport> tarot;
   std::optional<WagerInvariantReport> wagers;
   std::optional<HouseEconomyReport> house;
+  std::optional<VoxHealth> vox;
   bool scope_matched{};
 };
 
@@ -58,6 +60,7 @@ struct HealthRuntimeProviders {
   std::function<std::optional<TarotInvariantReport>()> tarot;
   std::function<std::optional<WagerInvariantReport>()> wagers;
   std::function<std::optional<HouseEconomyReport>()> house;
+  std::function<std::optional<VoxHealth>()> vox;
 };
 
 class HealthService {

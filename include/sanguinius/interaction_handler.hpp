@@ -17,6 +17,7 @@
 #include "sanguinius/tarot_house.hpp"
 #include "sanguinius/tarot_integration.hpp"
 #include "sanguinius/wagers.hpp"
+#include "sanguinius/vox.hpp"
 #include "sanguinius/work_queue.hpp"
 
 #include <cstddef>
@@ -111,6 +112,10 @@ enum class InteractionOperation {
   wager_test_role,
   wager_test_deadline,
   wager_test_cleanup,
+  vox_summon,
+  vox_status,
+  vox_leave,
+  vox_test_disconnect,
 };
 
 struct RoutedInteraction {
@@ -133,7 +138,8 @@ public:
       TarotWagerService *wagers = nullptr,
       TarotDrawService *tarot_draws = nullptr,
       TarotHouseService *tarot_house = nullptr,
-      TarotIntegrationService *tarot_integration = nullptr);
+      TarotIntegrationService *tarot_integration = nullptr,
+      VoxService *vox = nullptr);
   ~InteractionHandler();
 
   InteractionHandler(const InteractionHandler &) = delete;
@@ -166,6 +172,7 @@ private:
   TarotDrawService *tarot_draws_{};
   TarotHouseService *tarot_house_{};
   TarotIntegrationService *tarot_integration_{};
+  VoxService *vox_{};
   HealthService &health_service_;
   Diagnostics &diagnostics_;
   FeatureConfiguration features_;

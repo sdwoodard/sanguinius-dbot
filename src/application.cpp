@@ -76,16 +76,23 @@ public:
         tarot_house_repository_{std::move(dependencies.tarot_house)},
         tarot_integration_repository_{
             std::move(dependencies.tarot_integration)},
+        vox_repository_{std::move(dependencies.vox)},
         random_{std::move(dependencies.random)},
         appearance_policy_{std::move(dependencies.appearance_policy)},
         ai_client_{std::move(dependencies.ai_client)},
-        discord_{std::move(dependencies.discord)} {
+        discord_{std::move(dependencies.discord)},
+        voice_gateway_{std::move(dependencies.voice_gateway)} {
     if (!clock_ || !id_generator_ || !persistent_id_generator_ ||
         !diagnostics_ || !message_log_ || !application_instances_ ||
         !identities_ || !pending_notices_ || !durable_work_ || !ai_client_ ||
         !discord_) {
       throw std::invalid_argument{
           "Application dependencies must all be configured."};
+    }
+    if (options_.features.vox_enabled &&
+        (!vox_repository_ || !voice_gateway_)) {
+      throw std::invalid_argument{
+          "Vox persistence and the voice gateway are required when enabled."};
     }
 
     scope_policy_ = std::make_unique<ServerScopePolicy>(options_.server_scope);
@@ -275,6 +282,37 @@ public:
                 }
               }}
             : JobHandlerRegistry::Handler{});
+    if (options_.features.vox_enabled) {
+      vox_service_ = std::make_unique<VoxService>(
+          *vox_repository_, *voice_gateway_, *clock_,
+          *persistent_id_generator_, *diagnostics_, options_.server_scope,
+          options_.controls, options_.instance_id,
+          [this] {
+            if (scheduler_)
+              scheduler_->wake();
+          },
+          [this] { outbox_->wake(); });
+    }
+    const auto add_vox_handler = [this](const std::string_view job_type) {
+      scheduler_->add_handler(
+          std::string{job_type}, [this](const ClaimedScheduledJob &job) {
+            if (!vox_service_) {
+              const auto current = unix_milliseconds(*clock_);
+              static_cast<void>(durable_work_->defer_job(
+                  job, current, current + disabled_feature_job_delay_ms,
+                  "feature_disabled"));
+              return;
+            }
+            if (vox_service_->handle_timeout(job) != SubmitResult::accepted) {
+              throw std::runtime_error{
+                  "The Vox timeout queue is unavailable."};
+            }
+          });
+    };
+    add_vox_handler(vox_connect_timeout_job_type);
+    add_vox_handler(vox_reconnect_timeout_job_type);
+    add_vox_handler(vox_leave_timeout_job_type);
+    add_vox_handler(vox_empty_timeout_job_type);
     scheduler_->add_handler(std::string{wager_deadline_job_type},
                             [this](const ClaimedScheduledJob &job) {
                               if (!wager_service_) {
@@ -492,6 +530,10 @@ public:
                                                        ->check_invariants()}
                          : std::nullopt;
             },
+            .vox = [this]() -> std::optional<VoxHealth> {
+              return vox_service_ ? std::optional{vox_service_->health()}
+                                  : std::nullopt;
+            },
         });
     owner_admin_ = std::make_unique<OwnerAdminService>(
         options_.controls, *scope_policy_, *health_service_);
@@ -590,7 +632,7 @@ public:
         options_.interaction_queue_capacity, relationship_service_.get(),
         appearance_service_.get(), tarot_service_.get(), wager_service_.get(),
         tarot_draw_service_.get(), tarot_house_service_.get(),
-        tarot_integration_service_.get());
+        tarot_integration_service_.get(), vox_service_.get());
     interaction_router_ = std::make_unique<InteractionRouter>(
         *scope_policy_, options_.controls, options_.features,
         *interaction_handler_, *diagnostics_);
@@ -615,6 +657,12 @@ public:
           .started_at_ms = unix_milliseconds(*clock_),
       });
       instance_started_ = true;
+      if (vox_repository_) {
+        static_cast<void>(vox_repository_->recover(
+            options_.instance_id, unix_milliseconds(*clock_),
+            persistent_id_generator_->next_id(),
+            persistent_id_generator_->next_id()));
+      }
       if (tarot_service_)
         tarot_service_->initialize();
       if (tarot_catalog_repository_ && options_.tarot_deck_catalog &&
@@ -661,6 +709,10 @@ public:
       message_handler_started_ = true;
       interaction_handler_->start();
       interaction_handler_started_ = true;
+      if (vox_service_) {
+        vox_service_->start();
+        vox_started_ = true;
+      }
       discord_->start(
           [this](IncomingMessage message) {
             try {
@@ -696,7 +748,8 @@ public:
           },
           command_catalog(options_.controls.admin_commands_enabled,
                           options_.features.chronicle_enabled,
-                          options_.features.tarot_enabled));
+                          options_.features.tarot_enabled,
+                          options_.features.vox_enabled));
       const std::scoped_lock lock{state_mutex_};
       state_ = ApplicationState::running;
     } catch (...) {
@@ -736,6 +789,10 @@ private:
     if (scheduler_started_) {
       scheduler_->stop();
       scheduler_started_ = false;
+    }
+    if (vox_started_) {
+      vox_service_->stop();
+      vox_started_ = false;
     }
     if (outbox_started_) {
       outbox_->stop();
@@ -798,10 +855,12 @@ private:
   std::unique_ptr<TarotDrawRepository> tarot_draw_repository_;
   std::unique_ptr<TarotHouseRepository> tarot_house_repository_;
   std::unique_ptr<TarotIntegrationRepository> tarot_integration_repository_;
+  std::unique_ptr<VoxRepository> vox_repository_;
   std::unique_ptr<Random> random_;
   std::optional<AppearancePolicy> appearance_policy_;
   std::unique_ptr<AiClient> ai_client_;
   std::unique_ptr<DiscordRuntime> discord_;
+  std::unique_ptr<VoiceGateway> voice_gateway_;
   std::unique_ptr<AiResponder> ai_responder_;
   std::unique_ptr<AiWorkService> ai_work_;
   std::unique_ptr<ServerScopePolicy> scope_policy_;
@@ -819,6 +878,7 @@ private:
   std::unique_ptr<TarotDrawService> tarot_draw_service_;
   std::unique_ptr<TarotHouseService> tarot_house_service_;
   std::unique_ptr<TarotIntegrationService> tarot_integration_service_;
+  std::unique_ptr<VoxService> vox_service_;
   std::unique_ptr<SchedulerService> scheduler_;
   std::unique_ptr<DurableWorkControlService> durable_controls_;
   std::unique_ptr<InteractionHandler> interaction_handler_;
@@ -830,6 +890,7 @@ private:
   bool interaction_handler_started_{false};
   bool outbox_started_{false};
   bool scheduler_started_{false};
+  bool vox_started_{false};
   bool instance_started_{false};
   bool instance_finished_{false};
 };

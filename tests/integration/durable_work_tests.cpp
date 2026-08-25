@@ -66,7 +66,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 11);
+      REQUIRE(migrator.apply(database.connection()).current_version == 12);
     }
     context = std::make_shared<SqliteRepositoryContext>(
         Database::open_runtime(temporary.path(), 25ms));
@@ -259,7 +259,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 11);
+      REQUIRE(migrator.apply(database.connection()).current_version == 12);
     }
     auto context = open();
     SqliteCoreIdentityRepository identities{context};

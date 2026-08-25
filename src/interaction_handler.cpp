@@ -77,13 +77,14 @@ InteractionHandler::InteractionHandler(
     RelationshipService *relationships, AppearanceService *appearances,
     TarotService *tarot, TarotWagerService *wagers,
     TarotDrawService *tarot_draws, TarotHouseService *tarot_house,
-    TarotIntegrationService *tarot_integration)
+    TarotIntegrationService *tarot_integration, VoxService *vox)
     : identities_{identities}, notices_{notices}, clock_{clock},
       durable_controls_{durable_controls}, chronicle_{chronicle},
       chronicle_sessions_{chronicle_sessions}, relationships_{relationships},
       appearances_{appearances}, tarot_{tarot}, wagers_{wagers},
       tarot_draws_{tarot_draws}, tarot_house_{tarot_house},
-      tarot_integration_{tarot_integration}, health_service_{health_service},
+      tarot_integration_{tarot_integration}, vox_{vox},
+      health_service_{health_service},
       diagnostics_{diagnostics}, features_{features},
       message_queue_{std::move(message_queue)}, ai_queue_{std::move(ai_queue)},
       callbacks_{std::make_shared<CallbackFence>()},
@@ -859,6 +860,54 @@ void InteractionHandler::process(const RoutedInteraction &request) {
     edit(request.interaction, wagers_->cleanup_test_wager(request.interaction),
          "interaction.wager_test_cleanup");
     return;
+  case InteractionOperation::vox_summon:
+  case InteractionOperation::vox_status:
+  case InteractionOperation::vox_leave:
+  case InteractionOperation::vox_test_disconnect: {
+    if (!vox_)
+      throw std::runtime_error{"Vox service is unavailable."};
+    const auto interaction = request.interaction;
+    const auto callback_fence = callbacks_;
+    auto completion =
+        [this, interaction, callback_fence](VoxCommandResult result) mutable {
+          try {
+            static_cast<void>(callback_fence->invoke(
+                [this, interaction = std::move(interaction),
+                 result = std::move(result)]() mutable {
+                  edit(interaction, text_message(result.message),
+                       "interaction.vox");
+                }));
+          } catch (...) {
+          }
+        };
+    VoxCommandContext context{
+        .guild_id = request.interaction.guild_id,
+        .text_channel_id = request.interaction.channel_id,
+        .actor_user_id = request.interaction.user_id,
+        .owner_user_id = {},
+        .interaction_idempotency_key =
+            "vox:interaction:" + request.interaction.interaction_id.str(),
+        .correlation_id = request.interaction.correlation_id,
+        .now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      clock_.now().time_since_epoch())
+                      .count(),
+    };
+    const auto submitted =
+        request.operation == InteractionOperation::vox_summon
+            ? vox_->summon(std::move(context), std::move(completion))
+        : request.operation == InteractionOperation::vox_status
+            ? vox_->status(std::move(context), std::move(completion))
+        : request.operation == InteractionOperation::vox_leave
+            ? vox_->leave(std::move(context), std::move(completion))
+            : vox_->test_disconnect(std::move(context),
+                                    std::move(completion));
+    if (submitted != SubmitResult::accepted) {
+      edit(request.interaction,
+           text_message("Vox is handling another request. Please try again."),
+           "interaction.vox_queue");
+    }
+    return;
+  }
   }
 }
 

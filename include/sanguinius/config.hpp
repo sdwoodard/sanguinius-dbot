@@ -40,6 +40,7 @@ struct DiscordCommandConfiguration {
   bool admin_commands_enabled{};
   bool chronicle_enabled{};
   bool tarot_enabled{};
+  bool vox_enabled{};
 };
 
 struct AiConfiguration {

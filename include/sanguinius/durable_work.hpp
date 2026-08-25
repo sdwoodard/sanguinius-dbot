@@ -151,6 +151,11 @@ struct TarotHouseWeeklyOfferJobPayload {
   std::string catalog_version;
 };
 
+struct VoxTimeoutJobPayload {
+  std::string session_id;
+  std::size_t expected_revision{};
+};
+
 using DurablePayload =
     std::variant<std::monostate, NoticeOutboxPayload, PublicOutboxPayload,
                  PublicEditOutboxPayload,
@@ -160,7 +165,7 @@ using DurablePayload =
                  WagerDeadlineJobPayload, HouseDeadlineJobPayload,
                  HouseOfferExpiryJobPayload,
                  TarotIntegrationScanJobPayload,
-                 TarotHouseWeeklyOfferJobPayload>;
+                 TarotHouseWeeklyOfferJobPayload, VoxTimeoutJobPayload>;
 // Appearance jobs carry only the policy version; excerpts and generated prose
 // never enter durable scheduler payloads.
 

@@ -1,0 +1,60 @@
+#pragma once
+
+#include "sanguinius/diagnostics.hpp"
+#include "sanguinius/voice_gateway.hpp"
+
+#include <memory>
+
+namespace sanguinius {
+
+class DppClusterHost;
+
+namespace dpp_voice_gateway_detail {
+
+[[nodiscard]] VoiceEvent translate_ready(const VoiceGatewaySnapshot &binding,
+                                         DiscordSnowflake observed_channel_id,
+                                         bool client_ready, bool dave_active);
+[[nodiscard]] bool may_replace_binding(const VoiceGatewaySnapshot &binding,
+                                       std::string_view session_id) noexcept;
+[[nodiscard]] bool
+matches_voice_session(std::string_view expected_session_id,
+                      std::string_view observed_session_id) noexcept;
+[[nodiscard]] bool
+matches_voice_client(const void *current_voice_client,
+                     const void *observed_voice_client) noexcept;
+
+} // namespace dpp_voice_gateway_detail
+
+class DppVoiceGateway final : public VoiceGateway {
+public:
+  DppVoiceGateway(std::shared_ptr<DppClusterHost> cluster_host,
+                  Diagnostics &diagnostics);
+  ~DppVoiceGateway() override;
+
+  DppVoiceGateway(const DppVoiceGateway &) = delete;
+  DppVoiceGateway &operator=(const DppVoiceGateway &) = delete;
+
+  void start(EventCallback callback) override;
+  void resolve_member_channel(DiscordSnowflake guild_id,
+                              DiscordSnowflake user_id,
+                              ResolveCallback callback) override;
+  [[nodiscard]] VoiceGatewaySubmit
+  connect(const VoiceConnectRequest &request) override;
+  [[nodiscard]] VoiceGatewaySubmit
+  disconnect(std::string_view session_id) override;
+  void release_binding(std::string_view session_id) noexcept override;
+  [[nodiscard]] VoiceGatewaySubmit
+  stop_audio(std::string_view session_id) override;
+  [[nodiscard]] VoiceGatewaySubmit send_pcm(std::string_view session_id,
+                                            const PcmAudio &audio,
+                                            std::string_view marker) override;
+  [[nodiscard]] VoiceGatewaySnapshot
+  snapshot(std::string_view session_id) const noexcept override;
+  void shutdown() noexcept override;
+
+private:
+  class Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+} // namespace sanguinius

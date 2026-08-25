@@ -89,7 +89,22 @@ TEST_CASE("health snapshot renders build queues and configured modes",
                  .escrow_balance = 40,
                  .disputed_count = 1}};
        },
-       .house = {}}};
+       .house = {},
+       .vox = [] {
+         return std::optional<sanguinius::VoxHealth>{sanguinius::VoxHealth{
+             .enabled = true,
+             .state = sanguinius::VoxState::reconnecting,
+             .fixture_state = sanguinius::VoxFixtureState::played,
+             .dave_active = true,
+             .reconnect_count = 1,
+             .callback_drops = 2,
+             .reconciliations = 1,
+             .queue = {.capacity = 64,
+                       .queued = 1,
+                       .active = 1,
+                       .accepting = true},
+             .last_failure_category = "transport_closed"}};
+       }}};
 
   const auto snapshot = service.snapshot(
       {.capacity = 64, .queued = 3, .active = 1, .accepting = true},
@@ -122,6 +137,10 @@ TEST_CASE("health snapshot renders build queues and configured modes",
   REQUIRE(contains(rendered, "wager_invariants=ok"));
   REQUIRE(contains(rendered, "wager_open_funded=2"));
   REQUIRE(contains(rendered, "wager_escrow_fate=40"));
+  REQUIRE(contains(rendered, "vox_state=reconnecting"));
+  REQUIRE(contains(rendered, "vox_dave=enabled"));
+  REQUIRE(contains(rendered, "vox_callback_drops=2"));
+  REQUIRE(contains(rendered, "vox_last_failure=transport_closed"));
   REQUIRE(contains(rendered, "admin_commands=enabled"));
   REQUIRE(contains(rendered, "test_mode=enabled"));
   REQUIRE(contains(rendered, "appearances=dry_run"));
@@ -141,7 +160,8 @@ TEST_CASE("health snapshot renders build queues and configured modes",
        .durable_work = [] { return sanguinius::DurableWorkHealth{}; },
        .tarot = {},
        .wagers = {},
-       .house = {}}};
+       .house = {},
+       .vox = {}}};
   const auto bounded = sanguinius::render_health(oversized_metadata.snapshot(
       {.capacity = 64, .queued = 1, .active = 1, .accepting = true},
       {.capacity = 64, .accepting = true}, true));
@@ -170,7 +190,8 @@ TEST_CASE("health types cannot expose secret configuration", "[health]") {
        .durable_work = [] { return sanguinius::DurableWorkHealth{}; },
        .tarot = {},
        .wagers = {},
-       .house = {}}};
+       .house = {},
+       .vox = {}}};
   const auto rendered = sanguinius::render_health(
       service.snapshot({.capacity = 1}, {.capacity = 1}, true));
 

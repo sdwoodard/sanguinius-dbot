@@ -14,6 +14,8 @@
 
 namespace sanguinius {
 
+class DppClusterHost;
+
 namespace dpp_adapter_detail {
 
 [[nodiscard]] std::string
@@ -36,7 +38,11 @@ void translate_slash_command(const dpp::command_interaction &command,
 class DppDiscordAdapter final : public DiscordRuntime {
 public:
   DppDiscordAdapter(std::string token, std::chrono::seconds request_timeout,
-                    DiscordId guild_id, Diagnostics &diagnostics);
+                    DiscordId guild_id, Diagnostics &diagnostics,
+                    bool voice_enabled = false);
+  DppDiscordAdapter(std::shared_ptr<DppClusterHost> cluster_host,
+                    std::chrono::seconds request_timeout, DiscordId guild_id,
+                    Diagnostics &diagnostics);
   ~DppDiscordAdapter() override;
 
   DppDiscordAdapter(const DppDiscordAdapter &) = delete;

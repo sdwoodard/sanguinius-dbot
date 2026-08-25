@@ -163,6 +163,7 @@ TEST_CASE("Discord command configuration does not load application services",
   source.values["SANGUINIUS_ADMIN_COMMANDS_ENABLED"] = "true";
   source.values["SANGUINIUS_CHRONICLE_ENABLED"] = "true";
   source.values["SANGUINIUS_TAROT_ENABLED"] = "true";
+  source.values["SANGUINIUS_VOX_ENABLED"] = "true";
   source.values["SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS"] = "17";
   source.files.clear();
 
@@ -174,6 +175,7 @@ TEST_CASE("Discord command configuration does not load application services",
   REQUIRE(config.admin_commands_enabled);
   REQUIRE(config.chronicle_enabled);
   REQUIRE(config.tarot_enabled);
+  REQUIRE(config.vox_enabled);
   REQUIRE(source.read_paths.empty());
 }
 
@@ -380,6 +382,15 @@ TEST_CASE("configuration rejects noncanonical booleans and durations",
     REQUIRE(contains(error, variable));
     REQUIRE(contains(error, "must not be empty"));
   }
+}
+
+TEST_CASE("configuration rejects voice input until receive is implemented",
+          "[config][vox][privacy]") {
+  FakeConfigSource source;
+  source.values["SANGUINIUS_VOICE_INPUT_ENABLED"] = "true";
+  const auto error = config_error(source);
+  REQUIRE(contains(error, "SANGUINIUS_VOICE_INPUT_ENABLED"));
+  REQUIRE(contains(error, "voice output only"));
 }
 
 TEST_CASE("configuration validates appearance mode database and persona",

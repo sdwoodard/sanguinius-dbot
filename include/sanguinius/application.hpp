@@ -23,6 +23,7 @@
 #include "sanguinius/tarot_house.hpp"
 #include "sanguinius/tarot_integration.hpp"
 #include "sanguinius/wagers.hpp"
+#include "sanguinius/vox.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -79,10 +80,12 @@ struct ApplicationDependencies {
   std::unique_ptr<TarotDrawRepository> tarot_draws;
   std::unique_ptr<TarotHouseRepository> tarot_house;
   std::unique_ptr<TarotIntegrationRepository> tarot_integration;
+  std::unique_ptr<VoxRepository> vox;
   std::unique_ptr<Random> random;
   std::optional<AppearancePolicy> appearance_policy;
   std::unique_ptr<AiClient> ai_client;
   std::unique_ptr<DiscordRuntime> discord;
+  std::unique_ptr<VoiceGateway> voice_gateway;
 };
 
 class Application {

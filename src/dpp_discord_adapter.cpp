@@ -5,6 +5,7 @@
 #include "sanguinius/chronicle.hpp"
 #include "sanguinius/command_registry.hpp"
 #include "sanguinius/dpp_command_registry.hpp"
+#include "sanguinius/dpp_cluster_host.hpp"
 #include "sanguinius/interaction_response_state.hpp"
 
 #include <dpp/dpp.h>
@@ -28,10 +29,12 @@ namespace {
 
 constexpr auto cancellation_poll_interval = std::chrono::milliseconds{25};
 
-constexpr std::uint32_t gateway_intents =
-    dpp::i_guilds | dpp::i_guild_messages | dpp::i_message_content;
-static_assert((gateway_intents & dpp::i_direct_messages) == 0U);
-static_assert((gateway_intents & dpp::i_guild_voice_states) == 0U);
+[[nodiscard]] dpp::cluster &
+require_cluster(const std::shared_ptr<DppClusterHost> &cluster_host) {
+  if (!cluster_host)
+    throw std::invalid_argument{"Discord adapter requires a cluster host."};
+  return cluster_host->native();
+}
 
 [[nodiscard]] DiscordId id(const dpp::snowflake value) {
   return DiscordId{static_cast<std::uint64_t>(value)};
@@ -902,9 +905,11 @@ int run_discord_command_operator(const DiscordCommandOperation operation,
 
 class DppDiscordAdapter::Impl {
 public:
-  Impl(std::string token, const std::chrono::seconds request_timeout,
-       const DiscordId guild_id, Diagnostics &diagnostics)
-      : bot_{std::move(token), gateway_intents}, diagnostics_{diagnostics},
+  Impl(std::shared_ptr<DppClusterHost> cluster_host,
+       const std::chrono::seconds request_timeout, const DiscordId guild_id,
+      Diagnostics &diagnostics)
+      : cluster_host_{std::move(cluster_host)},
+        bot_{require_cluster(cluster_host_)}, diagnostics_{diagnostics},
         request_timeout_{request_timeout}, guild_id_{guild_id},
         callbacks_{std::make_shared<CallbackFence>()} {
     if (!guild_id_.is_set()) {
@@ -1088,7 +1093,7 @@ public:
           });
         });
 
-    bot_.start(dpp::st_return);
+    cluster_host_->start();
   }
 
   void stop_accepting() noexcept {
@@ -1135,7 +1140,7 @@ public:
     stop_accepting();
     callbacks_->close_and_wait();
     try {
-      bot_.shutdown();
+      cluster_host_->shutdown();
     } catch (const std::exception &error) {
       diagnostics_.emit(
           {DiagnosticSeverity::error, "discord.shutdown", error.what(), {}});
@@ -1251,7 +1256,8 @@ public:
     };
   }
 
-  dpp::cluster bot_;
+  std::shared_ptr<DppClusterHost> cluster_host_;
+  dpp::cluster &bot_;
   Diagnostics &diagnostics_;
   std::chrono::seconds request_timeout_;
   DiscordId guild_id_;
@@ -1278,9 +1284,18 @@ public:
 DppDiscordAdapter::DppDiscordAdapter(std::string token,
                                      const std::chrono::seconds request_timeout,
                                      const DiscordId guild_id,
-                                     Diagnostics &diagnostics)
-    : impl_{std::make_unique<Impl>(std::move(token), request_timeout, guild_id,
-                                   diagnostics)} {}
+                                     Diagnostics &diagnostics,
+                                     const bool voice_enabled)
+    : DppDiscordAdapter{
+          std::make_shared<DppClusterHost>(std::move(token), voice_enabled),
+          request_timeout, guild_id, diagnostics} {}
+
+DppDiscordAdapter::DppDiscordAdapter(
+    std::shared_ptr<DppClusterHost> cluster_host,
+    const std::chrono::seconds request_timeout, const DiscordId guild_id,
+    Diagnostics &diagnostics)
+    : impl_{std::make_unique<Impl>(std::move(cluster_host), request_timeout,
+                                   guild_id, diagnostics)} {}
 
 DppDiscordAdapter::~DppDiscordAdapter() { shutdown(); }
 

@@ -94,6 +94,7 @@ HealthSnapshot HealthService::snapshot(const QueueSnapshot message_queue,
       .tarot = runtime_.tarot ? runtime_.tarot() : std::nullopt,
       .wagers = runtime_.wagers ? runtime_.wagers() : std::nullopt,
       .house = runtime_.house ? runtime_.house() : std::nullopt,
+      .vox = runtime_.vox ? runtime_.vox() : std::nullopt,
       .scope_matched = scope_matched,
   };
 }
@@ -207,6 +208,21 @@ std::string render_health(const HealthSnapshot &snapshot) {
            << snapshot.house->malformed_transfer_count +
                   snapshot.house->malformed_offer_deadline_count
            << '\n';
+  }
+  if (snapshot.vox) {
+    output << "vox_state="
+           << (snapshot.vox->state ? vox_state_name(*snapshot.vox->state)
+                                   : "inactive")
+           << '\n'
+           << "vox_dave=" << enabled(snapshot.vox->dave_active) << '\n'
+           << "vox_reconnects=" << snapshot.vox->reconnect_count << '\n'
+           << "vox_callback_drops=" << snapshot.vox->callback_drops << '\n'
+           << "vox_reconciliations=" << snapshot.vox->reconciliations << '\n';
+    append_queue(output, "vox", snapshot.vox->queue);
+    if (snapshot.vox->last_failure_category)
+      output << "vox_last_failure="
+             << safe_build_metadata(*snapshot.vox->last_failure_category)
+             << '\n';
   }
   output << "admin_commands="
          << enabled(snapshot.controls.admin_commands_enabled) << '\n'

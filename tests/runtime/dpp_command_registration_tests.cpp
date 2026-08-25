@@ -1,8 +1,10 @@
 #include "sanguinius/callback_fence.hpp"
 #include "sanguinius/chronicle.hpp"
 #include "sanguinius/command_registry.hpp"
+#include "sanguinius/dpp_cluster_host.hpp"
 #include "sanguinius/dpp_command_registry.hpp"
 #include "sanguinius/dpp_discord_adapter.hpp"
+#include "sanguinius/dpp_voice_gateway.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <dpp/dpp.h>
@@ -131,6 +133,85 @@ TEST_CASE("DPP translates owner appearance controls as one nested group",
   REQUIRE(appearance->options[0].name == "simulate");
   REQUIRE(appearance->options[0].options.size() == 1);
   REQUIRE(appearance->options[0].options[0].choices.size() == 13);
+}
+
+TEST_CASE("DPP voice catalog and intent are independently feature gated",
+          "[discord][commands][vox][intent]") {
+  const auto translated =
+      sanguinius::dpp_adapter_detail::translate_command_catalog(
+          sanguinius::command_catalog(true, false, false, true), 42);
+  const auto vox = std::ranges::find(translated, std::string{"vox"},
+                                     &dpp::slashcommand::name);
+  REQUIRE(vox != translated.end());
+  REQUIRE(vox->options.size() == 3);
+  const auto admin = std::ranges::find(translated, std::string{"sang-admin"},
+                                       &dpp::slashcommand::name);
+  REQUIRE(admin != translated.end());
+  const auto vox_admin = std::ranges::find(admin->options, std::string{"vox"},
+                                           &dpp::command_option::name);
+  REQUIRE(vox_admin != admin->options.end());
+  REQUIRE(vox_admin->type == dpp::co_sub_command_group);
+
+  sanguinius::DppClusterHost text_only{"test-token", false};
+  REQUIRE((text_only.intents() & dpp::i_guild_voice_states) == 0U);
+  sanguinius::DppClusterHost voice{"test-token", true};
+  REQUIRE((voice.intents() & dpp::i_guild_voice_states) != 0U);
+  REQUIRE((voice.intents() & dpp::i_direct_messages) == 0U);
+  REQUIRE((voice.intents() & dpp::i_guild_members) == 0U);
+}
+
+TEST_CASE("DPP voice-ready translation and binding replacement fail closed",
+          "[discord][vox][translation]") {
+  const sanguinius::VoiceGatewaySnapshot binding{.bound = true,
+                                                 .connected = true,
+                                                 .ready = false,
+                                                 .dave_active = false,
+                                                 .marker_completed = false,
+                                                 .session_id = "session-one",
+                                                 .guild_id = 10,
+                                                 .channel_id = 40,
+                                                 .observed_channel_id = 40,
+                                                 .generation = 2,
+                                                 .human_count = 1};
+  const auto ready = sanguinius::dpp_voice_gateway_detail::translate_ready(
+      binding, 40, true, true);
+  REQUIRE(ready.kind == sanguinius::VoiceEventKind::ready);
+  REQUIRE(ready.dave_active);
+  REQUIRE(ready.generation == 2);
+
+  const auto not_ready = sanguinius::dpp_voice_gateway_detail::translate_ready(
+      binding, 40, false, false);
+  REQUIRE(not_ready.kind == sanguinius::VoiceEventKind::error);
+  REQUIRE(not_ready.failure_category == "voice_not_ready");
+  const auto moved = sanguinius::dpp_voice_gateway_detail::translate_ready(
+      binding, 41, true, true);
+  REQUIRE(moved.kind == sanguinius::VoiceEventKind::bot_moved);
+  REQUIRE(moved.channel_id == 41);
+  REQUIRE_FALSE(moved.dave_active);
+
+  REQUIRE(sanguinius::dpp_voice_gateway_detail::may_replace_binding(
+      binding, "session-one"));
+  REQUIRE_FALSE(sanguinius::dpp_voice_gateway_detail::may_replace_binding(
+      binding, "session-two"));
+  auto disconnected = binding;
+  disconnected.connected = false;
+  REQUIRE(sanguinius::dpp_voice_gateway_detail::may_replace_binding(
+      disconnected, "session-two"));
+
+  REQUIRE(sanguinius::dpp_voice_gateway_detail::matches_voice_session(
+      "discord-session-two", "discord-session-two"));
+  REQUIRE_FALSE(sanguinius::dpp_voice_gateway_detail::matches_voice_session(
+      "discord-session-two", "discord-session-one"));
+  REQUIRE_FALSE(sanguinius::dpp_voice_gateway_detail::matches_voice_session(
+      {}, "discord-session-one"));
+  const int current_voice_client{};
+  const int stale_voice_client{};
+  REQUIRE(sanguinius::dpp_voice_gateway_detail::matches_voice_client(
+      &current_voice_client, &current_voice_client));
+  REQUIRE_FALSE(sanguinius::dpp_voice_gateway_detail::matches_voice_client(
+      &current_voice_client, &stale_voice_client));
+  REQUIRE_FALSE(sanguinius::dpp_voice_gateway_detail::matches_voice_client(
+      nullptr, &current_voice_client));
 }
 
 TEST_CASE("DPP translates bounded Tarot integer adjustments",

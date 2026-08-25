@@ -225,6 +225,8 @@ discord_command_configuration_from_source(const ConfigSource &source) {
       optional_boolean(source, "SANGUINIUS_CHRONICLE_ENABLED", false);
   config.tarot_enabled =
       optional_boolean(source, "SANGUINIUS_TAROT_ENABLED", false);
+  config.vox_enabled =
+      optional_boolean(source, "SANGUINIUS_VOX_ENABLED", false);
   return config;
 }
 
@@ -388,6 +390,11 @@ Config Config::from_source(const ConfigSource &source) {
       optional_boolean(source, "SANGUINIUS_VOX_ENABLED", false);
   config.features.voice_input_enabled =
       optional_boolean(source, "SANGUINIUS_VOICE_INPUT_ENABLED", false);
+  if (config.features.voice_input_enabled) {
+    throw std::runtime_error{
+        "SANGUINIUS_VOICE_INPUT_ENABLED=true is unsupported; Milestone 14 "
+        "implements voice output only."};
+  }
 
   if (const auto policy_file =
           optional_nonempty(source, "SANGUINIUS_APPEARANCE_POLICY_FILE")) {

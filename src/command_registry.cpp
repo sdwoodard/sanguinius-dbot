@@ -8,7 +8,8 @@ namespace sanguinius {
 
 CommandCatalog command_catalog(const bool admin_commands_enabled,
                                const bool chronicle_enabled,
-                               const bool tarot_enabled) {
+                               const bool tarot_enabled,
+                               const bool vox_enabled) {
   CommandCatalog catalog{
       .version = command_catalog_version,
       .commands =
@@ -417,6 +418,16 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
                     "Optional full House wager UUID.", false, 36, 36}}}}}},
     });
   }
+  if (vox_enabled) {
+    catalog.commands.push_back(CommandDefinition{
+        .name = "vox",
+        .description = "Join or dismiss Vox Sanguinius in voice.",
+        .subcommands =
+            {{"summon", "Summon Vox to your current voice channel."},
+             {"status", "Show the current public-safe Vox status."},
+             {"leave", "Dismiss Vox if you summoned the session."}},
+    });
+  }
   CommandDefinition owner_controls{
       .name = "sang-admin",
       .description = "Owner-only Sanguinius controls.",
@@ -629,6 +640,16 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
                                   {CommandOptionKind::string, "reason",
                                    "Audited cleanup reason.", true, 1, 200}}},
               }});
+    }
+    if (vox_enabled) {
+      owner_controls.subcommand_groups.push_back(
+          CommandSubcommandGroupDefinition{
+              .name = "vox",
+              .description = "Owner-only Vox test controls.",
+              .subcommands =
+                  {{"disconnect",
+                    "Exercise one auditable application reconnect."}},
+          });
     }
   }
   catalog.commands.push_back(std::move(owner_controls));

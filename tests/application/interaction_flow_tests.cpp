@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <filesystem>
@@ -79,6 +80,14 @@ admin_options(const std::size_t interaction_capacity = 64) {
       sanguinius::load_tarot_deck_catalog(config / "emperor-tarot-v1.json");
   options.tarot_house_catalog = sanguinius::load_tarot_house_catalog(
       config / "tarot-house-v1.json", options.tarot_house_policy.profit_cap);
+  return options;
+}
+
+[[nodiscard]] sanguinius::ApplicationOptions vox_options() {
+  auto options = admin_options();
+  options.features.vox_enabled = true;
+  options.persistence.schema_version = 12;
+  options.persistence.target_schema_version = 12;
   return options;
 }
 
@@ -167,6 +176,92 @@ durable_outbox(std::string outbox_id, std::string kind, std::string key) {
 
 } // namespace
 
+TEST_CASE("Vox interactions connect play once reconnect and leave",
+          "[application][interaction][vox]") {
+  sanguinius::test::ApplicationFixture fixture{vox_options()};
+  fixture.application->start();
+  REQUIRE(fixture.vox->recover_calls() == 1);
+  REQUIRE(fixture.discord->command_catalog().version == 11);
+
+  auto summon = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(summon, "vox", "summon", 900));
+  REQUIRE(summon->wait_for_edit_count(1, 2s));
+  REQUIRE(summon->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(fixture.voice_gateway->wait_for_connects(1, 2s));
+
+  fixture.voice_gateway->emit(sanguinius::VoiceEventKind::ready);
+  REQUIRE(fixture.voice_gateway->wait_for_sends(1, 2s));
+  fixture.voice_gateway->emit(sanguinius::VoiceEventKind::ready);
+  REQUIRE(fixture.voice_gateway->send_count() == 1);
+  fixture.voice_gateway->emit(sanguinius::VoiceEventKind::track_marker);
+  REQUIRE(
+      fixture.vox->wait_for_fixture(sanguinius::VoxFixtureState::played, 2s));
+
+  auto status = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(status, "vox", "status", 901));
+  REQUIRE(status->wait_for_edit_count(1, 2s));
+  REQUIRE(status->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::public_message});
+  REQUIRE(contains(status->edits()[0].content, "<#40>"));
+  REQUIRE(contains(status->edits()[0].content, "played"));
+
+  auto duplicate =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(duplicate, "vox", "summon", 902));
+  REQUIRE(duplicate->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(duplicate->edits()[0].content, "active"));
+  REQUIRE(fixture.voice_gateway->send_count() == 1);
+
+  auto reconnect =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto reconnect_request = slash(reconnect, "sang-admin", "disconnect", 903);
+  reconnect_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(reconnect_request));
+  REQUIRE(reconnect->wait_for_edit_count(1, 2s));
+  fixture.voice_gateway->emit(sanguinius::VoiceEventKind::disconnected);
+  REQUIRE(fixture.voice_gateway->wait_for_connects(2, 2s));
+  fixture.voice_gateway->emit(sanguinius::VoiceEventKind::ready);
+  REQUIRE(fixture.vox->wait_for_state(sanguinius::VoxState::ready, 2s));
+  REQUIRE(fixture.voice_gateway->send_count() == 1);
+
+  auto leave = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(leave, "vox", "leave", 904));
+  REQUIRE(leave->wait_for_edit_count(1, 2s));
+  REQUIRE(fixture.vox->wait_for_state(sanguinius::VoxState::leaving, 2s));
+  fixture.voice_gateway->emit(sanguinius::VoiceEventKind::disconnected);
+  REQUIRE(fixture.vox->wait_for_state(sanguinius::VoxState::inactive, 2s));
+  REQUIRE(fixture.voice_gateway->disconnect_count() >= 2);
+
+  bool voice_fenced_before_cluster_shutdown = false;
+  fixture.discord->set_shutdown_observer([&] {
+    const auto lifecycle = fixture.voice_gateway->lifecycle();
+    voice_fenced_before_cluster_shutdown =
+        std::find(lifecycle.begin(), lifecycle.end(), "voice.shutdown") !=
+        lifecycle.end();
+  });
+  fixture.application->stop();
+  REQUIRE(voice_fenced_before_cluster_shutdown);
+}
+
+TEST_CASE("disabled Vox omits commands and callbacks but recovers stale state",
+          "[application][interaction][vox][disabled][recovery]") {
+  sanguinius::test::ApplicationFixture fixture;
+  fixture.vox->seed_active();
+
+  fixture.application->start();
+
+  REQUIRE(fixture.vox->recover_calls() == 1);
+  REQUIRE(fixture.vox->wait_for_state(sanguinius::VoxState::inactive, 2s));
+  const auto &commands = fixture.discord->command_catalog().commands;
+  REQUIRE(std::ranges::none_of(
+      commands, [](const auto &command) { return command.name == "vox"; }));
+  REQUIRE(fixture.voice_gateway->lifecycle().empty());
+
+  fixture.application->stop();
+  REQUIRE(fixture.voice_gateway->lifecycle().empty());
+}
+
 TEST_CASE("application startup fails closed on wager escrow invariant failure",
           "[application][wager][startup][invariant]") {
   sanguinius::test::ApplicationFixture fixture{tarot_options()};
@@ -185,7 +280,7 @@ TEST_CASE("Tarot commands preserve private authority and public standings",
   sanguinius::test::ApplicationFixture fixture{tarot_options()};
   fixture.application->start();
   REQUIRE(fixture.tarot->initialize_calls == 1);
-  REQUIRE(fixture.discord->command_catalog().version == 10);
+  REQUIRE(fixture.discord->command_catalog().version == 11);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 3);
 
   auto balance = std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -538,7 +633,7 @@ TEST_CASE(
     "[application][interaction][chronicle]") {
   sanguinius::test::ApplicationFixture fixture{chronicle_options()};
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 10);
+  REQUIRE(fixture.discord->command_catalog().version == 11);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 4);
 
   auto remember =
@@ -1159,7 +1254,7 @@ TEST_CASE(
   sanguinius::test::ApplicationFixture fixture{options};
   fixture.clock->set(std::chrono::sys_seconds{std::chrono::seconds{1'000}});
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 10);
+  REQUIRE(fixture.discord->command_catalog().version == 11);
 
   auto quiet = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto quiet_request = slash(quiet, "sanguinius", "tonight", 520);

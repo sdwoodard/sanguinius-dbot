@@ -18,6 +18,7 @@
 #include "support/fake_tarot_house_repository.hpp"
 #include "support/fake_tarot_repository.hpp"
 #include "support/fake_wager_repository.hpp"
+#include "support/fake_vox.hpp"
 
 #include <memory>
 #include <utility>
@@ -79,10 +80,12 @@ public:
     auto owned_tarot_house = std::make_unique<FakeTarotHouseRepository>();
     auto owned_tarot_integration =
         std::make_unique<FakeTarotIntegrationRepository>();
+    auto owned_vox = std::make_unique<FakeVoxRepository>();
     auto owned_random =
         std::make_unique<FakeRandom>(std::vector<std::uint64_t>(128, 0));
     auto owned_ai = std::make_unique<FakeAiClient>();
     auto owned_discord = std::make_unique<FakeDiscord>();
+    auto owned_voice_gateway = std::make_unique<FakeVoiceGateway>();
 
     clock = owned_clock.get();
     ids = owned_ids.get();
@@ -102,8 +105,10 @@ public:
     tarot_draws = owned_tarot_draws.get();
     tarot_house = owned_tarot_house.get();
     tarot_integration = owned_tarot_integration.get();
+    vox = owned_vox.get();
     ai = owned_ai.get();
     discord = owned_discord.get();
+    voice_gateway = owned_voice_gateway.get();
 
     application = std::make_unique<Application>(
         std::move(options),
@@ -127,10 +132,12 @@ public:
             .tarot_draws = std::move(owned_tarot_draws),
             .tarot_house = std::move(owned_tarot_house),
             .tarot_integration = std::move(owned_tarot_integration),
+            .vox = std::move(owned_vox),
             .random = std::move(owned_random),
             .appearance_policy = test_appearance_policy(),
             .ai_client = std::move(owned_ai),
             .discord = std::move(owned_discord),
+            .voice_gateway = std::move(owned_voice_gateway),
         });
   }
 
@@ -162,8 +169,10 @@ public:
   FakeTarotDrawRepository *tarot_draws{};
   FakeTarotHouseRepository *tarot_house{};
   FakeTarotIntegrationRepository *tarot_integration{};
+  FakeVoxRepository *vox{};
   FakeAiClient *ai{};
   FakeDiscord *discord{};
+  FakeVoiceGateway *voice_gateway{};
   std::unique_ptr<Application> application;
 };
 

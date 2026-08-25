@@ -2,6 +2,8 @@
 
 #include "sanguinius/diagnostics.hpp"
 #include "sanguinius/dpp_discord_adapter.hpp"
+#include "sanguinius/dpp_cluster_host.hpp"
+#include "sanguinius/dpp_voice_gateway.hpp"
 #include "sanguinius/id_generator.hpp"
 #include "sanguinius/message_logger.hpp"
 #include "sanguinius/openai_client.hpp"
@@ -16,6 +18,7 @@
 #include "sanguinius/persistence/sqlite_tarot_house_repository.hpp"
 #include "sanguinius/persistence/sqlite_tarot_repository.hpp"
 #include "sanguinius/persistence/sqlite_wager_repository.hpp"
+#include "sanguinius/persistence/sqlite_vox_repository.hpp"
 #include "sanguinius/persistent_id.hpp"
 #include "sanguinius/random.hpp"
 
@@ -100,6 +103,8 @@ std::unique_ptr<Application> make_application(const Config &config) {
   auto tarot_integration =
       std::make_unique<persistence::SqliteTarotIntegrationRepository>(
           repository_context);
+  auto vox = std::make_unique<persistence::SqliteVoxRepository>(
+      repository_context);
   std::optional<TarotDeckCatalog> deck_catalog;
   std::optional<TarotHouseCatalog> house_catalog;
   if (config.features.tarot_enabled) {
@@ -116,9 +121,15 @@ std::unique_ptr<Application> make_application(const Config &config) {
       std::make_unique<MessageLogger>(config.paths.message_log, *clock);
   auto ai_client =
       std::make_unique<OpenAiClient>(config.ai.api_key, config.ai.model);
+  auto cluster_host = std::make_shared<DppClusterHost>(
+      config.discord.token, config.features.vox_enabled);
   auto discord = std::make_unique<DppDiscordAdapter>(
-      config.discord.token, config.discord.request_timeout,
+      cluster_host, config.discord.request_timeout,
       config.discord.server_scope.guild_id, *diagnostics);
+  std::unique_ptr<VoiceGateway> voice_gateway;
+  if (config.features.vox_enabled)
+    voice_gateway =
+        std::make_unique<DppVoiceGateway>(cluster_host, *diagnostics);
 
   return std::make_unique<Application>(
       ApplicationOptions{
@@ -170,10 +181,12 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .tarot_draws = std::move(tarot_draws),
           .tarot_house = std::move(tarot_house),
           .tarot_integration = std::move(tarot_integration),
+          .vox = std::move(vox),
           .random = std::move(random),
           .appearance_policy = config.appearance_policy,
           .ai_client = std::move(ai_client),
           .discord = std::move(discord),
+          .voice_gateway = std::move(voice_gateway),
       });
 }
 

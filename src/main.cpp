@@ -119,7 +119,8 @@ int main(const int argc, char **argv) {
           sanguinius::DiscordId{command_config.guild_id.value()},
           sanguinius::command_catalog(command_config.admin_commands_enabled,
                                       command_config.chronicle_enabled,
-                                      command_config.tarot_enabled),
+                                      command_config.tarot_enabled,
+                                      command_config.vox_enabled),
           std::cout, std::cerr);
     }
     if (argc > 2) {

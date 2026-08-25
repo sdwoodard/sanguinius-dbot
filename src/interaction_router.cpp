@@ -53,6 +53,9 @@ slash_operation(const IncomingInteraction &interaction) {
       return InteractionOperation::appearance_feedback;
   }
   if (interaction.command_name == "sang-admin") {
+    if (interaction.subcommand_group_name == "vox" &&
+        interaction.subcommand_name == "disconnect")
+      return InteractionOperation::vox_test_disconnect;
     if (interaction.subcommand_group_name == "tarot") {
       if (interaction.subcommand_name == "adjust")
         return InteractionOperation::tarot_adjust;
@@ -117,6 +120,14 @@ slash_operation(const IncomingInteraction &interaction) {
       if (interaction.subcommand_name == "enable")
         return InteractionOperation::appearance_enable;
     }
+  }
+  if (interaction.command_name == "vox") {
+    if (interaction.subcommand_name == "summon")
+      return InteractionOperation::vox_summon;
+    if (interaction.subcommand_name == "status")
+      return InteractionOperation::vox_status;
+    if (interaction.subcommand_name == "leave")
+      return InteractionOperation::vox_leave;
   }
   if (interaction.command_name == "tarot") {
     if (interaction.subcommand_group_name == "house") {
@@ -208,7 +219,7 @@ slash_operation(const IncomingInteraction &interaction) {
 }
 
 [[nodiscard]] bool valid_slash_shape(const IncomingInteraction &interaction) {
-  const auto catalog = command_catalog(true, true, true);
+  const auto catalog = command_catalog(true, true, true, true);
   const auto command = std::ranges::find(
       catalog.commands, interaction.command_name, &CommandDefinition::name);
   if (command == catalog.commands.end() ||
@@ -551,6 +562,15 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
     reply_ephemeral(interaction, "The Tarot is currently unavailable.");
     return;
   }
+  const bool vox_operation =
+      *operation == InteractionOperation::vox_summon ||
+      *operation == InteractionOperation::vox_status ||
+      *operation == InteractionOperation::vox_leave ||
+      *operation == InteractionOperation::vox_test_disconnect;
+  if (vox_operation && !state_->features.vox_enabled) {
+    reply_ephemeral(interaction, "Vox is currently unavailable.");
+    return;
+  }
 
   const bool admin_operation =
       *operation == InteractionOperation::admin_health ||
@@ -577,6 +597,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::wager_test_role ||
       *operation == InteractionOperation::wager_test_deadline ||
       *operation == InteractionOperation::wager_test_cleanup;
+  const bool vox_test_operation =
+      *operation == InteractionOperation::vox_test_disconnect;
   const bool appearance_safety_operation =
       *operation == InteractionOperation::appearance_disable ||
       *operation == InteractionOperation::appearance_enable;
@@ -596,7 +618,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::wager_test_role ||
       *operation == InteractionOperation::wager_test_deadline ||
       *operation == InteractionOperation::wager_test_cleanup;
-  if (admin_operation || anniversary_test || appearance_safety_operation) {
+  if (admin_operation || anniversary_test || appearance_safety_operation ||
+      vox_test_operation) {
     if (!appearance_safety_operation &&
         !state_->controls.admin_commands_enabled) {
       state_->diagnostics.emit(
@@ -618,7 +641,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       reply_ephemeral(interaction, "This owner-only command is unavailable.");
       return;
     }
-    if ((test_operation || anniversary_test) && !state_->controls.test_mode) {
+    if ((test_operation || anniversary_test || vox_test_operation) &&
+        !state_->controls.test_mode) {
       state_->diagnostics.emit(
           {DiagnosticSeverity::warning, "interaction.admin_rejected",
            "Owner test interaction was rejected because test mode is disabled.",
@@ -652,7 +676,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
   auto queued = RoutedInteraction{std::move(interaction), *operation};
   queued.interaction.responder->defer(
       (*operation == InteractionOperation::chronicle_timeline ||
-       public_profile || *operation == InteractionOperation::tarot_standings)
+       public_profile || *operation == InteractionOperation::tarot_standings ||
+       *operation == InteractionOperation::vox_status)
           ? ResponseVisibility::public_message
           : ResponseVisibility::ephemeral,
       [shared_state,
