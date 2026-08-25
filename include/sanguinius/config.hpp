@@ -1,10 +1,12 @@
 #pragma once
 
-#include "sanguinius/build_info.hpp"
 #include "sanguinius/appearance_policy.hpp"
+#include "sanguinius/build_info.hpp"
 #include "sanguinius/feature_config.hpp"
 #include "sanguinius/server_scope_policy.hpp"
 #include "sanguinius/tarot.hpp"
+#include "sanguinius/tarot_catalog.hpp"
+#include "sanguinius/tarot_house.hpp"
 #include "sanguinius/wagers.hpp"
 
 #include <chrono>
@@ -42,7 +44,7 @@ struct DiscordCommandConfiguration {
 
 struct AiConfiguration {
   std::string api_key;
-  std::string model{"gpt-5.4-nano"};
+  std::string model{"gpt-5.6-luna"};
   std::filesystem::path persona_file{"config/persona.txt"};
   std::string persona;
 };
@@ -50,7 +52,10 @@ struct AiConfiguration {
 struct PathConfiguration {
   std::filesystem::path message_log{"logs/messages.log"};
   std::filesystem::path database_file{"state/sanguinius.sqlite3"};
-  std::filesystem::path appearance_policy_file{"config/appearance-policy-v1.json"};
+  std::filesystem::path appearance_policy_file{
+      "config/appearance-policy-v2.json"};
+  std::filesystem::path tarot_deck_file{"config/emperor-tarot-v1.json"};
+  std::filesystem::path tarot_house_file{"config/tarot-house-v1.json"};
 };
 
 enum class ConfigurationOrigin {
@@ -67,7 +72,10 @@ struct ConfigurationOrigins {
   ConfigurationOrigin openai_model{ConfigurationOrigin::default_value};
   ConfigurationOrigin persona_file{ConfigurationOrigin::default_value};
   ConfigurationOrigin timezone{ConfigurationOrigin::default_value};
-  ConfigurationOrigin appearance_policy_file{ConfigurationOrigin::default_value};
+  ConfigurationOrigin appearance_policy_file{
+      ConfigurationOrigin::default_value};
+  ConfigurationOrigin tarot_deck_file{ConfigurationOrigin::default_value};
+  ConfigurationOrigin tarot_house_file{ConfigurationOrigin::default_value};
 };
 
 struct Config {
@@ -80,6 +88,9 @@ struct Config {
   AppearancePolicy appearance_policy;
   TarotPolicy tarot_policy;
   WagerPolicy wager_policy;
+  TarotHousePolicy tarot_house_policy;
+  std::optional<TarotDeckCatalog> tarot_deck_catalog;
+  std::optional<TarotHouseCatalog> tarot_house_catalog;
   std::string command_prefix{"!"};
   std::string timezone{"America/New_York"};
 

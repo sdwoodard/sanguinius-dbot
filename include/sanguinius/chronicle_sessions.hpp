@@ -48,7 +48,7 @@ enum class ChronicleSessionState { open, closing, closed, abandoned };
 enum class ChronicleSummaryState { pending, approved, rejected };
 enum class ChronicleSummarySource { fallback, model, manual };
 enum class ChronicleTitleState { proposed, active, rejected, revoked };
-enum class ChronicleTitleProvenance { owner_curated, session_ai };
+enum class ChronicleTitleProvenance { owner_curated, session_ai, tarot_system };
 
 enum class SessionAction { close_with_entries, close_empty, finish_summary };
 enum class SummaryAction { edit, approve, reject };

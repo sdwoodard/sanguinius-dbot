@@ -145,14 +145,68 @@ TEST_CASE("DPP translates bounded Tarot integer adjustments",
                                        &dpp::command_option::name);
   REQUIRE(tarot != admin->options.end());
   REQUIRE(tarot->type == dpp::co_sub_command_group);
-  const auto adjust = std::ranges::find(
-      tarot->options, std::string{"adjust"}, &dpp::command_option::name);
+  const auto adjust = std::ranges::find(tarot->options, std::string{"adjust"},
+                                        &dpp::command_option::name);
   REQUIRE(adjust != tarot->options.end());
   REQUIRE(adjust->options[0].type == dpp::co_integer);
   REQUIRE(std::get<std::int64_t>(adjust->options[0].min_value) ==
           sanguinius::minimum_tarot_adjustment);
   REQUIRE(std::get<std::int64_t>(adjust->options[0].max_value) ==
           sanguinius::maximum_tarot_adjustment);
+}
+
+TEST_CASE("DPP translates nested House catalog and incoming play options",
+          "[discord][commands][tarot][house][incoming]") {
+  const auto commands =
+      sanguinius::dpp_adapter_detail::translate_command_catalog(
+          sanguinius::command_catalog(true, false, true), 42);
+  const auto tarot = std::ranges::find(commands, std::string{"tarot"},
+                                       &dpp::slashcommand::name);
+  REQUIRE(tarot != commands.end());
+  const auto house = std::ranges::find(tarot->options, std::string{"house"},
+                                       &dpp::command_option::name);
+  REQUIRE(house != tarot->options.end());
+  REQUIRE(house->type == dpp::co_sub_command_group);
+  REQUIRE(house->options.size() == 3);
+  const auto play = std::ranges::find(house->options, std::string{"play"},
+                                      &dpp::command_option::name);
+  REQUIRE(play != house->options.end());
+  REQUIRE(play->type == dpp::co_sub_command);
+  REQUIRE(play->options.size() == 5);
+  REQUIRE(play->options[0].name == "template");
+  REQUIRE(play->options[0].choices.size() == 4);
+  REQUIRE(play->options[1].name == "choice");
+  REQUIRE(play->options[2].name == "stake");
+  REQUIRE(play->options[2].type == dpp::co_integer);
+
+  dpp::command_interaction incoming;
+  incoming.name = "tarot";
+  dpp::command_data_option template_option;
+  template_option.name = "template";
+  template_option.type = dpp::co_string;
+  template_option.value = std::string{"heralds-call"};
+  dpp::command_data_option stake_option;
+  stake_option.name = "stake";
+  stake_option.type = dpp::co_integer;
+  stake_option.value = std::int64_t{5};
+  dpp::command_data_option play_option;
+  play_option.name = "play";
+  play_option.type = dpp::co_sub_command;
+  play_option.options = {template_option, stake_option};
+  dpp::command_data_option house_option;
+  house_option.name = "house";
+  house_option.type = dpp::co_sub_command_group;
+  house_option.options = {play_option};
+  incoming.options = {house_option};
+  sanguinius::IncomingInteraction translated;
+  sanguinius::dpp_adapter_detail::translate_slash_command(incoming, translated);
+  REQUIRE(translated.command_name == "tarot");
+  REQUIRE(translated.subcommand_group_name == "house");
+  REQUIRE(translated.subcommand_name == "play");
+  REQUIRE(translated.command_options.size() == 2);
+  REQUIRE(std::get<std::string>(translated.command_options[0].value) ==
+          "heralds-call");
+  REQUIRE(std::get<std::int64_t>(translated.command_options[1].value) == 5);
 }
 
 TEST_CASE(

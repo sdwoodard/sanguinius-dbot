@@ -116,6 +116,17 @@ void require_context(const DiscordSnowflake guild,
   throw std::runtime_error{"Invalid stored Chronicle title state."};
 }
 
+[[nodiscard]] ChronicleTitleProvenance
+title_provenance(const std::string_view value) {
+  if (value == "owner_curated")
+    return ChronicleTitleProvenance::owner_curated;
+  if (value == "session_ai")
+    return ChronicleTitleProvenance::session_ai;
+  if (value == "tarot_system")
+    return ChronicleTitleProvenance::tarot_system;
+  throw std::runtime_error{"Invalid stored Chronicle title provenance."};
+}
+
 [[nodiscard]] ChronicleSession read_session(SqliteConnection &connection,
                                             SqliteStatement &row) {
   ChronicleSession result{
@@ -1605,9 +1616,7 @@ TitleMutationResult SqliteChronicleSessionRepository::propose_title(
         .recipient_user_id = DiscordSnowflake::parse(replay.column_text(1)),
         .title = replay.column_text(2),
         .description = replay.column_text(3),
-        .provenance = replay.column_text(4) == "session_ai"
-                          ? ChronicleTitleProvenance::session_ai
-                          : ChronicleTitleProvenance::owner_curated,
+        .provenance = title_provenance(replay.column_text(4)),
         .state = title_state(replay.column_text(5)),
         .featured = replay.column_int64(6) != 0,
         .revision = static_cast<std::size_t>(replay.column_int64(7)),
@@ -1700,9 +1709,7 @@ TitleMutationResult SqliteChronicleSessionRepository::mutate_title(
   const auto revision = static_cast<std::size_t>(row.column_int64(3));
   const auto title = row.column_text(4);
   const auto description = row.column_text(5);
-  const auto provenance = row.column_text(6) == "session_ai"
-                              ? ChronicleTitleProvenance::session_ai
-                              : ChronicleTitleProvenance::owner_curated;
+  const auto provenance = title_provenance(row.column_text(6));
   const bool owner_action = request.action == TitleAction::approve ||
                             request.action == TitleAction::reject;
   const bool allowed = owner_action
@@ -1926,9 +1933,7 @@ ChronicleTitlePage SqliteChronicleSessionRepository::list_titles(
         .recipient_user_id = DiscordSnowflake::parse(query.column_text(1)),
         .title = query.column_text(2),
         .description = query.column_text(3),
-        .provenance = query.column_text(4) == "session_ai"
-                          ? ChronicleTitleProvenance::session_ai
-                          : ChronicleTitleProvenance::owner_curated,
+        .provenance = title_provenance(query.column_text(4)),
         .state = title_state(query.column_text(5)),
         .featured = query.column_int64(6) != 0,
         .revision = static_cast<std::size_t>(query.column_int64(7)),

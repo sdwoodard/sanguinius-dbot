@@ -3,6 +3,7 @@
 #include "sanguinius/persistence/migrator.hpp"
 #include "sanguinius/persistence/sqlite_durable_work_repository.hpp"
 #include "sanguinius/persistence/sqlite_repositories.hpp"
+#include "sanguinius/persistence/sqlite_tarot_house_repository.hpp"
 #include "sanguinius/persistence/sqlite_tarot_repository.hpp"
 #include "sanguinius/persistence/sqlite_wager_repository.hpp"
 #include "sanguinius/tarot.hpp"
@@ -70,7 +71,7 @@ public:
       auto database = Database::open_migration(temporary.path());
       const Migrator migrator{
           persistence::production_migrations(), {"test", "revision"}, clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 10);
+      REQUIRE(migrator.apply(database.connection()).current_version == 11);
     }
     open_runtime();
     SqliteCoreIdentityRepository identities{context};
@@ -339,6 +340,65 @@ TEST_CASE("peer wager funding and mutual settlement are atomic and replayable",
   REQUIRE(fixture.wagers->check_invariants().valid);
 }
 
+TEST_CASE("integration defers later player results across wall-clock rollback",
+          "[wager][tarot][integration][ordering][restart][rollback]") {
+  WagerFixture fixture;
+  const auto settle_creator_win = [&](const std::int64_t base,
+                                      const std::string &suffix) {
+    const auto wager_id =
+        fixture
+            .offer(10, WagerVisibility::public_offer,
+                   WagerResolutionPolicy::mutual, std::nullopt, base,
+                   "Ordered result " + suffix)
+            .wager->wager_id;
+    REQUIRE(fixture.accept(wager_id, "accept-" + suffix, base + 100).status ==
+            WagerMutationStatus::applied);
+    REQUIRE(fixture
+                .outcome(WagerFixture::owner, wager_id, WagerRole::creator,
+                         "owner-" + suffix, base + 200)
+                .status == WagerMutationStatus::applied);
+    REQUIRE(fixture
+                .outcome(WagerFixture::target, wager_id, WagerRole::creator,
+                         "target-" + suffix, base + 210)
+                .wager->state == WagerState::resolved);
+    return text_scalar(*fixture.context,
+                       "SELECT event_id FROM tarot_wager_resolution WHERE "
+                       "wager_id='" +
+                           wager_id + "'");
+  };
+  const auto earlier = settle_creator_win(1'000, "earlier");
+  const auto later = settle_creator_win(500, "later");
+  fixture.context->connection().execute(
+      "UPDATE tarot_integration_observation SET state='failed',attempts=1,"
+      "next_attempt_at_ms=100000,last_error='injected' WHERE "
+      "source_event_id='" +
+      earlier + "'");
+  persistence::SqliteTarotIntegrationRepository integration{fixture.context};
+  const auto deferred = integration.scan(3'000, 32, fixture.ids());
+  REQUIRE(deferred.failed == 2);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM tarot_player_event WHERE baseline=0") ==
+          0);
+  REQUIRE(text_scalar(*fixture.context,
+                      "SELECT last_error FROM tarot_integration_observation "
+                      "WHERE source_event_id='" +
+                          later + "'") ==
+          "An earlier Tarot player observation is awaiting integration.");
+
+  const auto completed = integration.scan(100'000, 32, fixture.ids());
+  REQUIRE(completed.failed == 0);
+  REQUIRE(completed.completed == 2);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT wins FROM tarot_player_stats WHERE user_id='30'") ==
+          2);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT losses FROM tarot_player_stats WHERE user_id='31'") ==
+          2);
+  REQUIRE(text_scalar(*fixture.context,
+                      "SELECT last_event_id FROM tarot_player_stats WHERE "
+                      "user_id='30'") == later);
+}
+
 TEST_CASE("conflicting outcomes disclose evidence only to authorized viewers",
           "[wager][dispute][privacy][judgment]") {
   WagerFixture fixture;
@@ -475,6 +535,15 @@ TEST_CASE("mutual void refunds each original equal stake exactly once",
   REQUIRE(scalar(*fixture.context,
                  "SELECT count(*) FROM tarot_transaction WHERE "
                  "transaction_type='WAGER_REFUND'") == 1);
+  persistence::SqliteTarotIntegrationRepository integration{fixture.context};
+  const auto report = integration.scan(2'001, 32, fixture.ids());
+  REQUIRE(report.failed == 0);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM relationship_event WHERE "
+                 "reason_code='tarot.resolved'") == 2);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM relationship_event WHERE "
+                 "reason_code='tarot.honored'") == 0);
 }
 
 TEST_CASE("sealed offers keep terms out of public durable payloads",
@@ -2471,6 +2540,20 @@ TEST_CASE("revisioned wager cards retry exact replacement edits safely",
   REQUIRE(discord.wait_for_public_edit_count(1, 2s));
   REQUIRE(discord.public_edits().front().message_id == DiscordId{1'000});
   REQUIRE(discord.public_edits().front().message.buttons.empty());
+
+  bool retry_pending{};
+  for (std::size_t attempt = 0; attempt < 200 && !retry_pending; ++attempt) {
+    retry_pending =
+        scalar(*fixture.context,
+               "SELECT count(*) FROM outbox_message WHERE "
+               "aggregate_id='" +
+                   wager_id +
+                   "' AND kind='discord.message_edit.v1' AND state='pending' "
+                   "AND last_error_code='discord_edit_unknown'") == 1;
+    if (!retry_pending)
+      std::this_thread::sleep_for(10ms);
+  }
+  REQUIRE(retry_pending);
 
   discord.set_public_edit_result(DeliveryResult::success);
   fixture.clock.set(std::chrono::sys_seconds{std::chrono::seconds{7}});

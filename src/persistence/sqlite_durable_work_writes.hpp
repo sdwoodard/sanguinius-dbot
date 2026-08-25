@@ -51,5 +51,20 @@ encode_anniversary_scan_payload(const AnniversaryScanJobPayload &payload,
 encode_wager_deadline_payload(const WagerDeadlineJobPayload &payload,
                               std::string_view correlation_id,
                               const std::optional<std::string> &causation_event_id);
+[[nodiscard]] std::string encode_house_deadline_payload(
+    const HouseDeadlineJobPayload &payload, std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id);
+[[nodiscard]] std::string encode_house_offer_expiry_payload(
+    const HouseOfferExpiryJobPayload &payload,
+    std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id);
+[[nodiscard]] std::string encode_tarot_integration_scan_payload(
+    const TarotIntegrationScanJobPayload &payload,
+    std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id);
+[[nodiscard]] std::string encode_tarot_house_weekly_offer_payload(
+    const TarotHouseWeeklyOfferJobPayload &payload,
+    std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id);
 
 } // namespace sanguinius::persistence::detail

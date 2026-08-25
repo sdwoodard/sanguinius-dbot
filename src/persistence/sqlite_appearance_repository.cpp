@@ -388,14 +388,15 @@ void apply_theme_history(SqliteConnection &connection,
 
 void apply_source_subject_preferences(
     SqliteConnection &connection, const std::vector<DiscordSnowflake> &subjects,
-    const std::int64_t now_ms, AppearanceCandidate &candidate) {
+    const std::int64_t now_ms, AppearanceCandidate &candidate,
+    const bool require_chronicle_consent) {
   for (const auto subject : subjects) {
     auto preference = connection.prepare(
         "SELECT chronicle_opt_in,appearance_callback_opt_in,quiet_until_ms "
         "FROM user_preference WHERE user_id=?");
     preference.bind(1, subject.str());
-    if (!preference.step() || preference.column_int64(0) == 0 ||
-        preference.column_int64(1) == 0) {
+    if (!preference.step() || preference.column_int64(1) == 0 ||
+        (require_chronicle_consent && preference.column_int64(0) == 0)) {
       candidate.consented = false;
       continue;
     }
@@ -411,10 +412,12 @@ void apply_event_source(
     const std::int64_t now_ms, AppearanceCandidate &candidate,
     const bool include_context) {
   bool available{};
+  bool require_chronicle_consent{};
   std::string source_text;
   std::vector<DiscordSnowflake> subjects;
   if (event_type == "chronicle.entry_canonized.v1" ||
       event_type == "chronicle.anniversary_delivered.v1") {
+    require_chronicle_consent = true;
     auto entry = connection.prepare(
         "SELECT title,body,status,visibility,source_guild_id,source_channel_id "
         "FROM chronicle_entry WHERE entry_id=?");
@@ -435,6 +438,7 @@ void apply_event_source(
     candidate.theme_key = "chronicle:" + std::string{aggregate_id};
   } else if (event_type == "chronicle.session_started.v1" ||
              event_type == "chronicle.session_completed.v1") {
+    require_chronicle_consent = true;
     auto session = connection.prepare("SELECT state,guild_id,channel_id FROM "
                                       "chronicle_session WHERE session_id=?");
     session.bind(1, aggregate_id);
@@ -457,6 +461,7 @@ void apply_event_source(
       subjects.push_back(DiscordSnowflake::parse(participants.column_text(0)));
     candidate.theme_key = "session:" + std::string{aggregate_id};
   } else if (event_type == "chronicle.title_awarded.v1") {
+    require_chronicle_consent = true;
     auto title = connection.prepare(
         "SELECT d.title,d.description,g.recipient_user_id,g.state "
         "FROM chronicle_title_grant g JOIN chronicle_title_definition d "
@@ -468,9 +473,60 @@ void apply_event_source(
       subjects.push_back(DiscordSnowflake::parse(title.column_text(2)));
     }
     candidate.theme_key = "title:" + std::string{aggregate_id};
+  } else if (event_type == "tarot.draw_created.v1") {
+    auto draw = connection.prepare(
+        "SELECT card.name,draw.user_id,draw.visibility,draw.is_test,"
+        "draw.guild_id,draw.channel_id FROM tarot_card_draw draw JOIN "
+        "tarot_card_definition card ON "
+        "card.catalog_version=draw.catalog_version "
+        "AND card.ordinal=draw.card_ordinal WHERE draw.draw_id=?");
+    draw.bind(1, aggregate_id);
+    if (draw.step()) {
+      available = draw.column_text(2) == "public" &&
+                  draw.column_int64(3) == 0 &&
+                  draw.column_text(4) == guild.str() &&
+                  draw.column_text(5) == channel.str();
+      source_text =
+          "A public Emperor's Tarot draw revealed " + draw.column_text(0) + ".";
+      subjects.push_back(DiscordSnowflake::parse(draw.column_text(1)));
+    }
+    candidate.theme_key = "tarot:" + std::string{aggregate_id};
+  } else if (event_type == "tarot.house_resolved.v1" ||
+             event_type == "tarot.house_voided.v1") {
+    auto wager = connection.prepare(
+        "SELECT template_slug,result,user_id,visibility,is_test,recovery,"
+        "guild_id,channel_id FROM tarot_house_wager WHERE wager_id=?");
+    wager.bind(1, aggregate_id);
+    if (wager.step()) {
+      available = wager.column_text(3) == "public" &&
+                  wager.column_int64(4) == 0 && wager.column_int64(5) == 0 &&
+                  wager.column_text(6) == guild.str() &&
+                  wager.column_text(7) == channel.str();
+      source_text = "A public House augury, " + wager.column_text(0) +
+                    ", reached " + wager.column_text(1) + ".";
+      subjects.push_back(DiscordSnowflake::parse(wager.column_text(2)));
+    }
+    candidate.theme_key = "tarot:" + std::string{aggregate_id};
+  } else if (event_type == "tarot.wager_resolved.v1" ||
+             event_type == "tarot.wager_voided.v1") {
+    auto wager = connection.prepare(
+        "SELECT creator_user_id,target_user_id,visibility,is_test,guild_id,"
+        "channel_id FROM tarot_wager WHERE wager_id=?");
+    wager.bind(1, aggregate_id);
+    if (wager.step()) {
+      available = wager.column_text(2) == "public" &&
+                  wager.column_int64(3) == 0 &&
+                  wager.column_text(4) == guild.str() &&
+                  wager.column_text(5) == channel.str();
+      source_text = "A public peer Fate wager reached settlement.";
+      subjects.push_back(DiscordSnowflake::parse(wager.column_text(0)));
+      subjects.push_back(DiscordSnowflake::parse(wager.column_text(1)));
+    }
+    candidate.theme_key = "tarot:" + std::string{aggregate_id};
   }
   candidate.visible = candidate.visible && available;
-  apply_source_subject_preferences(connection, subjects, now_ms, candidate);
+  apply_source_subject_preferences(connection, subjects, now_ms, candidate,
+                                   require_chronicle_consent);
   if (available && !source_text.empty()) {
     if (!candidate.deterministic_serious_category)
       candidate.deterministic_serious_category =
@@ -789,6 +845,19 @@ scope(SqliteConnection &connection) {
   return value;
 }
 
+void transition_tarot_appearance_candidate(
+    SqliteConnection &connection, const std::string_view source_event_id,
+    const std::string_view state) {
+  if (state != "consumed" && state != "suppressed")
+    throw std::invalid_argument{"Invalid Tarot appearance candidate state."};
+  auto update = connection.prepare(
+      "UPDATE tarot_appearance_candidate SET state=? WHERE source_event_id=? "
+      "AND state='pending'");
+  update.bind(1, state);
+  update.bind(2, source_event_id);
+  update.execute();
+}
+
 void apply_budget_gates(SqliteConnection &connection,
                         const AppearancePolicy &policy,
                         AppearanceCandidate &candidate,
@@ -1055,7 +1124,8 @@ void insert_decision_memories(
 [[nodiscard]] std::string
 final_reason(const AppearanceMode mode, const AppearanceEvaluation &evaluation,
              const std::string_view model_status,
-             const std::optional<AppearanceModelResult> &result) {
+             const std::optional<AppearanceModelResult> &result,
+             const bool force_hypothetical) {
   if (!evaluation.eligible_for_model)
     return evaluation.reason;
   if (!result)
@@ -1064,7 +1134,8 @@ final_reason(const AppearanceMode mode, const AppearanceEvaluation &evaluation,
     return "model_serious_context";
   if (!result->should_speak)
     return "model_declined";
-  return mode == AppearanceMode::live ? "live_queued" : "hypothetical";
+  return mode == AppearanceMode::live && !force_hypothetical ? "live_queued"
+                                                             : "hypothetical";
 }
 
 [[nodiscard]] std::vector<std::string>
@@ -1143,6 +1214,14 @@ void insert_live_effects(
   original_participants.bind(2, now_ms);
   original_participants.bind(3, candidate.candidate_id);
   original_participants.execute();
+  auto source_participants = connection.prepare(
+      "INSERT OR IGNORE INTO appearance_delivery_participant(decision_id,"
+      "user_id,created_at_ms) SELECT ?,user_id,? FROM "
+      "appearance_candidate_source_user WHERE candidate_id=?");
+  source_participants.bind(1, decision_id);
+  source_participants.bind(2, now_ms);
+  source_participants.bind(3, candidate.candidate_id);
+  source_participants.execute();
   auto current_participant = connection.prepare(
       "INSERT OR IGNORE INTO appearance_delivery_participant(decision_id,"
       "user_id,created_at_ms) VALUES(?,?,?)");
@@ -1407,6 +1486,11 @@ void SqliteAppearanceRepository::activate_mode(const AppearanceMode mode,
         "processed_at_ms=? WHERE processed_at_ms IS NULL");
     discard.bind(1, now_ms);
     discard.execute();
+    auto suppress_tarot = connection.prepare(
+        "UPDATE tarot_appearance_candidate SET state='suppressed' WHERE "
+        "state='pending' AND source_event_id IN (SELECT source_event_id FROM "
+        "appearance_event_observation WHERE extraction_result='mode_off')");
+    suppress_tarot.execute();
   }
   if (previous_mode != mode_name) {
     auto cancel = connection.prepare(
@@ -1982,11 +2066,14 @@ SqliteAppearanceRepository::scan_events(const AppearancePolicy &policy,
       "o.source_event_id,o.event_type,o.aggregate_id,o.actor_user_id,"
       "o.occurred_at_ms,o.guild_id,o.channel_id,"
       "CASE WHEN COALESCE(json_extract(e.payload_json,'$.test'),0)=1 OR "
-      "COALESCE(json_extract(e.payload_json,'$.test_run'),0)=1 THEN 1 ELSE 0 "
-      "END FROM "
+      "COALESCE(json_extract(e.payload_json,'$.test_run'),0)=1 OR "
+      "COALESCE(json_extract(e.payload_json,'$.is_test'),0)=1 OR "
+      "COALESCE(tarot.is_test,0)=1 THEN 1 ELSE 0 "
+      "END,tarot.candidate_id,tarot.safe_summary FROM "
       "appearance_event_observation o JOIN event_journal e ON "
-      "e.event_id=o.source_event_id WHERE o.processed_at_ms IS NULL ORDER BY "
-      "o.recorded_at_ms,o.source_event_id LIMIT 32");
+      "e.event_id=o.source_event_id LEFT JOIN tarot_appearance_candidate tarot "
+      "ON tarot.source_event_id=o.source_event_id WHERE o.processed_at_ms IS "
+      "NULL ORDER BY o.recorded_at_ms,o.source_event_id LIMIT 32");
   struct Event {
     std::string id;
     std::string type;
@@ -1996,6 +2083,8 @@ SqliteAppearanceRepository::scan_events(const AppearancePolicy &policy,
     DiscordSnowflake guild;
     std::optional<DiscordSnowflake> channel;
     bool owner_test{};
+    std::optional<std::string> tarot_candidate_id;
+    std::optional<std::string> tarot_safe_summary;
   };
   std::vector<Event> pending;
   while (events.step())
@@ -2008,10 +2097,19 @@ SqliteAppearanceRepository::scan_events(const AppearancePolicy &policy,
          events.column_is_null(6)
              ? std::nullopt
              : std::optional{DiscordSnowflake::parse(events.column_text(6))},
-         events.column_int64(7) != 0});
+         events.column_int64(7) != 0,
+         events.column_is_null(8) ? std::nullopt
+                                  : std::optional{events.column_text(8)},
+         events.column_is_null(9) ? std::nullopt
+                                  : std::optional{events.column_text(9)}});
   std::vector<AppearanceCandidate> result;
   for (const auto &event : pending) {
-    if (event.owner_test) {
+    const bool tarot_event = event.type == "tarot.draw_created.v1" ||
+                             event.type == "tarot.house_resolved.v1" ||
+                             event.type == "tarot.house_voided.v1" ||
+                             event.type == "tarot.wager_resolved.v1" ||
+                             event.type == "tarot.wager_voided.v1";
+    if (event.owner_test && !tarot_event) {
       auto suppress = connection.prepare(
           "UPDATE appearance_event_observation SET extraction_result="
           "'source_not_enabled',processed_at_ms=? WHERE source_event_id=?");
@@ -2043,20 +2141,29 @@ SqliteAppearanceRepository::scan_events(const AppearancePolicy &policy,
       type = AppearanceCandidateType::anniversary;
       expiry_key = "anniversary";
       specificity = policy.score_weights.at("chronicle_event");
+    } else if (tarot_event) {
+      type = AppearanceCandidateType::tarot_event;
+      expiry_key = "tarot_event";
+      specificity = policy.score_weights.at("chronicle_event");
     } else {
       continue;
     }
     AppearanceCandidate candidate{};
-    candidate.candidate_id = derived_uuid(event.id, 1);
+    candidate.candidate_id =
+        event.tarot_candidate_id.value_or(derived_uuid(event.id, 1));
     candidate.policy_version = policy.policy_version;
     candidate.type = type;
     candidate.created_at_ms = event.occurred;
     candidate.expires_at_ms =
         event.occurred + policy.candidate_expiry_ms.at(expiry_key);
     candidate.chronicle_specificity = specificity;
-    candidate.safe_summary =
-        "Chronicle event candidate (" +
-        std::string{appearance_candidate_type_name(candidate.type)} + ").";
+    candidate.safe_summary = event.tarot_safe_summary.value_or(
+        event.type.starts_with("tarot.")
+            ? "Public Tarot event candidate."
+            : "Chronicle event candidate (" +
+                  std::string{appearance_candidate_type_name(candidate.type)} +
+                  ").");
+    candidate.owner_simulation = event.owner_test;
     candidate.correct_scope =
         event.guild == guild && event.channel && *event.channel == channel;
     auto active = connection.prepare(
@@ -2133,19 +2240,37 @@ SqliteAppearanceRepository::scan_events(const AppearancePolicy &policy,
     insert_candidate(connection, policy, candidate, guild, channel, dedup,
                      event_sources);
     const bool inserted = connection.changes() != 0;
+    std::optional<std::string> persisted_candidate_id;
+    if (inserted) {
+      persisted_candidate_id = candidate.candidate_id;
+    } else {
+      auto existing = connection.prepare(
+          "SELECT candidate_id FROM appearance_candidate WHERE "
+          "deduplication_key=?");
+      existing.bind(1, dedup);
+      if (existing.step())
+        persisted_candidate_id = existing.column_text(0);
+    }
+    if (event.tarot_candidate_id && persisted_candidate_id &&
+        *event.tarot_candidate_id != *persisted_candidate_id)
+      throw std::runtime_error{"Tarot appearance candidate identity mismatch."};
     auto update =
         connection.prepare("UPDATE appearance_event_observation SET "
                            "extraction_result=?,candidate_id=?,processed_at_ms="
                            "? WHERE source_event_id=?");
     update.bind(1, now_ms >= candidate.expires_at_ms ? "expired"
                                                      : "candidate_created");
-    if (inserted)
-      update.bind(2, candidate.candidate_id);
+    if (persisted_candidate_id)
+      update.bind(2, *persisted_candidate_id);
     else
       update.bind_null(2);
     update.bind(3, now_ms);
     update.bind(4, event.id);
     update.execute();
+    if (event.tarot_candidate_id)
+      transition_tarot_appearance_candidate(
+          connection, event.id,
+          persisted_candidate_id ? "consumed" : "suppressed");
     if (inserted) {
       append_candidate_event(connection, derived_uuid(event.id, 2), candidate,
                              guild, channel, "appearance:event_scan", now_ms);
@@ -2202,8 +2327,10 @@ bool SqliteAppearanceRepository::record_final(
   }
   const auto final_evaluation =
       evaluate_appearance(persisted_policy, mode, final_candidate, now_ms);
-  const auto reason =
-      final_reason(mode, final_evaluation, model_status, model_result);
+  const auto reason = final_reason(
+      mode, final_evaluation, model_status, model_result,
+      final_candidate.owner_simulation &&
+          final_candidate.type == AppearanceCandidateType::tarot_event);
   const auto action =
       reason == "hypothetical" || reason == "live_queued" ? reason : "reject";
   const auto categories = serious_categories(final_candidate, model_result);
@@ -2372,8 +2499,10 @@ bool SqliteAppearanceRepository::complete_model(
   }
   const auto final_evaluation =
       evaluate_appearance(persisted_policy, mode, final_candidate, now_ms);
-  const auto reason =
-      final_reason(mode, final_evaluation, model_status, result);
+  const auto reason = final_reason(
+      mode, final_evaluation, model_status, result,
+      final_candidate.owner_simulation &&
+          final_candidate.type == AppearanceCandidateType::tarot_event);
   const auto action =
       reason == "hypothetical" || reason == "live_queued" ? reason : "reject";
   const auto categories = serious_categories(final_candidate, result);

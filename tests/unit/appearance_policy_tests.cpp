@@ -56,6 +56,21 @@ TEST_CASE("appearance policy v1 loads exact bounded defaults",
           "m10-live-1");
 }
 
+TEST_CASE("appearance policy v2 adds an exact Tarot event family",
+          "[appearance][policy][tarot]") {
+  const auto value = sanguinius::parse_appearance_policy(
+      read(root() / "config/appearance-policy-v2.json"));
+  REQUIRE(value.schema_version == 1);
+  REQUIRE(value.policy_version == "m13-tarot-1");
+  REQUIRE(value.candidate_expiry_ms.at("tarot_event") == 3'600'000);
+  REQUIRE(value.score_weights.at("expected_tarot_event") == 5);
+  REQUIRE(sanguinius::appearance_candidate_type_name(
+              sanguinius::AppearanceCandidateType::tarot_event) ==
+          "tarot_event");
+  REQUIRE(sanguinius::parse_appearance_candidate_type("tarot_event") ==
+          sanguinius::AppearanceCandidateType::tarot_event);
+}
+
 TEST_CASE("appearance policy rejects unknown fields versions and ranges",
           "[appearance][policy]") {
   auto source =

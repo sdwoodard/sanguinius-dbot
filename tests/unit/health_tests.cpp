@@ -88,7 +88,8 @@ TEST_CASE("health snapshot renders build queues and configured modes",
                  .open_funded_obligation_amount = 40,
                  .escrow_balance = 40,
                  .disputed_count = 1}};
-       }}};
+       },
+       .house = {}}};
 
   const auto snapshot = service.snapshot(
       {.capacity = 64, .queued = 3, .active = 1, .accepting = true},
@@ -139,7 +140,8 @@ TEST_CASE("health snapshot renders build queues and configured modes",
        .pending_notice_count = [] { return std::size_t{}; },
        .durable_work = [] { return sanguinius::DurableWorkHealth{}; },
        .tarot = {},
-       .wagers = {}}};
+       .wagers = {},
+       .house = {}}};
   const auto bounded = sanguinius::render_health(oversized_metadata.snapshot(
       {.capacity = 64, .queued = 1, .active = 1, .accepting = true},
       {.capacity = 64, .accepting = true}, true));
@@ -167,7 +169,8 @@ TEST_CASE("health types cannot expose secret configuration", "[health]") {
        .pending_notice_count = [] { return std::size_t{}; },
        .durable_work = [] { return sanguinius::DurableWorkHealth{}; },
        .tarot = {},
-       .wagers = {}}};
+       .wagers = {},
+       .house = {}}};
   const auto rendered = sanguinius::render_health(
       service.snapshot({.capacity = 1}, {.capacity = 1}, true));
 

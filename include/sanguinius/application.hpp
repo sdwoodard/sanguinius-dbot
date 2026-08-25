@@ -20,6 +20,8 @@
 #include "sanguinius/random.hpp"
 #include "sanguinius/server_scope_policy.hpp"
 #include "sanguinius/tarot.hpp"
+#include "sanguinius/tarot_house.hpp"
+#include "sanguinius/tarot_integration.hpp"
 #include "sanguinius/wagers.hpp"
 
 #include <chrono>
@@ -39,6 +41,10 @@ struct ApplicationOptions {
   FeatureConfiguration features;
   TarotPolicy tarot_policy;
   WagerPolicy wager_policy;
+  TarotHousePolicy tarot_house_policy{.house_enabled = false,
+                                      .integration_enabled = false};
+  std::optional<TarotDeckCatalog> tarot_deck_catalog;
+  std::optional<TarotHouseCatalog> tarot_house_catalog;
   BuildInfo build;
   PersistenceHealth persistence;
   std::string instance_id;
@@ -69,6 +75,10 @@ struct ApplicationDependencies {
   std::unique_ptr<AppearanceRepository> appearances;
   std::unique_ptr<TarotRepository> tarot;
   std::unique_ptr<TarotWagerRepository> wagers;
+  std::unique_ptr<TarotCatalogRepository> tarot_catalogs;
+  std::unique_ptr<TarotDrawRepository> tarot_draws;
+  std::unique_ptr<TarotHouseRepository> tarot_house;
+  std::unique_ptr<TarotIntegrationRepository> tarot_integration;
   std::unique_ptr<Random> random;
   std::optional<AppearancePolicy> appearance_policy;
   std::unique_ptr<AiClient> ai_client;

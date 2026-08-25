@@ -457,6 +457,92 @@ template <typename Payload>
   return result;
 }
 
+[[nodiscard]] Json encode_house_deadline(
+    const HouseDeadlineJobPayload &payload,
+    const std::string_view correlation_id = {},
+    const std::optional<std::string> &causation_event_id = std::nullopt) {
+  Json result{{"payload_version", 1},
+              {"wager_id", payload.wager_id},
+              {"expected_revision", payload.expected_revision}};
+  add_trace(result, correlation_id, causation_event_id);
+  return result;
+}
+
+[[nodiscard]] HouseDeadlineJobPayload decode_house_deadline(const Json &value) {
+  if (!value.is_object() || value.at("payload_version").get<int>() != 1)
+    throw std::runtime_error{"Unsupported House-deadline payload."};
+  HouseDeadlineJobPayload result{
+      .wager_id = value.at("wager_id").get<std::string>(),
+      .expected_revision = value.at("expected_revision").get<std::size_t>()};
+  if (!valid_uuid_v4(result.wager_id) || result.expected_revision == 0)
+    throw std::runtime_error{"Invalid House-deadline payload."};
+  return result;
+}
+
+[[nodiscard]] Json encode_house_offer_expiry(
+    const HouseOfferExpiryJobPayload &payload,
+    const std::string_view correlation_id = {},
+    const std::optional<std::string> &causation_event_id = std::nullopt) {
+  Json result{{"payload_version", 1}, {"offer_id", payload.offer_id}};
+  add_trace(result, correlation_id, causation_event_id);
+  return result;
+}
+
+[[nodiscard]] HouseOfferExpiryJobPayload
+decode_house_offer_expiry(const Json &value) {
+  if (!value.is_object() || value.at("payload_version").get<int>() != 1)
+    throw std::runtime_error{"Unsupported House offer-expiry payload."};
+  HouseOfferExpiryJobPayload result{
+      .offer_id = value.at("offer_id").get<std::string>()};
+  if (!valid_uuid_v4(result.offer_id))
+    throw std::runtime_error{"Invalid House offer-expiry payload."};
+  return result;
+}
+
+[[nodiscard]] Json encode_tarot_integration_scan(
+    const TarotIntegrationScanJobPayload &payload,
+    const std::string_view correlation_id = {},
+    const std::optional<std::string> &causation_event_id = std::nullopt) {
+  Json result{{"payload_version", 1}, {"schedule_key", payload.schedule_key}};
+  add_trace(result, correlation_id, causation_event_id);
+  return result;
+}
+
+[[nodiscard]] TarotIntegrationScanJobPayload
+decode_tarot_integration_scan(const Json &value) {
+  if (!value.is_object() || value.at("payload_version").get<int>() != 1)
+    throw std::runtime_error{"Unsupported Tarot integration payload."};
+  TarotIntegrationScanJobPayload result{
+      .schedule_key = value.at("schedule_key").get<std::string>()};
+  if (result.schedule_key != "singleton")
+    throw std::runtime_error{"Invalid Tarot integration payload."};
+  return result;
+}
+
+[[nodiscard]] Json encode_tarot_house_weekly_offer(
+    const TarotHouseWeeklyOfferJobPayload &payload,
+    const std::string_view correlation_id = {},
+    const std::optional<std::string> &causation_event_id = std::nullopt) {
+  Json result{{"payload_version", 1},
+              {"schedule_key", payload.schedule_key},
+              {"catalog_version", payload.catalog_version}};
+  add_trace(result, correlation_id, causation_event_id);
+  return result;
+}
+
+[[nodiscard]] TarotHouseWeeklyOfferJobPayload
+decode_tarot_house_weekly_offer(const Json &value) {
+  if (!value.is_object() || value.at("payload_version").get<int>() != 1)
+    throw std::runtime_error{"Unsupported Tarot weekly-offer payload."};
+  TarotHouseWeeklyOfferJobPayload result{
+      .schedule_key = value.at("schedule_key").get<std::string>(),
+      .catalog_version = value.at("catalog_version").get<std::string>()};
+  if (result.schedule_key != "friday-1800-america-new-york" ||
+      result.catalog_version.empty() || result.catalog_version.size() > 80)
+    throw std::runtime_error{"Invalid Tarot weekly-offer payload."};
+  return result;
+}
+
 [[nodiscard]] DurablePayload decode_payload(const std::string_view kind,
                                             const std::string &payload) {
   try {
@@ -486,6 +572,14 @@ template <typename Payload>
       return decode_appearance_job<AppearancePurgeJobPayload>(value);
     if (kind == "tarot.wager-deadline.v1")
       return decode_wager_deadline(value);
+    if (kind == "tarot.house-deadline.v1")
+      return decode_house_deadline(value);
+    if (kind == "tarot.house-offer-expiry.v1")
+      return decode_house_offer_expiry(value);
+    if (kind == "tarot.integration-scan.v1")
+      return decode_tarot_integration_scan(value);
+    if (kind == "tarot.house-weekly-offer.v1")
+      return decode_tarot_house_weekly_offer(value);
   } catch (const std::exception &) {
     return std::monostate{};
   }
@@ -1099,6 +1193,40 @@ std::string encode_wager_deadline_payload(
       .dump();
 }
 
+std::string encode_house_deadline_payload(
+    const HouseDeadlineJobPayload &payload,
+    const std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id) {
+  return encode_house_deadline(payload, correlation_id, causation_event_id)
+      .dump();
+}
+
+std::string encode_house_offer_expiry_payload(
+    const HouseOfferExpiryJobPayload &payload,
+    const std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id) {
+  return encode_house_offer_expiry(payload, correlation_id, causation_event_id)
+      .dump();
+}
+
+std::string encode_tarot_integration_scan_payload(
+    const TarotIntegrationScanJobPayload &payload,
+    const std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id) {
+  return encode_tarot_integration_scan(payload, correlation_id,
+                                       causation_event_id)
+      .dump();
+}
+
+std::string encode_tarot_house_weekly_offer_payload(
+    const TarotHouseWeeklyOfferJobPayload &payload,
+    const std::string_view correlation_id,
+    const std::optional<std::string> &causation_event_id) {
+  return encode_tarot_house_weekly_offer(payload, correlation_id,
+                                         causation_event_id)
+      .dump();
+}
+
 } // namespace detail
 
 SqliteDurableWorkRepository::SqliteDurableWorkRepository(
@@ -1553,6 +1681,46 @@ SqliteDurableWorkRepository::claim_due_outbox(
   exhaust.bind(6, std::string{test_public_retry_outbox_kind});
   exhaust.execute();
 
+  auto record_failed_house_sources = context_->connection().prepare(
+      "INSERT OR IGNORE INTO tarot_house_offer_delivery_failure(offer_id,"
+      "source_outbox_id,terminal_state,error_code,recorded_at_ms) SELECT "
+      "offer.offer_id,source.outbox_id,source.state,source.last_error_code,? "
+      "FROM tarot_house_offer offer JOIN tarot_house_public_card card ON "
+      "card.offer_id=offer.offer_id JOIN outbox_message source ON "
+      "source.outbox_id=card.create_outbox_id WHERE offer.state='open' AND "
+      "source.state IN ('failed','dead','cancelled')");
+  record_failed_house_sources.bind(1, now_ms);
+  record_failed_house_sources.execute();
+
+  auto close_undeliverable_house_offers = context_->connection().prepare(
+      "UPDATE tarot_house_offer SET state='closed' WHERE state='open' AND "
+      "EXISTS(SELECT 1 FROM tarot_house_offer_delivery_failure failure WHERE "
+      "failure.offer_id=tarot_house_offer.offer_id)");
+  close_undeliverable_house_offers.execute();
+
+  auto cancel_undeliverable_house_controls = context_->connection().prepare(
+      "UPDATE tarot_house_control SET state='cancelled' WHERE state='active' "
+      "AND EXISTS(SELECT 1 FROM tarot_house_offer_delivery_failure failure "
+      "WHERE failure.offer_id=tarot_house_control.offer_id)");
+  cancel_undeliverable_house_controls.execute();
+
+  auto cancel_orphaned_house_reminders = context_->connection().prepare(
+      "UPDATE outbox_message AS reminder SET state='cancelled',"
+      "lease_owner=NULL,lease_token=NULL,lease_until_ms=NULL,"
+      "submission_started_at_ms=NULL,updated_at_ms=max(?,updated_at_ms),"
+      "terminal_at_ms=max(?,created_at_ms),"
+      "last_error_code='house_offer_source_unavailable' WHERE "
+      "(reminder.state='pending' OR (reminder.state='claimed' AND "
+      "reminder.lease_until_ms<=?)) AND EXISTS (SELECT 1 FROM "
+      "tarot_house_public_card card JOIN outbox_message source_outbox ON "
+      "source_outbox.outbox_id=card.create_outbox_id WHERE "
+      "card.reminder_outbox_id=reminder.outbox_id AND "
+      "source_outbox.state IN ('failed','dead','cancelled'))");
+  cancel_orphaned_house_reminders.bind(1, now_ms);
+  cancel_orphaned_house_reminders.bind(2, now_ms);
+  cancel_orphaned_house_reminders.bind(3, now_ms);
+  cancel_orphaned_house_reminders.execute();
+
   auto select = context_->connection().prepare(
       "SELECT candidate.outbox_id, candidate.kind, candidate.payload_json, "
       "candidate.available_at_ms, candidate.attempt_count, "
@@ -1566,6 +1734,10 @@ SqliteDurableWorkRepository::claim_due_outbox(
       "candidate.lease_until_ms <= ?)) "
       "AND candidate.attempt_count < candidate.max_attempts "
       "AND (? OR candidate.kind NOT IN (?, ?)) "
+      "AND NOT EXISTS (SELECT 1 FROM tarot_public_outbox_dependency "
+      "dependency JOIN outbox_message predecessor ON predecessor.outbox_id="
+      "dependency.predecessor_outbox_id WHERE dependency.successor_outbox_id="
+      "candidate.outbox_id AND predecessor.state IN ('pending','claimed')) "
       "AND (candidate.aggregate_type IS NULL OR "
       "candidate.aggregate_type <> 'chronicle_entry' OR NOT EXISTS ("
       "SELECT 1 FROM outbox_message AS predecessor WHERE "
@@ -1573,6 +1745,37 @@ SqliteDurableWorkRepository::claim_due_outbox(
       "predecessor.aggregate_id = candidate.aggregate_id AND "
       "predecessor.created_at_ms < candidate.created_at_ms AND "
       "predecessor.state IN ('pending','claimed'))) "
+      "AND (candidate.aggregate_type <> 'tarot_house_offer' OR NOT EXISTS ("
+      "SELECT 1 FROM outbox_message AS predecessor WHERE "
+      "predecessor.aggregate_type='tarot_house_offer' AND "
+      "predecessor.aggregate_id=candidate.aggregate_id AND "
+      "predecessor.created_at_ms<candidate.created_at_ms AND "
+      "predecessor.state IN ('pending','claimed'))) "
+      "AND NOT EXISTS (SELECT 1 FROM tarot_house_public_card house_card "
+      "JOIN outbox_message source_outbox ON "
+      "source_outbox.outbox_id=house_card.create_outbox_id WHERE "
+      "house_card.reminder_outbox_id=candidate.outbox_id AND "
+      "source_outbox.state<>'delivered') "
+      "AND (candidate.aggregate_type <> 'tarot_house_wager' OR NOT EXISTS ("
+      "SELECT 1 FROM outbox_message AS predecessor WHERE "
+      "predecessor.aggregate_type='tarot_house_wager' AND "
+      "predecessor.aggregate_id=candidate.aggregate_id AND "
+      "predecessor.created_at_ms<candidate.created_at_ms AND "
+      "predecessor.state IN ('pending','claimed'))) "
+      "AND (candidate.aggregate_type <> 'tarot_house_wager' OR NOT EXISTS ("
+      "SELECT 1 FROM tarot_house_wager house_wager JOIN "
+      "tarot_house_public_card house_card ON "
+      "house_card.offer_id=house_wager.offer_id JOIN outbox_message "
+      "source_outbox ON source_outbox.outbox_id=house_card.create_outbox_id "
+      "WHERE house_wager.wager_id=candidate.aggregate_id AND "
+      "source_outbox.state IN ('pending','claimed'))) "
+      "AND (candidate.aggregate_type <> 'tarot_house_wager' OR NOT EXISTS ("
+      "SELECT 1 FROM tarot_house_wager house_wager JOIN "
+      "tarot_house_public_card house_card ON "
+      "house_card.offer_id=house_wager.offer_id JOIN outbox_message "
+      "terminal_edit ON terminal_edit.outbox_id=house_card."
+      "terminal_edit_outbox_id WHERE house_wager.wager_id=candidate."
+      "aggregate_id AND terminal_edit.state IN ('pending','claimed'))) "
       "AND (candidate.kind <> 'discord.message_edit.v1' OR NOT EXISTS ("
       "SELECT 1 FROM tarot_wager_card_revision current_revision "
       "JOIN tarot_wager_public_card card "

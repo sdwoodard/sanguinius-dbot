@@ -133,13 +133,34 @@ struct WagerDeadlineJobPayload {
   std::size_t expected_revision{};
 };
 
+struct HouseDeadlineJobPayload {
+  std::string wager_id;
+  std::size_t expected_revision{};
+};
+
+struct HouseOfferExpiryJobPayload {
+  std::string offer_id;
+};
+
+struct TarotIntegrationScanJobPayload {
+  std::string schedule_key;
+};
+
+struct TarotHouseWeeklyOfferJobPayload {
+  std::string schedule_key;
+  std::string catalog_version;
+};
+
 using DurablePayload =
     std::variant<std::monostate, NoticeOutboxPayload, PublicOutboxPayload,
                  PublicEditOutboxPayload,
                  MemoryExpiryJobPayload, SessionSummaryJobPayload,
                  SessionContextPurgeJobPayload, AnniversaryScanJobPayload,
                  AppearanceScanJobPayload, AppearancePurgeJobPayload,
-                 WagerDeadlineJobPayload>;
+                 WagerDeadlineJobPayload, HouseDeadlineJobPayload,
+                 HouseOfferExpiryJobPayload,
+                 TarotIntegrationScanJobPayload,
+                 TarotHouseWeeklyOfferJobPayload>;
 // Appearance jobs carry only the policy version; excerpts and generated prose
 // never enter durable scheduler payloads.
 

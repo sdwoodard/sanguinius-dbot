@@ -71,6 +71,11 @@ public:
         appearance_repository_{std::move(dependencies.appearances)},
         tarot_repository_{std::move(dependencies.tarot)},
         wager_repository_{std::move(dependencies.wagers)},
+        tarot_catalog_repository_{std::move(dependencies.tarot_catalogs)},
+        tarot_draw_repository_{std::move(dependencies.tarot_draws)},
+        tarot_house_repository_{std::move(dependencies.tarot_house)},
+        tarot_integration_repository_{
+            std::move(dependencies.tarot_integration)},
         random_{std::move(dependencies.random)},
         appearance_policy_{std::move(dependencies.appearance_policy)},
         ai_client_{std::move(dependencies.ai_client)},
@@ -110,6 +115,17 @@ public:
       throw std::invalid_argument{
           "Wager persistence is required when the Tarot is enabled."};
     }
+    const bool tarot_experience_configured =
+        tarot_catalog_repository_ && tarot_draw_repository_ &&
+        tarot_house_repository_ && options_.tarot_deck_catalog &&
+        options_.tarot_house_catalog;
+    if (options_.features.tarot_enabled &&
+        options_.tarot_house_policy.house_enabled &&
+        !tarot_experience_configured) {
+      throw std::invalid_argument{
+          "Tarot catalog, draw, and House persistence are required when "
+          "House play is enabled."};
+    }
     if (options_.features.tarot_enabled) {
       tarot_service_ = std::make_unique<TarotService>(
           *tarot_repository_, *clock_, *persistent_id_generator_, *random_,
@@ -125,13 +141,52 @@ public:
               scheduler_->wake();
           },
           [this] { outbox_->wake(); });
+      if (tarot_experience_configured) {
+        if (options_.tarot_house_policy.integration_enabled &&
+            !tarot_integration_repository_)
+          throw std::invalid_argument{
+              "Tarot integration persistence is required when enabled."};
+        if (tarot_integration_repository_) {
+          tarot_integration_service_ =
+              std::make_unique<TarotIntegrationService>(
+                  *tarot_integration_repository_, *clock_,
+                  *persistent_id_generator_, *diagnostics_,
+                  options_.tarot_house_policy.integration_enabled,
+                  TarotIntegrationSinkPolicy{
+                      .chronicle_enabled =
+                          options_.features.chronicle_enabled});
+        }
+        tarot_house_service_ = std::make_unique<TarotHouseService>(
+            *tarot_house_repository_, *tarot_repository_,
+            *options_.tarot_house_catalog, *clock_, *persistent_id_generator_,
+            options_.tarot_house_policy, options_.tarot_policy,
+            options_.server_scope, options_.controls.test_mode, *diagnostics_,
+            [this](const std::string_view event_type) {
+              outbox_->wake();
+              if (tarot_integration_service_)
+                tarot_integration_service_->observe_committed_event(event_type);
+            });
+        tarot_draw_service_ = std::make_unique<TarotDrawService>(
+            *tarot_draw_repository_, *options_.tarot_deck_catalog, *clock_,
+            *persistent_id_generator_, *random_, options_.tarot_house_policy,
+            options_.server_scope, options_.controls.test_mode, *diagnostics_,
+            [this](const TarotDrawRecord &draw) {
+              outbox_->wake();
+              if (tarot_house_service_)
+                tarot_house_service_->observe_draw(draw);
+              if (tarot_integration_service_)
+                tarot_integration_service_->observe_committed_event(
+                    "tarot.draw_created.v1");
+            });
+      }
     }
     if (appearance_repository_ && appearance_policy_) {
       appearance_service_ = std::make_unique<AppearanceService>(
           *appearance_repository_, *clock_, *persistent_id_generator_,
           std::move(*appearance_policy_), options_.features.appearances_mode,
           options_.instance_id, ai_client_.get(), ai_work_.get(), *diagnostics_,
-          options_.persona, options_.timezone, [this] {
+          options_.persona, options_.timezone,
+          [this] {
             const auto discord_status = discord_->status();
             const auto queue = ai_work_->snapshot();
             return AppearanceRuntimeState{
@@ -220,17 +275,101 @@ public:
                 }
               }}
             : JobHandlerRegistry::Handler{});
+    scheduler_->add_handler(std::string{wager_deadline_job_type},
+                            [this](const ClaimedScheduledJob &job) {
+                              if (!wager_service_) {
+                                const auto current = unix_milliseconds(*clock_);
+                                static_cast<void>(durable_work_->defer_job(
+                                    job, current,
+                                    current + disabled_feature_job_delay_ms,
+                                    "feature_disabled"));
+                                return;
+                              }
+                              wager_service_->handle_deadline(job);
+                            });
+    scheduler_->add_handler(std::string{tarot_house_deadline_job_type},
+                            [this](const ClaimedScheduledJob &job) {
+                              if (!tarot_house_service_) {
+                                const auto current = unix_milliseconds(*clock_);
+                                static_cast<void>(durable_work_->defer_job(
+                                    job, current,
+                                    current + disabled_feature_job_delay_ms,
+                                    "feature_disabled"));
+                                return;
+                              }
+                              tarot_house_service_->handle_deadline(job);
+                            });
+    scheduler_->add_handler(std::string{tarot_house_offer_expiry_job_type},
+                            [this](const ClaimedScheduledJob &job) {
+                              if (!tarot_house_service_ ||
+                                  !options_.tarot_house_policy.house_enabled) {
+                                const auto current = unix_milliseconds(*clock_);
+                                static_cast<void>(durable_work_->defer_job(
+                                    job, current,
+                                    current + disabled_feature_job_delay_ms,
+                                    "feature_disabled"));
+                                return;
+                              }
+                              tarot_house_service_->handle_offer_expiry(job);
+                            });
     scheduler_->add_handler(
-        std::string{wager_deadline_job_type},
+        std::string{tarot_integration_job_type},
         [this](const ClaimedScheduledJob &job) {
-          if (!wager_service_) {
+          if (!tarot_integration_service_ ||
+              !tarot_integration_service_->enabled()) {
             const auto current = unix_milliseconds(*clock_);
             static_cast<void>(durable_work_->defer_job(
                 job, current, current + disabled_feature_job_delay_ms,
                 "feature_disabled"));
             return;
           }
-          wager_service_->handle_deadline(job);
+          tarot_integration_service_->validate_scan_job(job);
+          static_cast<void>(tarot_integration_service_->scan());
+          const auto current = unix_milliseconds(*clock_);
+          if (durable_work_->reschedule_job(job, current, current + 60'000) !=
+              WorkMutationStatus::applied)
+            throw std::runtime_error{
+                "Tarot integration scan claim became stale."};
+        });
+    scheduler_->add_handler(
+        std::string{tarot_house_weekly_offer_job_type},
+        [this](const ClaimedScheduledJob &job) {
+          if (!tarot_house_service_ ||
+              !options_.tarot_house_policy.house_enabled) {
+            const auto current = unix_milliseconds(*clock_);
+            if (durable_work_->reschedule_job(
+                    job, current,
+                    next_house_weekly_offer_ms(current,
+                                               tarot_house_timezone)) !=
+                WorkMutationStatus::applied)
+              throw std::runtime_error{
+                  "Disabled House weekly offer claim became stale."};
+            return;
+          }
+          const auto status = discord_->status();
+          const auto result = tarot_house_service_->handle_weekly_offer(
+              job, status.ready && status.command_registration !=
+                                       CommandRegistrationState::failed);
+          if (result.status == HouseWeeklyOfferStatus::deferred) {
+            const auto current = unix_milliseconds(*clock_);
+            const auto mutation =
+                current < job.due_at_ms
+                    ? durable_work_->defer_job(job, current, job.due_at_ms,
+                                               "wall_clock_rollback")
+                    : durable_work_->release_job(job, current);
+            if (mutation != WorkMutationStatus::applied)
+              throw std::runtime_error{
+                  "Deferred House weekly offer claim became stale."};
+            return;
+          }
+          if (result.outbox_created)
+            outbox_->wake();
+          const auto current = unix_milliseconds(*clock_);
+          if (durable_work_->reschedule_job(
+                  job, current,
+                  next_house_weekly_offer_ms(current, tarot_house_timezone)) !=
+              WorkMutationStatus::applied)
+            throw std::runtime_error{"House weekly offer claim became stale."};
         });
     scheduler_->add_handler(
         std::string{session_summary_job_type},
@@ -332,18 +471,25 @@ public:
                 [this] {
                   return durable_work_->health(unix_milliseconds(*clock_));
                 },
-            .tarot =
-                [this]() -> std::optional<TarotInvariantReport> {
+            .tarot = [this]() -> std::optional<TarotInvariantReport> {
               return tarot_service_
-                         ? std::optional<TarotInvariantReport>{
-                               tarot_service_->check_invariants()}
+                         ? std::optional<
+                               TarotInvariantReport>{tarot_service_
+                                                         ->check_invariants()}
                          : std::nullopt;
             },
-            .wagers =
-                [this]() -> std::optional<WagerInvariantReport> {
+            .wagers = [this]() -> std::optional<WagerInvariantReport> {
               return wager_service_
-                         ? std::optional<WagerInvariantReport>{
-                               wager_service_->check_invariants()}
+                         ? std::optional<
+                               WagerInvariantReport>{wager_service_
+                                                         ->check_invariants()}
+                         : std::nullopt;
+            },
+            .house = [this]() -> std::optional<HouseEconomyReport> {
+              return tarot_house_service_
+                         ? std::optional<
+                               HouseEconomyReport>{tarot_house_service_
+                                                       ->check_invariants()}
                          : std::nullopt;
             },
         });
@@ -442,7 +588,9 @@ public:
         [this] { return message_handler_->queue_snapshot(); },
         [this] { return ai_responder_->queue_snapshot(); },
         options_.interaction_queue_capacity, relationship_service_.get(),
-        appearance_service_.get(), tarot_service_.get(), wager_service_.get());
+        appearance_service_.get(), tarot_service_.get(), wager_service_.get(),
+        tarot_draw_service_.get(), tarot_house_service_.get(),
+        tarot_integration_service_.get());
     interaction_router_ = std::make_unique<InteractionRouter>(
         *scope_policy_, options_.controls, options_.features,
         *interaction_handler_, *diagnostics_);
@@ -469,10 +617,27 @@ public:
       instance_started_ = true;
       if (tarot_service_)
         tarot_service_->initialize();
+      if (tarot_catalog_repository_ && options_.tarot_deck_catalog &&
+          options_.tarot_house_catalog) {
+        tarot_catalog_repository_->install(*options_.tarot_deck_catalog,
+                                           *options_.tarot_house_catalog,
+                                           unix_milliseconds(*clock_));
+      }
       if (wager_service_ && !wager_service_->check_invariants().valid) {
         throw std::runtime_error{
             "Wager escrow invariant verification failed during startup."};
       }
+      if (tarot_house_service_)
+        tarot_house_service_->reconcile_draws();
+      if (tarot_house_service_ &&
+          !tarot_house_service_->check_invariants().valid) {
+        throw std::runtime_error{
+            "House escrow invariant verification failed during startup."};
+      }
+      if (tarot_house_service_)
+        tarot_house_service_->ensure_weekly_schedule();
+      if (tarot_integration_service_)
+        tarot_integration_service_->ensure_schedule();
       if (relationship_service_) {
         static_cast<void>(relationship_service_->recover());
         if (!relationship_service_->check_projection().valid) {
@@ -629,6 +794,10 @@ private:
   std::unique_ptr<AppearanceRepository> appearance_repository_;
   std::unique_ptr<TarotRepository> tarot_repository_;
   std::unique_ptr<TarotWagerRepository> wager_repository_;
+  std::unique_ptr<TarotCatalogRepository> tarot_catalog_repository_;
+  std::unique_ptr<TarotDrawRepository> tarot_draw_repository_;
+  std::unique_ptr<TarotHouseRepository> tarot_house_repository_;
+  std::unique_ptr<TarotIntegrationRepository> tarot_integration_repository_;
   std::unique_ptr<Random> random_;
   std::optional<AppearancePolicy> appearance_policy_;
   std::unique_ptr<AiClient> ai_client_;
@@ -647,6 +816,9 @@ private:
   std::unique_ptr<AppearanceService> appearance_service_;
   std::unique_ptr<TarotService> tarot_service_;
   std::unique_ptr<TarotWagerService> wager_service_;
+  std::unique_ptr<TarotDrawService> tarot_draw_service_;
+  std::unique_ptr<TarotHouseService> tarot_house_service_;
+  std::unique_ptr<TarotIntegrationService> tarot_integration_service_;
   std::unique_ptr<SchedulerService> scheduler_;
   std::unique_ptr<DurableWorkControlService> durable_controls_;
   std::unique_ptr<InteractionHandler> interaction_handler_;

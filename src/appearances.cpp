@@ -33,6 +33,8 @@ using Json = nlohmann::json;
     return policy.score_weights.at("expected_title_awarded");
   case AppearanceCandidateType::chronicle_entry:
     return policy.score_weights.at("expected_chronicle_entry");
+  case AppearanceCandidateType::tarot_event:
+    return policy.score_weights.at("expected_tarot_event");
   case AppearanceCandidateType::session_started:
     return policy.score_weights.at("expected_session_started");
   case AppearanceCandidateType::session_completed:
@@ -276,6 +278,8 @@ appearance_candidate_type_name(const AppearanceCandidateType type) noexcept {
     return "title_awarded";
   case AppearanceCandidateType::anniversary:
     return "anniversary";
+  case AppearanceCandidateType::tarot_event:
+    return "tarot_event";
   case AppearanceCandidateType::simulation:
     return "simulation";
   }
@@ -298,6 +302,8 @@ parse_appearance_candidate_type(const std::string_view value) noexcept {
     return AppearanceCandidateType::title_awarded;
   if (value == "anniversary")
     return AppearanceCandidateType::anniversary;
+  if (value == "tarot_event")
+    return AppearanceCandidateType::tarot_event;
   if (value == "simulation")
     return AppearanceCandidateType::simulation;
   return std::nullopt;

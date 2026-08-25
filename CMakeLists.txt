@@ -61,6 +61,7 @@ sanguinius_embed_migrations(
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0008_appearance_live.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0009_tarot_ledger.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0010_peer_wagers.sql"
+    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0011_tarot_house_integration.sql"
 )
 
 function(sanguinius_enable_warnings target)
@@ -114,6 +115,9 @@ add_library(sanguinius_core STATIC
     src/server_scope_policy.cpp
     src/snowflake.cpp
     src/tarot.cpp
+    src/tarot_catalog.cpp
+    src/tarot_house.cpp
+    src/tarot_integration.cpp
     src/wagers.cpp
     src/work_queue.cpp
 )
@@ -146,6 +150,10 @@ add_library(sanguinius_persistence STATIC
     src/persistence/sqlite_relationship_repository.cpp
     src/persistence/sqlite_repositories.cpp
     src/persistence/sqlite_tarot_repository.cpp
+    src/persistence/sqlite_tarot_catalog_repository.cpp
+    src/persistence/sqlite_tarot_draw_repository.cpp
+    src/persistence/sqlite_tarot_house_repository.cpp
+    src/persistence/sqlite_tarot_integration_repository.cpp
     src/persistence/sqlite_wager_repository.cpp
     src/persistence/transaction.cpp
 )
@@ -225,6 +233,7 @@ if(BUILD_TESTING)
         tests/unit/server_scope_policy_tests.cpp
         tests/unit/snowflake_tests.cpp
         tests/unit/tarot_tests.cpp
+        tests/unit/tarot_catalog_tests.cpp
         tests/unit/wager_tests.cpp
         tests/unit/work_queue_tests.cpp
     )
@@ -246,6 +255,7 @@ if(BUILD_TESTING)
         tests/integration/relationship_repository_tests.cpp
         tests/integration/sqlite_tests.cpp
         tests/integration/tarot_repository_tests.cpp
+        tests/integration/tarot_house_repository_tests.cpp
         tests/integration/wager_repository_tests.cpp
         tests/unit/persistent_id_tests.cpp
     )
@@ -289,6 +299,8 @@ if(BUILD_TESTING)
         --unset=SANGUINIUS_OPENAI_MODEL
         --unset=SANGUINIUS_PERSONA_FILE
         --unset=SANGUINIUS_APPEARANCE_POLICY_FILE
+        --unset=SANGUINIUS_TAROT_DECK_FILE
+        --unset=SANGUINIUS_TAROT_HOUSE_FILE
         --unset=SANGUINIUS_TAROT_STARTING_FATE
         --unset=SANGUINIUS_TAROT_GRACE_THRESHOLD
         --unset=SANGUINIUS_TAROT_GRACE_TARGET
@@ -297,6 +309,11 @@ if(BUILD_TESTING)
         --unset=SANGUINIUS_TAROT_TRIAL_REWARD_MIN
         --unset=SANGUINIUS_TAROT_TRIAL_REWARD_MAX
         --unset=SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS
+        --unset=SANGUINIUS_TAROT_DRAW_COOLDOWN_HOURS
+        --unset=SANGUINIUS_TAROT_HOUSE_ENABLED
+        --unset=SANGUINIUS_TAROT_HOUSE_EXPOSURE_CAP
+        --unset=SANGUINIUS_TAROT_HOUSE_PROFIT_CAP
+        --unset=SANGUINIUS_TAROT_INTEGRATION_ENABLED
         --unset=SANGUINIUS_DATABASE_FILE
         --unset=SANGUINIUS_ADMIN_COMMANDS_ENABLED
         --unset=SANGUINIUS_TEST_MODE
@@ -319,7 +336,7 @@ if(BUILD_TESTING)
             SANGUINIUS_OWNER_USER_ID=123456789012345678
             SANGUINIUS_DATABASE_FILE=DATABASE_PATH_SENTINEL
             SANGUINIUS_PERSONA_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/persona.txt
-            SANGUINIUS_APPEARANCE_POLICY_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/appearance-policy-v1.json
+            SANGUINIUS_APPEARANCE_POLICY_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/appearance-policy-v2.json
             SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS=1
             "$<TARGET_FILE:sanguinius>" --check-config
     )
@@ -339,7 +356,7 @@ if(BUILD_TESTING)
             SANGUINIUS_PRIMARY_CHANNEL_ID=20
             SANGUINIUS_OWNER_USER_ID=30
             SANGUINIUS_PERSONA_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/persona.txt
-            SANGUINIUS_APPEARANCE_POLICY_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/appearance-policy-v1.json
+            SANGUINIUS_APPEARANCE_POLICY_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/appearance-policy-v2.json
             "$<TARGET_FILE:sanguinius>" --check-config
     )
     set_tests_properties(sanguinius_check_config_secret_file_error PROPERTIES
@@ -360,7 +377,7 @@ if(BUILD_TESTING)
             SANGUINIUS_DATABASE_FILE=${CMAKE_CURRENT_BINARY_DIR}/startup-test.sqlite3
             SANGUINIUS_LOG_FILE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt/LOG_PATH_SECRET_SENTINEL/messages.log
             SANGUINIUS_PERSONA_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/persona.txt
-            SANGUINIUS_APPEARANCE_POLICY_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/appearance-policy-v1.json
+            SANGUINIUS_APPEARANCE_POLICY_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/appearance-policy-v2.json
             "$<TARGET_FILE:sanguinius>"
     )
     set_tests_properties(sanguinius_startup_path_redaction PROPERTIES
@@ -382,7 +399,7 @@ if(BUILD_TESTING)
             SANGUINIUS_DATABASE_FILE=${CMAKE_CURRENT_BINARY_DIR}/missing-startup-test.sqlite3
             SANGUINIUS_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/messages.log
             SANGUINIUS_PERSONA_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/persona.txt
-            SANGUINIUS_APPEARANCE_POLICY_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/appearance-policy-v1.json
+            SANGUINIUS_APPEARANCE_POLICY_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/appearance-policy-v2.json
             "$<TARGET_FILE:sanguinius>"
     )
     set_tests_properties(sanguinius_startup_requires_existing_database PROPERTIES

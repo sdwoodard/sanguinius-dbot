@@ -22,10 +22,10 @@ namespace {
 
 } // namespace
 
-TEST_CASE("command catalog version nine is deterministic and feature gated",
+TEST_CASE("command catalog version ten is deterministic and feature gated",
           "[interaction][commands]") {
   const auto public_catalog = sanguinius::command_catalog(false);
-  REQUIRE(public_catalog.version == 9);
+  REQUIRE(public_catalog.version == 10);
   REQUIRE(public_catalog.commands.size() == 2);
   REQUIRE(public_catalog.commands[0].name == "sanguinius");
   REQUIRE(public_catalog.commands[0].subcommands.size() == 5);
@@ -76,10 +76,10 @@ TEST_CASE("command catalog version nine is deterministic and feature gated",
   REQUIRE(chronicle_catalog.commands[3].name == "sang-admin");
 
   const auto tarot_catalog = sanguinius::command_catalog(true, false, true);
-  REQUIRE(tarot_catalog.version == 9);
+  REQUIRE(tarot_catalog.version == 10);
   REQUIRE(tarot_catalog.commands.size() == 3);
   REQUIRE(tarot_catalog.commands[1].name == "tarot");
-  REQUIRE(tarot_catalog.commands[1].subcommands.size() == 13);
+  REQUIRE(tarot_catalog.commands[1].subcommands.size() == 15);
   const auto &standings_visibility =
       tarot_catalog.commands[1].subcommands[3].options[0];
   REQUIRE(standings_visibility.choices[0].name == "Public");
@@ -91,21 +91,25 @@ TEST_CASE("command catalog version nine is deterministic and feature gated",
   REQUIRE(tarot_catalog.commands[2].subcommand_groups.size() == 2);
   const auto &tarot_admin = tarot_catalog.commands[2].subcommand_groups[1];
   REQUIRE(tarot_admin.name == "tarot");
-  REQUIRE(tarot_admin.subcommands.size() == 5);
+  REQUIRE(tarot_admin.subcommands.size() == 14);
   REQUIRE(tarot_admin.subcommands[0].options[0].kind ==
           sanguinius::CommandOptionKind::integer);
   REQUIRE(tarot_admin.subcommands[0].options[0].minimum_integer ==
           sanguinius::minimum_tarot_adjustment);
   REQUIRE(tarot_admin.subcommands[0].options[0].maximum_integer ==
           sanguinius::maximum_tarot_adjustment);
-  REQUIRE(tarot_catalog.commands[1].subcommands[6].name == "wager");
-  REQUIRE(tarot_catalog.commands[1].subcommands[6].options[0].kind ==
+  REQUIRE(tarot_catalog.commands[1].subcommands[8].name == "wager");
+  REQUIRE(tarot_catalog.commands[1].subcommands[8].options[0].kind ==
           sanguinius::CommandOptionKind::user);
-  REQUIRE(tarot_catalog.commands[1].subcommands[7].name == "wagers");
-  REQUIRE(tarot_catalog.commands[1].subcommands[12].name == "disputes");
-  REQUIRE(tarot_admin.subcommands[2].name == "wager-role");
-  REQUIRE(tarot_admin.subcommands[3].name == "wager-deadline");
-  REQUIRE(tarot_admin.subcommands[4].name == "wager-cleanup");
+  REQUIRE(tarot_catalog.commands[1].subcommands[9].name == "wagers");
+  REQUIRE(tarot_catalog.commands[1].subcommands[14].name == "disputes");
+  REQUIRE(tarot_catalog.commands[1].subcommand_groups.size() == 1);
+  REQUIRE(tarot_catalog.commands[1].subcommand_groups[0].name == "house");
+  REQUIRE(tarot_admin.subcommands[5].name == "house-offer");
+  REQUIRE(tarot_admin.subcommands[8].name == "house-cleanup");
+  REQUIRE(tarot_admin.subcommands[11].name == "wager-role");
+  REQUIRE(tarot_admin.subcommands[12].name == "wager-deadline");
+  REQUIRE(tarot_admin.subcommands[13].name == "wager-cleanup");
 }
 
 TEST_CASE("command registration reconciliation is guarded and retryable",

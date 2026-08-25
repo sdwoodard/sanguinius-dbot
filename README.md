@@ -2,8 +2,9 @@
 
 Sanguinius is a Discord bot built with modern C++ and [D++](https://dpp.dev/).
 It supports guild-scoped slash commands, sealed notices, an optional Living
-Chronicle, and persistent unsolicited appearances with off, dry-run, and
-conservatively budgeted live modes. It
+Chronicle, a persistent original Emperor's Tarot and Fate economy, and
+persistent unsolicited appearances with off, dry-run, and conservatively
+budgeted live modes. It
 preserves two public prefix commands, answers messages that begin with a bot
 mention through the OpenAI Responses API, and writes every visible guild
 message-create event to an append-only text log. Typed configuration fixes the
@@ -16,7 +17,7 @@ bot's feature boundary to one guild, one primary text channel, and one owner.
 | `!help` | List the supported commands. |
 | `!repo` | Link to this source repository. |
 
-The configured guild receives command catalog version 9. Chronicle and Tarot
+The configured guild receives command catalog version 10. Chronicle and Tarot
 commands are registered only when their corresponding feature flag is enabled;
 owner commands remain separately gated:
 
@@ -48,6 +49,11 @@ owner commands remain separately gated:
 | `/tarot standings-visibility public\|private` | Ephemerally changes whether the invoking member appears in public standings without changing the ledger. |
 | `/tarot grace [visibility:public\|private]` | Ephemerally prepares Grace of the Throne when eligible; successful public claims enqueue only neutral flavor. |
 | `/tarot trial [visibility:public\|private]` | Ephemerally prepares three persisted Renewal vows plus Abandon; any vow awards the preselected reward exactly once. |
+| `/tarot draw [visibility:public\|private]` | Persists one deterministic draw from the versioned 22-card original deck before returning it. Ordinary draws share a 24-hour cooldown; retries replay the exact card and flavor. |
+| `/tarot house offers` | Ephemerally lists currently claimable House auguries without exposing another member's terms. |
+| `/tarot house play template:<template> choice:<choice> stake:<0\|1\|5\|10> [visibility] [offer]` | Privately checks eligibility and atomically funds one one-person augury. Public visibility affects only bounded flavor; balances, stake, odds, and payouts stay ephemeral. |
+| `/tarot house history [reference]` | Shows only the invoking member's private House history or exact authorized wager. |
+| `/tarot record` | Ephemerally shows the invoking member's wins, losses, streaks, House count, and pending title proposals. |
 | `/tarot wager target:<user> [visibility] [resolution] [judge] [outcome-in]` | Starts the ephemeral equal-stake peer-wager form and immutable preview. Confirmation creates a public offer or a sealed target-bound notice. |
 | `/tarot wagers [reference]` | Shows participant-only five-item history or exact private details with current role-authorized controls. |
 | `/tarot wager-action reference:<uuid> action:<accept\|decline\|cancel\|agree\|dispute\|void>` | Slash fallback for wager buttons. Acceptance atomically funds both equal stakes. |
@@ -73,6 +79,15 @@ owner commands remain separately gated:
 | `/sang-admin tarot wager-role reference:<uuid> role:<creator\|target\|judge\|owner>` | Owner-only, test-mode-gated selection of one simulated role for a self-wager. |
 | `/sang-admin tarot wager-deadline reference:<uuid> phase:<draft\|offer\|reminder\|outcome\|grace>` | Owner-only, test-mode-gated forcing of one persisted deadline phase. |
 | `/sang-admin tarot wager-cleanup reference:<uuid> reason:<text>` | Owner-only, test-mode-gated exact reversal of every terminal test-wager transfer; audit rows are retained. |
+| `/sang-admin tarot economy` | Owner-only read-only Fate issuance, escrow, House exposure, and invariant health without member balances or wager terms. |
+| `/sang-admin tarot draw-test [visibility]` | Owner-only, admin/test-mode-gated persisted test draw that bypasses the ordinary cooldown. |
+| `/sang-admin tarot draw-replay reference:<uuid>` | Owner-only read-only replay of the caller's exact persisted draw without sampling again. |
+| `/sang-admin tarot house-offer` | Owner-only, admin/test-mode-gated deterministic public test offer for the next Last Standard slot. |
+| `/sang-admin tarot house-resolve reference:<uuid> outcome:<yes\|no\|void> reason:<text>` | Owner-only reasoned observation for Last Standard. Real manual wagers may be resolved without test mode; other mutations remain test-gated. |
+| `/sang-admin tarot house-deadline` | Owner-only, admin/test-mode-gated processing of due test House wagers. |
+| `/sang-admin tarot house-cleanup reference:<uuid> reason:<text>` | Owner-only, admin/test-mode-gated exact reversal of terminal test House transfers while retaining audit. |
+| `/sang-admin tarot integration-preview` | Owner-only redacted inspection of pending or failed Tarot integration work. |
+| `/sang-admin tarot integration-retry reference:<uuid>` | Owner-only, admin/test-mode-gated retry of one failed test observation. |
 
 Command names are case-insensitive. Messages written by bots are logged but are
 not treated as commands.
@@ -116,6 +131,34 @@ exact lookup fails closed, until the target's sealed notice has actually been
 delivered. Reserving or failing an ephemeral reveal does not unlock the terms.
 Sealed acceptance uses the same delivery fence and moves no Fate until the
 target has successfully received the complete offer.
+
+The curated `emperor-tarot-v1` deck contains 22 original cards with no
+reversals or conventional Tarot names. Catalog snapshots and every draw are
+immutable; reusing a version with different canonical content is a startup
+error. Card meanings are flavor only and never determine Fate movement,
+permissions, or House outcomes.
+
+House play is one member against deterministic system accounts, never a pool.
+Returning Dawn is a zero-stake recovery augury; Herald's Call and Final Hour
+resolve from persisted public draws or deadlines; Last Standard is offered at
+18:00 Friday in `America/New_York` and records whether game-night play remains
+underway at midnight Saturday. Missed, quiet, degraded, duplicate, or
+exposure-blocked weekly slots are skipped rather than caught up. Its public
+reminder and linked unclaimed-offer expiry are durable and idempotent; expiry
+cancels the opaque control and releases reserved exposure. Funding
+collateralizes the exact integral profit in the same `BEGIN IMMEDIATE`
+transaction as the user's stake. Non-test open House profit exposure is capped
+at 100 Fate globally and profit at 20 Fate per wager. A win, loss, void, retry,
+or restart always settles the same escrow once. Fate has no purchase, cash,
+cryptocurrency, or other real-money value.
+
+Public House cards contain only neutral proposition/status text and opaque
+controls. Eligibility, balances, selected stakes, odds, payouts, records,
+recovery status, sealed peer terms, and hidden relationship values remain
+ephemeral. Post-settlement Tarot observations are source/sink-idempotent:
+notable public events may submit Chronicle proposals, relationship events,
+appearance candidates, title proposals, and expiring text-only future Vox
+intents. They never create canon, activate titles, or deliver voice directly.
 
 Public offers show the proposition, equal stake, participants, resolution
 method, deadlines, and public-safe status. Sealed public cards contain only a
@@ -314,9 +357,9 @@ provide the key directly for the current process:
 export OPENAI_API_KEY='your-api-key'
 ```
 
-The default model is `gpt-5.4-nano`, selected for low API cost. It does not have
+The default model is `gpt-5.6-luna`, selected for low API cost. It does not have
 a free API tier. Review its [current model pricing and rate
-limits](https://developers.openai.com/api/docs/models/gpt-5.4-nano) and set usage
+limits](https://developers.openai.com/api/docs/models/gpt-5.6-luna) and set usage
 limits in the OpenAI platform before running the bot.
 
 Optional settings are:
@@ -326,9 +369,11 @@ Optional settings are:
 | `SANGUINIUS_LOG_FILE` | `logs/messages.log` | Message log path. |
 | `SANGUINIUS_COMMAND_PREFIX` | `!` | Command prefix (1–8 non-space characters). |
 | `SANGUINIUS_OPENAI_API_KEY_FILE` | Set by start script | OpenAI API key file. |
-| `SANGUINIUS_OPENAI_MODEL` | `gpt-5.4-nano` | Responses API model. |
+| `SANGUINIUS_OPENAI_MODEL` | `gpt-5.6-luna` | Responses API model. |
 | `SANGUINIUS_PERSONA_FILE` | `config/persona.txt` | Plaintext persona instructions. |
-| `SANGUINIUS_APPEARANCE_POLICY_FILE` | `config/appearance-policy-v1.json` | Strict versioned appearance policy. Paths are redacted in configuration output. |
+| `SANGUINIUS_APPEARANCE_POLICY_FILE` | `config/appearance-policy-v2.json` | Strict versioned appearance policy with the `tarot_event` candidate family. Paths are redacted in configuration output. |
+| `SANGUINIUS_TAROT_DECK_FILE` | `config/emperor-tarot-v1.json` | Strict versioned original deck catalog. Configuration output reports only its origin and version. |
+| `SANGUINIUS_TAROT_HOUSE_FILE` | `config/tarot-house-v1.json` | Strict versioned House-template catalog. Configuration output reports only its origin and version. |
 | `SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS` | `10` | Discord REST timeout, from 1 through 300 seconds. |
 | `SANGUINIUS_TIMEZONE` | `America/New_York` | IANA time zone used for the daily 10:00 Chronicle anniversary scan. |
 | `SANGUINIUS_DATABASE_FILE` | `state/sanguinius.sqlite3` | SQLite state file. Production should use an absolute path outside release directories. |
@@ -349,6 +394,11 @@ Optional settings are:
 | `SANGUINIUS_TAROT_WAGER_OFFER_EXPIRY_HOURS` | `24` | Confirmed offer lifetime (1–8,760 hours). |
 | `SANGUINIUS_TAROT_WAGER_DEFAULT_OUTCOME_HOURS` | `24` | Default outcome window after acceptance (1–168 hours). |
 | `SANGUINIUS_TAROT_WAGER_RESOLUTION_GRACE_HOURS` | `48` | Grace after the outcome deadline before owner escalation (1–168 hours). |
+| `SANGUINIUS_TAROT_DRAW_COOLDOWN_HOURS` | `24` | Cooldown shared by ordinary public and private deck draws (1–744 hours). |
+| `SANGUINIUS_TAROT_HOUSE_ENABLED` | `true` | Enable deck draws, House play, and the persisted Friday offer schedule when Tarot is enabled. |
+| `SANGUINIUS_TAROT_HOUSE_EXPOSURE_CAP` | `100` | Maximum non-test profit collateral reserved by open House offers and funded House wagers. |
+| `SANGUINIUS_TAROT_HOUSE_PROFIT_CAP` | `20` | Maximum integral profit promised by any one House wager. |
+| `SANGUINIUS_TAROT_INTEGRATION_ENABLED` | `true` | Enable idempotent post-settlement integration observations and derived effects. |
 | `SANGUINIUS_APPEARANCES_MODE` | `off` | Appearance engine mode: `off`, inspection-only `dry_run`, or conservatively budgeted `live`. |
 | `SANGUINIUS_VOX_ENABLED` | `false` | Configured Vox mode; no voice connection exists yet. |
 | `SANGUINIUS_VOICE_INPUT_ENABLED` | `false` | Reserved privacy gate; voice input remains unavailable. |
@@ -390,6 +440,7 @@ credentials, or contact the network:
 ./build/release/sanguinius db relationships check
 ./build/release/sanguinius db relationships rebuild --confirm
 ./build/release/sanguinius db tarot check
+./build/release/sanguinius db tarot rebuild --confirm
 ./build/release/sanguinius db backup /restricted/backup/sanguinius.sqlite3
 ```
 
@@ -409,9 +460,10 @@ status/counts. When Tarot is enabled, normal startup performs the same check
 and fails closed on prepared rows, imbalance, negative human history, overflow,
 illegal reversal, recovery mismatch, orphaned linkage, malformed wager
 transfers/deadlines, or a difference between the `ESCROW` balance and unresolved
-funded obligations. Health reports only the open-funded count, escrow amount,
-dispute count, and redacted invariant counts—never terms, evidence, balances,
-or ledger identifiers.
+peer-plus-House funded obligations. It also verifies House transfer shapes,
+exposure, and combined escrow reconciliation. Health reports only open-funded
+counts, escrow/obligation totals, House exposure, dispute count, and redacted
+invariant counts—never terms, evidence, member balances, or ledger identifiers.
 
 Migration `0001_core_foundation` contains only shared identity and
 configuration state: migration history, application instances, Discord users,
@@ -496,6 +548,21 @@ payload rules.
 It is forward-only: rollback preserves the failed v10 database, restores the
 checksum-verified schema-v9 backup, and runs the accepted Milestone 11
 artifact/catalog rather than applying reverse SQL.
+Migration `0011_tarot_house_integration` adds immutable versioned deck and
+House catalogs, persisted draw receipts, snapshotted House offers/wagers,
+deadline and weekly-offer jobs, exact House transfer links, public-card audit,
+test cleanup, and a rebuildable player-result projection. It widens the
+accepted wager ledger shapes to exactly one peer or House owner link and checks
+combined escrow. A count-verified Chronicle copy/swap adds unique
+`tarot_event` provenance; title provenance admits `tarot_system` proposals.
+Durable source observations drive once-only Chronicle proposals, relationship
+events, Tarot appearance candidates, title thresholds, and expiring text-only
+future Vox intents after Fate settlement has committed. Existing schema-v10
+peer results seed baseline statistics before observation triggers exist, so no
+retroactive effects are emitted. It is forward-only: rollback preserves the
+v11 database and diagnostics, restores the checksum-verified database captured
+immediately before migration, and selects the matching accepted binary and
+catalogs rather than applying reverse SQL.
 The readable SQL for each ordered migration is
 embedded independently with its SHA-256
 checksum. Applied history must be ordered, contiguous, and byte-for-byte

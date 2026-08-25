@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "policy_version": "m13-tarot-1",
+  "activity": {
+    "window_seconds": 600,
+    "human_messages_required": 8,
+    "active_humans_required": 2,
+    "retention_seconds": 1800,
+    "maximum_rows": 24,
+    "maximum_utf8_bytes_per_row": 500,
+    "maximum_total_utf8_bytes": 12288
+  },
+  "candidate_expiry_seconds": {
+    "conversation": 600,
+    "recurrence": 600,
+    "chronicle_entry": 3600,
+    "session_started": 3600,
+    "session_completed": 3600,
+    "title_awarded": 3600,
+    "anniversary": 43200,
+    "tarot_event": 3600,
+    "simulation": 600
+  },
+  "hypothetical_budget": {
+    "window_seconds": 86400,
+    "maximum": 1,
+    "minimum_gap_seconds": 5400,
+    "human_messages_after_previous": 8,
+    "same_theme_cooldown_seconds": 604800,
+    "same_memory_cooldown_seconds": 2592000
+  },
+  "scoring": {
+    "threshold": 60,
+    "alternating_turns": 4,
+    "alternating_window_seconds": 180,
+    "recent_speech_seconds": 1800,
+    "stale_speech_seconds": 5400,
+    "weights": {
+      "relevance_current": 20,
+      "alternating_turns": 5,
+      "chronicle_exact": 25,
+      "chronicle_event": 15,
+      "session_event": 10,
+      "novelty_unseen": 15,
+      "novelty_7_to_30_days": 8,
+      "participation_two": 10,
+      "participation_three_plus": 15,
+      "recurrence_one": 5,
+      "recurrence_multiple": 10,
+      "timing_idle_or_eight_messages": 10,
+      "timing_four_to_seven_messages": 5,
+      "expected_conversation": 5,
+      "expected_recurrence": 10,
+      "expected_anniversary": 10,
+      "expected_title_awarded": 10,
+      "expected_chronicle_entry": 5,
+      "expected_session_started": 3,
+      "expected_session_completed": 8,
+      "expected_tarot_event": 5,
+      "expected_simulation": 5,
+      "penalty_recent_speech": -20,
+      "penalty_stale_speech": -10,
+      "penalty_repetition_7_to_14_days": -25,
+      "penalty_repetition_14_to_30_days": -10,
+      "penalty_weak_generic": -30,
+      "penalty_uncertain_generic": -15
+    }
+  },
+  "ai": {
+    "maximum_public_excerpts": 8,
+    "maximum_memories": 3,
+    "attempts": 1,
+    "maximum_output_tokens": 500,
+    "maximum_unicode_code_points": 500,
+    "minimum_confidence": 0.8,
+    "allowed_tones": ["warm", "wry", "celebratory", "reflective", "playful"]
+  },
+  "generated_preview_retention_seconds": 2592000,
+  "quiet_windows": [],
+  "serious_context": {
+    "crisis_self_harm_emergency": ["suicide", "suicidal", "self harm", "self-harm", "emergency", "911"],
+    "death_serious_health": ["died", "death", "funeral", "cancer", "hospital", "terminal illness"],
+    "abuse_conflict": ["abuse", "abused", "domestic violence", "assault", "restraining order"],
+    "private_medical_employment_legal_financial": ["diagnosis", "laid off", "fired", "lawsuit", "attorney", "bankruptcy", "debt"],
+    "credentials_security_pii": ["password", "api key", "social security", "credit card", "security breach", "home address"],
+    "christianity": ["Christian", "Christianity", "Jesus", "Christ", "God", "Bible", "Scripture", "church", "prayer", "pastor", "theology", "gospel"]
+  }
+}

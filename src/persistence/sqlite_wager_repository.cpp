@@ -3568,12 +3568,16 @@ WagerInvariantReport SqliteWagerRepository::check_invariants() {
   WagerInvariantReport report{
       .valid = true,
       .open_funded_obligation_count = static_cast<std::size_t>(scalar(
-          connection, "SELECT count(*) FROM tarot_wager WHERE state IN "
-                      "('accepted_funded','awaiting_resolution','disputed')")),
+          connection, "SELECT (SELECT count(*) FROM tarot_wager WHERE state IN "
+                      "('accepted_funded','awaiting_resolution','disputed')) + "
+                      "(SELECT count(*) FROM tarot_house_wager WHERE "
+                      "state='accepted_funded')")),
       .open_funded_obligation_amount = scalar(
           connection,
-          "SELECT COALESCE(sum(2 * stake), 0) FROM tarot_wager WHERE state IN "
-          "('accepted_funded','awaiting_resolution','disputed')"),
+          "SELECT COALESCE((SELECT sum(2 * stake) FROM tarot_wager WHERE "
+          "state IN ('accepted_funded','awaiting_resolution','disputed')),0) "
+          "+ COALESCE((SELECT sum(stake + profit) FROM tarot_house_wager "
+          "WHERE state='accepted_funded'),0)"),
       .escrow_balance = scalar(
           connection,
           "SELECT COALESCE(sum(posting.amount), 0) FROM tarot_posting posting "
@@ -3589,9 +3593,11 @@ WagerInvariantReport SqliteWagerRepository::check_invariants() {
           connection,
           "SELECT (SELECT count(*) FROM tarot_transaction tx WHERE "
           "tx.transaction_type LIKE 'WAGER_%' "
-          "AND (tx.state <> 'committed' OR NOT EXISTS (SELECT 1 "
-          "FROM tarot_wager_transfer transfer "
-          "WHERE transfer.transaction_id = tx.transaction_id) OR "
+          "AND (tx.state <> 'committed' OR ((EXISTS (SELECT 1 "
+          "FROM tarot_wager_transfer transfer WHERE transfer.transaction_id = "
+          "tx.transaction_id)) + (EXISTS (SELECT 1 FROM tarot_house_transfer "
+          "transfer WHERE transfer.transaction_id = tx.transaction_id))) <> 1 "
+          "OR "
           "(SELECT count(*) FROM tarot_posting posting WHERE "
           "posting.transaction_id = tx.transaction_id) "
           "<> tx.expected_posting_count)) "

@@ -4,6 +4,7 @@
 #include "sanguinius/persistence/database.hpp"
 #include "sanguinius/persistence/migrator.hpp"
 #include "sanguinius/persistence/sqlite_relationship_repository.hpp"
+#include "sanguinius/persistence/sqlite_tarot_house_repository.hpp"
 #include "sanguinius/persistence/sqlite_tarot_repository.hpp"
 #include "sanguinius/persistence/sqlite_wager_repository.hpp"
 
@@ -154,8 +155,11 @@ int run_database_command(const DatabaseCommand &command,
           std::move(opened));
       persistence::SqliteTarotRepository tarot{context};
       persistence::SqliteWagerRepository wagers{context};
+      persistence::SqliteTarotHouseRepository house{context};
       const auto result = tarot.check_invariants();
       const auto wager_result = wagers.check_invariants();
+      const auto house_result = house.economy();
+      const auto projection_result = house.check_player_projection();
       output << "tarot=" << (result.valid ? "ok" : "failed") << '\n'
              << "accounts=" << result.account_count << '\n'
              << "transactions=" << result.committed_transaction_count << '\n'
@@ -179,8 +183,43 @@ int run_database_command(const DatabaseCommand &command,
              << "wager_invalid_deadline_action_links="
              << wager_result.invalid_deadline_action_link_count << '\n'
              << "wager_orphaned_links=" << wager_result.orphaned_link_count
+             << '\n'
+             << "house=" << (house_result.valid ? "ok" : "failed") << '\n'
+             << "house_open_funded=" << house_result.open_house_wagers << '\n'
+             << "house_exposure_fate=" << house_result.non_test_exposure << '\n'
+             << "house_test_exposure_fate=" << house_result.test_exposure
+             << '\n'
+             << "house_obligation_fate=" << house_result.expected_house_escrow
+             << '\n'
+             << "combined_escrow_fate=" << house_result.escrow_balance << '\n'
+             << "house_malformed_transfers="
+             << house_result.malformed_transfer_count << '\n'
+             << "house_malformed_offer_deadlines="
+             << house_result.malformed_offer_deadline_count << '\n'
+             << "tarot_player_projection="
+             << (projection_result.valid ? "ok" : "drift") << '\n'
+             << "tarot_player_events=" << projection_result.event_count << '\n'
+             << "tarot_player_projections="
+             << projection_result.projection_count << '\n'
+             << "tarot_player_mismatches=" << projection_result.mismatch_count
              << '\n';
-      return result.valid && wager_result.valid ? 0 : 1;
+      return result.valid && wager_result.valid && house_result.valid &&
+                     projection_result.valid
+                 ? 0
+                 : 1;
+    }
+    case DatabaseCommandType::tarot_rebuild: {
+      auto opened = Database::open_migration(database);
+      migrator.require_current(opened.connection());
+      auto context = std::make_shared<persistence::SqliteRepositoryContext>(
+          std::move(opened));
+      persistence::SqliteTarotHouseRepository house{context};
+      const auto result = house.rebuild_player_projection();
+      output << "tarot_player_projection=rebuilt\n"
+             << "tarot_player_events=" << result.event_count << '\n'
+             << "tarot_player_projections=" << result.projection_count << '\n'
+             << "tarot_player_mismatches=" << result.mismatch_count << '\n';
+      return result.valid ? 0 : 1;
     }
     }
   } catch (const DatabaseError &error) {

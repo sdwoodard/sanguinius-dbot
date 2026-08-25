@@ -26,11 +26,13 @@ public:
         {"SANGUINIUS_OWNER_USER_ID", "123456789012345678"},
     };
     files.emplace("config/persona.txt", "PERSONA_SECRET_SENTINEL");
-    const auto policy_path = std::filesystem::path{__FILE__}.parent_path()
-                                 .parent_path().parent_path() /
-                             "config/appearance-policy-v1.json";
+    const auto policy_path = std::filesystem::path{__FILE__}
+                                 .parent_path()
+                                 .parent_path()
+                                 .parent_path() /
+                             "config/appearance-policy-v2.json";
     std::ifstream policy{policy_path};
-    files.emplace("config/appearance-policy-v1.json",
+    files.emplace("config/appearance-policy-v2.json",
                   std::string{std::istreambuf_iterator<char>{policy},
                               std::istreambuf_iterator<char>{}});
   }
@@ -112,6 +114,7 @@ TEST_CASE("typed configuration loads safe defaults and full snowflakes",
   REQUIRE(config.paths.database_file == "state/sanguinius.sqlite3");
   REQUIRE(config.command_prefix == "!");
   REQUIRE(config.timezone == "America/New_York");
+  REQUIRE(config.ai.model == "gpt-5.6-luna");
   REQUIRE(config.origins.discord_request_timeout ==
           sanguinius::ConfigurationOrigin::default_value);
   REQUIRE(config.origins.message_log ==
@@ -148,7 +151,7 @@ TEST_CASE("typed configuration loads safe defaults and full snowflakes",
   REQUIRE_FALSE(config.features.voice_input_enabled);
   REQUIRE(source.read_paths ==
           std::vector<std::filesystem::path>{
-              "config/persona.txt", "config/appearance-policy-v1.json"});
+              "config/persona.txt", "config/appearance-policy-v2.json"});
 }
 
 TEST_CASE("Discord command configuration does not load application services",
@@ -212,8 +215,8 @@ TEST_CASE("Tarot configuration parses confirmed overrides and relationships",
   REQUIRE(contains(config_error(source), "ordered Trial reward bounds"));
   source.values["SANGUINIUS_TAROT_TRIAL_REWARD_MIN"] = "6";
   source.values["SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS"] = "8761";
-  REQUIRE(contains(config_error(source),
-                   "SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS"));
+  REQUIRE(
+      contains(config_error(source), "SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS"));
   source.values["SANGUINIUS_TAROT_TRIAL_COOLDOWN_HOURS"] = "36";
   source.values["SANGUINIUS_TAROT_WAGER_MINIMUM_STAKE"] = "76";
   REQUIRE(contains(config_error(source), "wager stake bounds"));
@@ -221,6 +224,40 @@ TEST_CASE("Tarot configuration parses confirmed overrides and relationships",
   source.values["SANGUINIUS_TAROT_WAGER_RESOLUTION_GRACE_HOURS"] = "169";
   REQUIRE(contains(config_error(source),
                    "SANGUINIUS_TAROT_WAGER_RESOLUTION_GRACE_HOURS"));
+}
+
+TEST_CASE("enabled Tarot configuration validates both catalog files",
+          "[config][tarot][catalog]") {
+  const auto repository =
+      std::filesystem::path{__FILE__}.parent_path().parent_path().parent_path();
+  const auto read_fixture = [](const std::filesystem::path &path) {
+    std::ifstream input{path};
+    REQUIRE(input.good());
+    return std::string{std::istreambuf_iterator<char>{input},
+                       std::istreambuf_iterator<char>{}};
+  };
+
+  FakeConfigSource source;
+  source.values["SANGUINIUS_TAROT_ENABLED"] = "true";
+  source.values["SANGUINIUS_TAROT_DECK_FILE"] = "DECK_PATH_SENTINEL";
+  source.values["SANGUINIUS_TAROT_HOUSE_FILE"] = "HOUSE_PATH_SENTINEL";
+  source.files["DECK_PATH_SENTINEL"] =
+      read_fixture(repository / "config/emperor-tarot-v1.json");
+  source.files["HOUSE_PATH_SENTINEL"] =
+      read_fixture(repository / "config/tarot-house-v1.json");
+
+  const auto config = sanguinius::Config::from_source(source);
+  REQUIRE(config.tarot_deck_catalog.has_value());
+  REQUIRE(config.tarot_house_catalog.has_value());
+  REQUIRE(config.tarot_deck_catalog->cards.size() == 22);
+
+  source.files.erase("DECK_PATH_SENTINEL");
+  const auto missing_error = config_error(source);
+  REQUIRE(contains(missing_error, "SANGUINIUS_TAROT_DECK_FILE"));
+  REQUIRE_FALSE(contains(missing_error, "DECK_PATH_SENTINEL"));
+
+  source.files["DECK_PATH_SENTINEL"] = "{}";
+  REQUIRE_FALSE(config_error(source).empty());
 }
 
 TEST_CASE("typed configuration parses strict controls features and duration",
@@ -243,7 +280,7 @@ TEST_CASE("typed configuration parses strict controls features and duration",
   source.files["configured-persona"] = "configured persona";
   source.values["SANGUINIUS_APPEARANCE_POLICY_FILE"] = "configured-policy";
   source.files["configured-policy"] =
-      source.files["config/appearance-policy-v1.json"];
+      source.files["config/appearance-policy-v2.json"];
 
   const auto config = sanguinius::Config::from_source(source);
   REQUIRE(config.controls.admin_commands_enabled);
@@ -358,8 +395,7 @@ TEST_CASE("configuration validates appearance mode database and persona",
   REQUIRE_FALSE(contains(mode_error, "DRY_RUN_SENTINEL"));
 
   FakeConfigSource invalid_timezone;
-  invalid_timezone.values["SANGUINIUS_TIMEZONE"] =
-      "INVALID_TIMEZONE_SENTINEL";
+  invalid_timezone.values["SANGUINIUS_TIMEZONE"] = "INVALID_TIMEZONE_SENTINEL";
   const auto timezone_error = config_error(invalid_timezone);
   REQUIRE(contains(timezone_error, "SANGUINIUS_TIMEZONE"));
   REQUIRE_FALSE(contains(timezone_error, "INVALID_TIMEZONE_SENTINEL"));

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <string_view>
 #include <thread>
 
@@ -25,6 +26,10 @@ using namespace std::chrono_literals;
       .features = {.chronicle_enabled = true},
       .tarot_policy = {},
       .wager_policy = {},
+      .tarot_house_policy = {.house_enabled = false,
+                             .integration_enabled = false},
+      .tarot_deck_catalog = std::nullopt,
+      .tarot_house_catalog = std::nullopt,
       .build = {"test-version", "test-revision"},
       .persistence = {true, 5, 5, "3.53.4",
                       "00000000-0000-4000-8000-000000000001"},
@@ -37,6 +42,25 @@ using namespace std::chrono_literals;
       .interaction_queue_capacity = 64,
       .durable_delivery_receipt_wait = std::chrono::milliseconds{100},
   };
+  return options;
+}
+
+[[nodiscard]] sanguinius::ApplicationOptions tarot_house_options() {
+  auto options = social_ai_options();
+  options.features.chronicle_enabled = false;
+  options.features.tarot_enabled = true;
+  options.tarot_house_policy.house_enabled = true;
+  options.persistence.schema_version = 11;
+  options.persistence.target_schema_version = 11;
+  const auto config = std::filesystem::path{__FILE__}
+                          .parent_path()
+                          .parent_path()
+                          .parent_path() /
+                      "config";
+  options.tarot_deck_catalog =
+      sanguinius::load_tarot_deck_catalog(config / "emperor-tarot-v1.json");
+  options.tarot_house_catalog = sanguinius::load_tarot_house_catalog(
+      config / "tarot-house-v1.json", options.tarot_house_policy.profit_cap);
   return options;
 }
 
@@ -216,6 +240,10 @@ TEST_CASE("configured owner receives redacted health in primary scope",
                    .voice_input_enabled = false},
       .tarot_policy = {},
       .wager_policy = {},
+      .tarot_house_policy = {.house_enabled = false,
+                             .integration_enabled = false},
+      .tarot_deck_catalog = std::nullopt,
+      .tarot_house_catalog = std::nullopt,
       .build = {"test-version", "test-revision"},
       .persistence = {true, 1, 1, "3.53.4",
                       "00000000-0000-4000-8000-000000000001"},
@@ -275,6 +303,71 @@ TEST_CASE(
   fixture.application->stop();
 }
 
+TEST_CASE("disabled House weekly work skips to the next New York slot",
+          "[application][tarot][house][scheduler][disabled][timezone]") {
+  auto options = social_ai_options();
+  options.timezone = "Pacific/Honolulu";
+  sanguinius::test::ApplicationFixture fixture{options};
+  fixture.durable_work->seed_job(
+      {.job_id = "00000000-0000-4000-8000-000000000811",
+       .job_type = std::string{sanguinius::tarot_house_weekly_offer_job_type},
+       .aggregate_type = "tarot_house_offer",
+       .aggregate_id = "friday-1800-america-new-york",
+       .due_at_ms = 0,
+       .max_attempts = 10,
+       .idempotency_key = "job:tarot-house:friday-offer",
+       .created_at_ms = 0},
+      sanguinius::TarotHouseWeeklyOfferJobPayload{
+          .schedule_key = "friday-1800-america-new-york",
+          .catalog_version = "tarot-house-v1"});
+  const auto expected = sanguinius::next_house_weekly_offer_ms(
+      0, sanguinius::tarot_house_timezone);
+
+  fixture.application->start();
+  REQUIRE(fixture.durable_work->wait_for_job_due(
+      sanguinius::tarot_house_weekly_offer_job_type, expected, 2s));
+  REQUIRE(fixture.durable_work->job_due_at(
+              sanguinius::tarot_house_weekly_offer_job_type) == expected);
+  REQUIRE_FALSE(fixture.durable_work->health(0).last_job_error);
+  fixture.application->stop();
+}
+
+TEST_CASE("House weekly work returns a rolled-back clock to the same slot",
+          "[application][tarot][house][scheduler][rollback]") {
+  sanguinius::test::ApplicationFixture fixture{tarot_house_options()};
+  constexpr std::int64_t due_at_ms = 1'000;
+  fixture.clock->set(
+      std::chrono::sys_seconds{std::chrono::seconds{due_at_ms / 1'000}});
+  fixture.durable_work->seed_job(
+      {.job_id = "00000000-0000-4000-8000-000000000812",
+       .job_type = std::string{sanguinius::tarot_house_weekly_offer_job_type},
+       .aggregate_type = "tarot_house_offer",
+       .aggregate_id = "friday-1800-america-new-york",
+       .due_at_ms = due_at_ms,
+       .max_attempts = 10,
+       .idempotency_key = "job:tarot-house:friday-offer",
+       .created_at_ms = 0},
+      sanguinius::TarotHouseWeeklyOfferJobPayload{
+          .schedule_key = "friday-1800-america-new-york",
+          .catalog_version = "tarot-house-v1"});
+  fixture.tarot_house->weekly_offer_result = {
+      .status = sanguinius::HouseWeeklyOfferStatus::deferred,
+      .offer_id = std::nullopt,
+      .outbox_created = false};
+  fixture.tarot_house->weekly_offer_hook = [&fixture] {
+    fixture.clock->set(std::chrono::sys_seconds{});
+  };
+
+  fixture.application->start();
+  REQUIRE(fixture.durable_work->wait_for_job_error("wall_clock_rollback", 2s));
+  REQUIRE(fixture.tarot_house->weekly_offer_calls == 1);
+  REQUIRE(fixture.durable_work->job_due_at(
+              sanguinius::tarot_house_weekly_offer_job_type) == due_at_ms);
+  REQUIRE(fixture.durable_work->health(0).pending_jobs == 1);
+  REQUIRE(fixture.durable_work->health(0).job_retries == 0);
+  fixture.application->stop();
+}
+
 TEST_CASE("owner admin route is silent when disabled or outside scope",
           "[application][admin][scope]") {
   SECTION("disabled") {
@@ -305,6 +398,10 @@ TEST_CASE("owner admin route is silent when disabled or outside scope",
         .features = {},
         .tarot_policy = {},
         .wager_policy = {},
+        .tarot_house_policy = {.house_enabled = false,
+                               .integration_enabled = false},
+        .tarot_deck_catalog = std::nullopt,
+        .tarot_house_catalog = std::nullopt,
         .build = {"test-version", "test-revision"},
         .persistence = {true, 1, 1, "3.53.4",
                         "00000000-0000-4000-8000-000000000001"},

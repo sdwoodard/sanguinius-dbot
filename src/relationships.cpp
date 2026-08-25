@@ -173,7 +173,9 @@ RelationshipDelta relationship_policy(const RelationshipSourceKind kind,
   case RelationshipSourceKind::direct_ai:
     return {.familiarity = direct_cooldown_active ? 0 : 1};
   case RelationshipSourceKind::tarot_resolved:
+    return {.familiarity = 1};
   case RelationshipSourceKind::tarot_honored:
+    return {.esteem = 1, .reliability = 1};
   case RelationshipSourceKind::appearance_positive_feedback:
     return {};
   case RelationshipSourceKind::session_completed:

@@ -6,6 +6,7 @@
 #include "sanguinius/feature_config.hpp"
 #include "sanguinius/work_queue.hpp"
 #include "sanguinius/tarot.hpp"
+#include "sanguinius/tarot_house.hpp"
 #include "sanguinius/wagers.hpp"
 
 #include <cstddef>
@@ -43,6 +44,7 @@ struct HealthSnapshot {
   DurableWorkHealth durable_work;
   std::optional<TarotInvariantReport> tarot;
   std::optional<WagerInvariantReport> wagers;
+  std::optional<HouseEconomyReport> house;
   bool scope_matched{};
 };
 
@@ -55,6 +57,7 @@ struct HealthRuntimeProviders {
   std::function<DurableWorkHealth()> durable_work;
   std::function<std::optional<TarotInvariantReport>()> tarot;
   std::function<std::optional<WagerInvariantReport>()> wagers;
+  std::function<std::optional<HouseEconomyReport>()> house;
 };
 
 class HealthService {

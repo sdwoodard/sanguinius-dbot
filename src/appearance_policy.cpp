@@ -109,6 +109,7 @@ AppearancePolicy parse_appearance_policy(const std::string_view source) {
           }))
     throw std::runtime_error{"policy_version must contain 1 through 80 "
                              "lowercase identifier characters."};
+  const bool tarot_policy = result.policy_version == "m13-tarot-1";
 
   const auto &activity = root.at("activity");
   exact_keys(activity,
@@ -147,9 +148,11 @@ AppearancePolicy parse_appearance_policy(const std::string_view source) {
     throw std::runtime_error{
         "appearance activity bounds cannot retain one qualifying candidate."};
   const auto &expiry = root.at("candidate_expiry_seconds");
-  const std::set<std::string, std::less<>> expiry_keys{
+  std::set<std::string, std::less<>> expiry_keys{
       "anniversary",       "chronicle_entry", "conversation", "recurrence",
       "session_completed", "session_started", "simulation",   "title_awarded"};
+  if (tarot_policy)
+    expiry_keys.insert("tarot_event");
   exact_keys(expiry, expiry_keys, "candidate_expiry_seconds");
   for (const auto &key : expiry_keys)
     result.candidate_expiry_ms[key] =
@@ -204,7 +207,7 @@ AppearancePolicy parse_appearance_policy(const std::string_view source) {
     throw std::runtime_error{
         "recent speech must be shorter than stale speech."};
   const auto &weights = scoring.at("weights");
-  const std::set<std::string, std::less<>> weight_keys{
+  std::set<std::string, std::less<>> weight_keys{
       "alternating_turns",
       "chronicle_event",
       "chronicle_exact",
@@ -232,10 +235,18 @@ AppearancePolicy parse_appearance_policy(const std::string_view source) {
       "session_event",
       "timing_four_to_seven_messages",
       "timing_idle_or_eight_messages"};
+  if (tarot_policy)
+    weight_keys.insert("expected_tarot_event");
   exact_keys(weights, weight_keys, "scoring.weights");
   for (const auto &key : weight_keys)
     result.score_weights[key] =
         bounded_integer<int>(weights.at(key), "scoring weight", -100, 100);
+  if (!tarot_policy) {
+    result.candidate_expiry_ms["tarot_event"] =
+        result.candidate_expiry_ms.at("chronicle_entry");
+    result.score_weights["expected_tarot_event"] =
+        result.score_weights.at("expected_chronicle_entry");
+  }
   for (const auto &key :
        {"penalty_recent_speech", "penalty_repetition_14_to_30_days",
         "penalty_repetition_7_to_14_days", "penalty_stale_speech",

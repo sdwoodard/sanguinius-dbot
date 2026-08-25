@@ -14,6 +14,8 @@
 #include "sanguinius/relationships.hpp"
 #include "sanguinius/repositories.hpp"
 #include "sanguinius/tarot.hpp"
+#include "sanguinius/tarot_house.hpp"
+#include "sanguinius/tarot_integration.hpp"
 #include "sanguinius/wagers.hpp"
 #include "sanguinius/work_queue.hpp"
 
@@ -79,9 +81,24 @@ enum class InteractionOperation {
   tarot_standings_visibility,
   tarot_grace,
   tarot_trial,
+  tarot_draw,
+  tarot_record,
+  tarot_house_offers,
+  tarot_house_play,
+  tarot_house_history,
   tarot_component,
+  tarot_house_component,
   tarot_adjust,
   tarot_reverse,
+  tarot_economy,
+  tarot_draw_test,
+  tarot_draw_replay,
+  tarot_house_offer,
+  tarot_house_resolve,
+  tarot_house_deadline,
+  tarot_house_cleanup,
+  tarot_integration_preview,
+  tarot_integration_retry,
   wager_create,
   wager_preview,
   wager_component,
@@ -103,20 +120,20 @@ struct RoutedInteraction {
 
 class InteractionHandler {
 public:
-  InteractionHandler(CoreIdentityRepository &identities,
-                     PendingNoticeService &notices, const Clock &clock,
-                     DurableWorkControlService &durable_controls,
-                     ChronicleService *chronicle,
-                     ChronicleSessionService *chronicle_sessions,
-                     HealthService &health_service, Diagnostics &diagnostics,
-                     FeatureConfiguration features,
-                     std::function<QueueSnapshot()> message_queue,
-                     std::function<QueueSnapshot()> ai_queue,
-                     std::size_t queue_capacity = 64,
-                     RelationshipService *relationships = nullptr,
-                     AppearanceService *appearances = nullptr,
-                     TarotService *tarot = nullptr,
-                     TarotWagerService *wagers = nullptr);
+  InteractionHandler(
+      CoreIdentityRepository &identities, PendingNoticeService &notices,
+      const Clock &clock, DurableWorkControlService &durable_controls,
+      ChronicleService *chronicle, ChronicleSessionService *chronicle_sessions,
+      HealthService &health_service, Diagnostics &diagnostics,
+      FeatureConfiguration features,
+      std::function<QueueSnapshot()> message_queue,
+      std::function<QueueSnapshot()> ai_queue, std::size_t queue_capacity = 64,
+      RelationshipService *relationships = nullptr,
+      AppearanceService *appearances = nullptr, TarotService *tarot = nullptr,
+      TarotWagerService *wagers = nullptr,
+      TarotDrawService *tarot_draws = nullptr,
+      TarotHouseService *tarot_house = nullptr,
+      TarotIntegrationService *tarot_integration = nullptr);
   ~InteractionHandler();
 
   InteractionHandler(const InteractionHandler &) = delete;
@@ -146,6 +163,9 @@ private:
   AppearanceService *appearances_{};
   TarotService *tarot_{};
   TarotWagerService *wagers_{};
+  TarotDrawService *tarot_draws_{};
+  TarotHouseService *tarot_house_{};
+  TarotIntegrationService *tarot_integration_{};
   HealthService &health_service_;
   Diagnostics &diagnostics_;
   FeatureConfiguration features_;

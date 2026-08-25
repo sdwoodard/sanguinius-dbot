@@ -7,12 +7,13 @@
 #include "sanguinius/openai_client.hpp"
 #include "sanguinius/persistence/database.hpp"
 #include "sanguinius/persistence/migrator.hpp"
+#include "sanguinius/persistence/sqlite_appearance_repository.hpp"
 #include "sanguinius/persistence/sqlite_chronicle_repository.hpp"
 #include "sanguinius/persistence/sqlite_chronicle_session_repository.hpp"
-#include "sanguinius/persistence/sqlite_appearance_repository.hpp"
 #include "sanguinius/persistence/sqlite_durable_work_repository.hpp"
-#include "sanguinius/persistence/sqlite_repositories.hpp"
 #include "sanguinius/persistence/sqlite_relationship_repository.hpp"
+#include "sanguinius/persistence/sqlite_repositories.hpp"
+#include "sanguinius/persistence/sqlite_tarot_house_repository.hpp"
 #include "sanguinius/persistence/sqlite_tarot_repository.hpp"
 #include "sanguinius/persistence/sqlite_wager_repository.hpp"
 #include "sanguinius/persistent_id.hpp"
@@ -75,21 +76,38 @@ std::unique_ptr<Application> make_application(const Config &config) {
   auto durable_work =
       std::make_unique<persistence::SqliteDurableWorkRepository>(
           repository_context);
-  auto chronicle =
-      std::make_unique<persistence::SqliteChronicleRepository>(
-          repository_context);
+  auto chronicle = std::make_unique<persistence::SqliteChronicleRepository>(
+      repository_context);
   auto chronicle_sessions =
       std::make_unique<persistence::SqliteChronicleSessionRepository>(
           repository_context);
   auto relationships =
       std::make_unique<persistence::SqliteRelationshipRepository>(
           repository_context);
-  auto appearances =
-      std::make_unique<persistence::SqliteAppearanceRepository>(repository_context);
+  auto appearances = std::make_unique<persistence::SqliteAppearanceRepository>(
+      repository_context);
   auto tarot =
       std::make_unique<persistence::SqliteTarotRepository>(repository_context);
   auto wagers =
       std::make_unique<persistence::SqliteWagerRepository>(repository_context);
+  auto tarot_catalogs =
+      std::make_unique<persistence::SqliteTarotCatalogRepository>(
+          repository_context);
+  auto tarot_draws = std::make_unique<persistence::SqliteTarotDrawRepository>(
+      repository_context);
+  auto tarot_house = std::make_unique<persistence::SqliteTarotHouseRepository>(
+      repository_context);
+  auto tarot_integration =
+      std::make_unique<persistence::SqliteTarotIntegrationRepository>(
+          repository_context);
+  std::optional<TarotDeckCatalog> deck_catalog;
+  std::optional<TarotHouseCatalog> house_catalog;
+  if (config.features.tarot_enabled) {
+    if (!config.tarot_deck_catalog || !config.tarot_house_catalog)
+      throw std::runtime_error{"Enabled Tarot catalogs were not validated."};
+    deck_catalog = config.tarot_deck_catalog;
+    house_catalog = config.tarot_house_catalog;
+  }
   auto random = std::make_unique<SystemRandom>();
 
   auto id_generator = std::make_unique<ProcessIdGenerator>();
@@ -111,6 +129,9 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .features = config.features,
           .tarot_policy = config.tarot_policy,
           .wager_policy = config.wager_policy,
+          .tarot_house_policy = config.tarot_house_policy,
+          .tarot_deck_catalog = std::move(deck_catalog),
+          .tarot_house_catalog = std::move(house_catalog),
           .build = current_build_info(),
           .persistence =
               PersistenceHealth{
@@ -145,6 +166,10 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .appearances = std::move(appearances),
           .tarot = std::move(tarot),
           .wagers = std::move(wagers),
+          .tarot_catalogs = std::move(tarot_catalogs),
+          .tarot_draws = std::move(tarot_draws),
+          .tarot_house = std::move(tarot_house),
+          .tarot_integration = std::move(tarot_integration),
           .random = std::move(random),
           .appearance_policy = config.appearance_policy,
           .ai_client = std::move(ai_client),

@@ -18,6 +18,7 @@ enum class DatabaseCommandType {
   relationships_check,
   relationships_rebuild,
   tarot_check,
+  tarot_rebuild,
 };
 
 struct DatabaseCommand {

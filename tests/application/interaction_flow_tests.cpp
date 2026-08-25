@@ -6,6 +6,7 @@
 
 #include <array>
 #include <chrono>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -30,6 +31,10 @@ admin_options(const std::size_t interaction_capacity = 64) {
       .features = {},
       .tarot_policy = {},
       .wager_policy = {},
+      .tarot_house_policy = {.house_enabled = false,
+                             .integration_enabled = false},
+      .tarot_deck_catalog = std::nullopt,
+      .tarot_house_catalog = std::nullopt,
       .build = {"test-version", "test-revision"},
       .persistence = {true, 3, 3, "3.53.4",
                       "00000000-0000-4000-8000-000000000001"},
@@ -56,8 +61,24 @@ admin_options(const std::size_t interaction_capacity = 64) {
   auto options = admin_options();
   options.controls.test_mode = true;
   options.features.tarot_enabled = true;
-  options.persistence.schema_version = 10;
-  options.persistence.target_schema_version = 10;
+  options.persistence.schema_version = 11;
+  options.persistence.target_schema_version = 11;
+  return options;
+}
+
+[[nodiscard]] sanguinius::ApplicationOptions tarot_house_options() {
+  auto options = tarot_options();
+  options.tarot_house_policy.house_enabled = true;
+  options.tarot_house_policy.integration_enabled = true;
+  const auto config = std::filesystem::path{__FILE__}
+                          .parent_path()
+                          .parent_path()
+                          .parent_path() /
+                      "config";
+  options.tarot_deck_catalog =
+      sanguinius::load_tarot_deck_catalog(config / "emperor-tarot-v1.json");
+  options.tarot_house_catalog = sanguinius::load_tarot_house_catalog(
+      config / "tarot-house-v1.json", options.tarot_house_policy.profit_cap);
   return options;
 }
 
@@ -164,7 +185,7 @@ TEST_CASE("Tarot commands preserve private authority and public standings",
   sanguinius::test::ApplicationFixture fixture{tarot_options()};
   fixture.application->start();
   REQUIRE(fixture.tarot->initialize_calls == 1);
-  REQUIRE(fixture.discord->command_catalog().version == 9);
+  REQUIRE(fixture.discord->command_catalog().version == 10);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 3);
 
   auto balance = std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -237,6 +258,82 @@ TEST_CASE("Tarot commands preserve private authority and public standings",
   REQUIRE(gated->replies().size() == 1);
   REQUIRE(contains(gated->replies()[0].first.content, "test mode"));
   disabled.application->stop();
+}
+
+TEST_CASE("enabled Tarot deck and House routes keep command status ephemeral",
+          "[application][interaction][tarot][house][privacy]") {
+  sanguinius::test::ApplicationFixture fixture{tarot_house_options()};
+  fixture.tarot_integration->retry_result = true;
+  fixture.application->start();
+  REQUIRE(fixture.tarot_catalogs->install_calls == 1);
+  REQUIRE(fixture.tarot_house->reconcile_calls == 1);
+  REQUIRE(fixture.tarot_house->schedule_calls == 1);
+  REQUIRE(fixture.tarot_integration->schedule_calls == 1);
+
+  auto draw = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(draw, "tarot", "draw", 180));
+  REQUIRE(draw->wait_for_edit_count(1, 2s));
+  REQUIRE(draw->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(contains(draw->edits()[0].content, "durably queued"));
+  REQUIRE(fixture.tarot_draws->last_visibility ==
+          sanguinius::TarotVisibility::public_result);
+  REQUIRE_FALSE(fixture.tarot_draws->last_is_test);
+  REQUIRE(fixture.tarot_house->observe_draw_calls == 1);
+  REQUIRE(fixture.tarot_integration->scan_calls == 1);
+  REQUIRE_FALSE(fixture.tarot_integration->last_sink_policy.chronicle_enabled);
+
+  auto offers = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto offers_request = slash(offers, "tarot", "offers", 181);
+  offers_request.subcommand_group_name = "house";
+  fixture.discord->emit(std::move(offers_request));
+  REQUIRE(offers->wait_for_edit_count(1, 2s));
+  REQUIRE(offers->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(contains(offers->edits()[0].content, "Returning Dawn"));
+  REQUIRE(contains(offers->edits()[0].content, "1:1 profit"));
+  REQUIRE(fixture.tarot_house->availability_calls == 4);
+
+  auto test_draw =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto test_request = slash(test_draw, "sang-admin", "draw-test", 182);
+  test_request.subcommand_group_name = "tarot";
+  fixture.discord->emit(std::move(test_request));
+  REQUIRE(test_draw->wait_for_edit_count(1, 2s));
+  REQUIRE(test_draw->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(contains(test_draw->edits()[0].content, "[TEST]"));
+  REQUIRE(fixture.tarot_draws->last_bypass_cooldown);
+  REQUIRE(fixture.tarot_draws->last_is_test);
+  REQUIRE(fixture.tarot_draws->last_visibility ==
+          sanguinius::TarotVisibility::public_result);
+
+  auto resolve =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto resolve_request = slash(resolve, "sang-admin", "house-resolve", 184);
+  resolve_request.subcommand_group_name = "tarot";
+  resolve_request.command_options = {
+      {"reference", std::string{"00000000-0000-4000-8000-000000000902"}},
+      {"outcome", std::string{"no"}},
+      {"reason", std::string{"Deterministic test observation"}}};
+  fixture.discord->emit(std::move(resolve_request));
+  REQUIRE(resolve->wait_for_edit_count(1, 2s));
+  REQUIRE(resolve->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(fixture.tarot_house->resolve_calls == 1);
+  REQUIRE(fixture.tarot_house->last_resolve_test_mode);
+
+  auto retry = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto retry_request = slash(retry, "sang-admin", "integration-retry", 183);
+  retry_request.subcommand_group_name = "tarot";
+  retry_request.command_options = {
+      {"reference", std::string{"00000000-0000-4000-8000-000000000901"}}};
+  fixture.discord->emit(std::move(retry_request));
+  REQUIRE(retry->wait_for_edit_count(1, 2s));
+  REQUIRE(retry->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(fixture.tarot_integration->retry_calls == 1);
+  fixture.application->stop();
 }
 
 TEST_CASE(
@@ -441,7 +538,7 @@ TEST_CASE(
     "[application][interaction][chronicle]") {
   sanguinius::test::ApplicationFixture fixture{chronicle_options()};
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 9);
+  REQUIRE(fixture.discord->command_catalog().version == 10);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 4);
 
   auto remember =
@@ -1062,7 +1159,7 @@ TEST_CASE(
   sanguinius::test::ApplicationFixture fixture{options};
   fixture.clock->set(std::chrono::sys_seconds{std::chrono::seconds{1'000}});
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 9);
+  REQUIRE(fixture.discord->command_catalog().version == 10);
 
   auto quiet = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto quiet_request = slash(quiet, "sanguinius", "tonight", 520);

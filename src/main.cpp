@@ -24,8 +24,8 @@ void print_usage(std::ostream &stream, const std::string_view executable) {
          << "       " << executable << " db backup <destination>\n"
          << "       " << executable << " db relationships check\n"
          << "       " << executable << " db tarot check\n"
-         << "       " << executable
-         << " db relationships rebuild --confirm\n"
+         << "       " << executable << " db tarot rebuild --confirm\n"
+         << "       " << executable << " db relationships rebuild --confirm\n"
          << "       " << executable << " discord commands sync\n"
          << "       " << executable << " discord commands clear --confirm\n";
 }
@@ -75,6 +75,12 @@ database_command(const int argc, char **argv) {
       std::string_view{argv[4]} == "--confirm") {
     return sanguinius::DatabaseCommand{
         sanguinius::DatabaseCommandType::relationships_rebuild, std::nullopt};
+  }
+  if (argc == 5 && operation == "tarot" &&
+      std::string_view{argv[3]} == "rebuild" &&
+      std::string_view{argv[4]} == "--confirm") {
+    return sanguinius::DatabaseCommand{
+        sanguinius::DatabaseCommandType::tarot_rebuild, std::nullopt};
   }
   return std::nullopt;
 }

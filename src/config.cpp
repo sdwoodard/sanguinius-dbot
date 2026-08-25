@@ -102,10 +102,11 @@ optional_nonempty(const ConfigSource &source, const std::string_view variable) {
                            " must be exactly true or false."};
 }
 
-[[nodiscard]] std::int64_t optional_integer(
-    const ConfigSource &source, const std::string_view variable,
-    const std::int64_t default_value, const std::int64_t minimum,
-    const std::int64_t maximum) {
+[[nodiscard]] std::int64_t optional_integer(const ConfigSource &source,
+                                            const std::string_view variable,
+                                            const std::int64_t default_value,
+                                            const std::int64_t minimum,
+                                            const std::int64_t maximum) {
   const auto value = source.environment(variable);
   if (!value.has_value())
     return default_value;
@@ -115,9 +116,9 @@ optional_nonempty(const ConfigSource &source, const std::string_view variable) {
   if (value->empty() || result.ec != std::errc{} ||
       result.ptr != value->data() + value->size() || parsed < minimum ||
       parsed > maximum) {
-    throw std::runtime_error{std::string{variable} + " must be an integer from " +
-                             std::to_string(minimum) + " through " +
-                             std::to_string(maximum) + "."};
+    throw std::runtime_error{
+        std::string{variable} + " must be an integer from " +
+        std::to_string(minimum) + " through " + std::to_string(maximum) + "."};
   }
   return parsed;
 }
@@ -359,14 +360,28 @@ Config Config::from_source(const ConfigSource &source) {
       source, "SANGUINIUS_TAROT_WAGER_DEFAULT_OUTCOME_HOURS", 24, 1, 168);
   config.wager_policy.resolution_grace_hours = optional_integer(
       source, "SANGUINIUS_TAROT_WAGER_RESOLUTION_GRACE_HOURS", 48, 1, 168);
+  config.tarot_house_policy.house_enabled =
+      optional_boolean(source, "SANGUINIUS_TAROT_HOUSE_ENABLED", true);
+  config.tarot_house_policy.integration_enabled =
+      optional_boolean(source, "SANGUINIUS_TAROT_INTEGRATION_ENABLED", true);
+  config.tarot_house_policy.draw_cooldown_ms =
+      optional_integer(source, "SANGUINIUS_TAROT_DRAW_COOLDOWN_HOURS", 24, 1,
+                       744) *
+      3'600'000;
+  config.tarot_house_policy.exposure_cap = optional_integer(
+      source, "SANGUINIUS_TAROT_HOUSE_EXPOSURE_CAP", 100, 1, 1'000'000);
+  config.tarot_house_policy.profit_cap = optional_integer(
+      source, "SANGUINIUS_TAROT_HOUSE_PROFIT_CAP", 20, 1, 1'000);
   try {
     config.tarot_policy.validate();
     config.wager_policy.validate();
+    config.tarot_house_policy.validate();
   } catch (const std::invalid_argument &) {
     throw std::runtime_error{
         "Tarot settings require Grace target above threshold and ordered "
         "Trial reward bounds; wager stake bounds and durations must also be "
-        "ordered and positive."};
+        "ordered and positive; House exposure, profit, and draw cooldown "
+        "must remain within safe bounds."};
   }
   config.features.appearances_mode = appearance_mode(source);
   config.features.vox_enabled =
@@ -379,9 +394,28 @@ Config Config::from_source(const ConfigSource &source) {
     config.paths.appearance_policy_file = *policy_file;
     config.origins.appearance_policy_file = ConfigurationOrigin::configured;
   }
-  config.appearance_policy = parse_appearance_policy(text_from_file(
-      source, config.paths.appearance_policy_file,
-      "SANGUINIUS_APPEARANCE_POLICY_FILE"));
+  config.appearance_policy = parse_appearance_policy(
+      text_from_file(source, config.paths.appearance_policy_file,
+                     "SANGUINIUS_APPEARANCE_POLICY_FILE"));
+
+  if (const auto deck_file =
+          optional_nonempty(source, "SANGUINIUS_TAROT_DECK_FILE")) {
+    config.paths.tarot_deck_file = *deck_file;
+    config.origins.tarot_deck_file = ConfigurationOrigin::configured;
+  }
+  if (const auto house_file =
+          optional_nonempty(source, "SANGUINIUS_TAROT_HOUSE_FILE")) {
+    config.paths.tarot_house_file = *house_file;
+    config.origins.tarot_house_file = ConfigurationOrigin::configured;
+  }
+  if (config.features.tarot_enabled) {
+    config.tarot_deck_catalog = parse_tarot_deck_catalog(text_from_file(
+        source, config.paths.tarot_deck_file, "SANGUINIUS_TAROT_DECK_FILE"));
+    config.tarot_house_catalog = parse_tarot_house_catalog(
+        text_from_file(source, config.paths.tarot_house_file,
+                       "SANGUINIUS_TAROT_HOUSE_FILE"),
+        config.tarot_house_policy.profit_cap);
+  }
 
   if (const auto timezone = optional_nonempty(source, "SANGUINIUS_TIMEZONE")) {
     config.timezone = *timezone;
@@ -429,12 +463,26 @@ std::string redacted_config_summary(const Config &config,
          << configuration_origin_name(config.origins.openai_model) << '\n'
          << "persona_file="
          << configuration_origin_name(config.origins.persona_file) << '\n'
-         << "timezone="
-         << configuration_origin_name(config.origins.timezone) << '\n'
+         << "timezone=" << configuration_origin_name(config.origins.timezone)
+         << '\n'
          << "appearance_policy_file="
          << configuration_origin_name(config.origins.appearance_policy_file)
          << '\n'
-         << "appearance_policy_version=" << config.appearance_policy.policy_version
+         << "appearance_policy_version="
+         << config.appearance_policy.policy_version << '\n'
+         << "tarot_deck_file="
+         << configuration_origin_name(config.origins.tarot_deck_file) << '\n'
+         << "tarot_house_file="
+         << configuration_origin_name(config.origins.tarot_house_file) << '\n'
+         << "tarot_deck_version="
+         << (config.tarot_deck_catalog
+                 ? config.tarot_deck_catalog->version
+                 : std::string{emperor_tarot_catalog_version})
+         << '\n'
+         << "tarot_house_catalog_version="
+         << (config.tarot_house_catalog
+                 ? config.tarot_house_catalog->version
+                 : std::string{tarot_house_catalog_version})
          << '\n'
          << "discord_request_timeout="
          << configuration_origin_name(config.origins.discord_request_timeout)
@@ -457,6 +505,16 @@ std::string redacted_config_summary(const Config &config,
          << "tarot_wager_timing=" << config.wager_policy.offer_expiry_hours
          << "/" << config.wager_policy.default_outcome_hours << "/"
          << config.wager_policy.resolution_grace_hours << "h\n"
+         << "tarot_draw_cooldown="
+         << config.tarot_house_policy.draw_cooldown_ms / 3'600'000 << "h\n"
+         << "tarot_house=" << enabled(config.tarot_house_policy.house_enabled)
+         << '\n'
+         << "tarot_house_exposure=" << config.tarot_house_policy.exposure_cap
+         << '\n'
+         << "tarot_house_profit_cap=" << config.tarot_house_policy.profit_cap
+         << '\n'
+         << "tarot_integration="
+         << enabled(config.tarot_house_policy.integration_enabled) << '\n'
          << "appearances="
          << appearance_mode_name(config.features.appearances_mode) << '\n'
          << "vox=" << enabled(config.features.vox_enabled) << '\n'

@@ -4,17 +4,18 @@
 
 #include "support/fake_ai_client.hpp"
 #include "support/fake_appearance_repository.hpp"
-#include "support/fake_clock.hpp"
 #include "support/fake_chronicle_repository.hpp"
 #include "support/fake_chronicle_session_repository.hpp"
+#include "support/fake_clock.hpp"
 #include "support/fake_diagnostics.hpp"
 #include "support/fake_discord.hpp"
 #include "support/fake_durable_work_repository.hpp"
 #include "support/fake_id_generator.hpp"
 #include "support/fake_message_log.hpp"
-#include "support/fake_repositories.hpp"
 #include "support/fake_random.hpp"
 #include "support/fake_relationship_repository.hpp"
+#include "support/fake_repositories.hpp"
+#include "support/fake_tarot_house_repository.hpp"
 #include "support/fake_tarot_repository.hpp"
 #include "support/fake_wager_repository.hpp"
 
@@ -34,6 +35,10 @@ public:
           .features = {},
           .tarot_policy = {},
           .wager_policy = {},
+          .tarot_house_policy = {.house_enabled = false,
+                                 .integration_enabled = false},
+          .tarot_deck_catalog = std::nullopt,
+          .tarot_house_catalog = std::nullopt,
           .build = {"test-version", "test-revision"},
           .persistence = {true, 1, 1, "3.53.4",
                           "00000000-0000-4000-8000-000000000001"},
@@ -69,8 +74,13 @@ public:
     auto owned_appearances = std::make_unique<FakeAppearanceRepository>();
     auto owned_tarot = std::make_unique<FakeTarotRepository>();
     auto owned_wagers = std::make_unique<FakeWagerRepository>();
-    auto owned_random = std::make_unique<FakeRandom>(
-        std::vector<std::uint64_t>(128, 0));
+    auto owned_tarot_catalogs = std::make_unique<FakeTarotCatalogRepository>();
+    auto owned_tarot_draws = std::make_unique<FakeTarotDrawRepository>();
+    auto owned_tarot_house = std::make_unique<FakeTarotHouseRepository>();
+    auto owned_tarot_integration =
+        std::make_unique<FakeTarotIntegrationRepository>();
+    auto owned_random =
+        std::make_unique<FakeRandom>(std::vector<std::uint64_t>(128, 0));
     auto owned_ai = std::make_unique<FakeAiClient>();
     auto owned_discord = std::make_unique<FakeDiscord>();
 
@@ -88,6 +98,10 @@ public:
     appearances = owned_appearances.get();
     tarot = owned_tarot.get();
     wagers = owned_wagers.get();
+    tarot_catalogs = owned_tarot_catalogs.get();
+    tarot_draws = owned_tarot_draws.get();
+    tarot_house = owned_tarot_house.get();
+    tarot_integration = owned_tarot_integration.get();
     ai = owned_ai.get();
     discord = owned_discord.get();
 
@@ -109,6 +123,10 @@ public:
             .appearances = std::move(owned_appearances),
             .tarot = std::move(owned_tarot),
             .wagers = std::move(owned_wagers),
+            .tarot_catalogs = std::move(owned_tarot_catalogs),
+            .tarot_draws = std::move(owned_tarot_draws),
+            .tarot_house = std::move(owned_tarot_house),
+            .tarot_integration = std::move(owned_tarot_integration),
             .random = std::move(owned_random),
             .appearance_policy = test_appearance_policy(),
             .ai_client = std::move(owned_ai),
@@ -140,6 +158,10 @@ public:
   FakeAppearanceRepository *appearances{};
   FakeTarotRepository *tarot{};
   FakeWagerRepository *wagers{};
+  FakeTarotCatalogRepository *tarot_catalogs{};
+  FakeTarotDrawRepository *tarot_draws{};
+  FakeTarotHouseRepository *tarot_house{};
+  FakeTarotIntegrationRepository *tarot_integration{};
   FakeAiClient *ai{};
   FakeDiscord *discord{};
   std::unique_ptr<Application> application;

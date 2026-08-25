@@ -36,6 +36,7 @@ enum class AppearanceCandidateType {
   session_completed,
   title_awarded,
   anniversary,
+  tarot_event,
   simulation,
 };
 

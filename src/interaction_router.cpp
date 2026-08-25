@@ -5,6 +5,7 @@
 #include "sanguinius/pending_notice.hpp"
 #include "sanguinius/persistent_id.hpp"
 #include "sanguinius/tarot.hpp"
+#include "sanguinius/tarot_house.hpp"
 #include "sanguinius/wagers.hpp"
 
 #include <algorithm>
@@ -57,6 +58,24 @@ slash_operation(const IncomingInteraction &interaction) {
         return InteractionOperation::tarot_adjust;
       if (interaction.subcommand_name == "reverse")
         return InteractionOperation::tarot_reverse;
+      if (interaction.subcommand_name == "economy")
+        return InteractionOperation::tarot_economy;
+      if (interaction.subcommand_name == "draw-test")
+        return InteractionOperation::tarot_draw_test;
+      if (interaction.subcommand_name == "draw-replay")
+        return InteractionOperation::tarot_draw_replay;
+      if (interaction.subcommand_name == "house-offer")
+        return InteractionOperation::tarot_house_offer;
+      if (interaction.subcommand_name == "house-resolve")
+        return InteractionOperation::tarot_house_resolve;
+      if (interaction.subcommand_name == "house-deadline")
+        return InteractionOperation::tarot_house_deadline;
+      if (interaction.subcommand_name == "house-cleanup")
+        return InteractionOperation::tarot_house_cleanup;
+      if (interaction.subcommand_name == "integration-preview")
+        return InteractionOperation::tarot_integration_preview;
+      if (interaction.subcommand_name == "integration-retry")
+        return InteractionOperation::tarot_integration_retry;
       if (interaction.subcommand_name == "wager-role")
         return InteractionOperation::wager_test_role;
       if (interaction.subcommand_name == "wager-deadline")
@@ -100,6 +119,14 @@ slash_operation(const IncomingInteraction &interaction) {
     }
   }
   if (interaction.command_name == "tarot") {
+    if (interaction.subcommand_group_name == "house") {
+      if (interaction.subcommand_name == "offers")
+        return InteractionOperation::tarot_house_offers;
+      if (interaction.subcommand_name == "play")
+        return InteractionOperation::tarot_house_play;
+      if (interaction.subcommand_name == "history")
+        return InteractionOperation::tarot_house_history;
+    }
     if (interaction.subcommand_name == "balance")
       return InteractionOperation::tarot_balance;
     if (interaction.subcommand_name == "history")
@@ -112,6 +139,10 @@ slash_operation(const IncomingInteraction &interaction) {
       return InteractionOperation::tarot_grace;
     if (interaction.subcommand_name == "trial")
       return InteractionOperation::tarot_trial;
+    if (interaction.subcommand_name == "draw")
+      return InteractionOperation::tarot_draw;
+    if (interaction.subcommand_name == "record")
+      return InteractionOperation::tarot_record;
     if (interaction.subcommand_name == "wager")
       return InteractionOperation::wager_create;
     if (interaction.subcommand_name == "wagers")
@@ -426,6 +457,12 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
           return;
         }
         operation = InteractionOperation::wager_component;
+      } else if (parse_tarot_house_component(interaction.custom_id)) {
+        if (!state_->features.tarot_enabled) {
+          reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+          return;
+        }
+        operation = InteractionOperation::tarot_house_component;
       } else if (parse_tarot_component(interaction.custom_id)) {
         if (!state_->features.tarot_enabled) {
           reply_ephemeral(interaction, "The Tarot is currently unavailable.");
@@ -528,6 +565,15 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::appearance_trigger ||
       *operation == InteractionOperation::tarot_adjust ||
       *operation == InteractionOperation::tarot_reverse ||
+      *operation == InteractionOperation::tarot_economy ||
+      *operation == InteractionOperation::tarot_draw_test ||
+      *operation == InteractionOperation::tarot_draw_replay ||
+      *operation == InteractionOperation::tarot_house_offer ||
+      *operation == InteractionOperation::tarot_house_resolve ||
+      *operation == InteractionOperation::tarot_house_deadline ||
+      *operation == InteractionOperation::tarot_house_cleanup ||
+      *operation == InteractionOperation::tarot_integration_preview ||
+      *operation == InteractionOperation::tarot_integration_retry ||
       *operation == InteractionOperation::wager_test_role ||
       *operation == InteractionOperation::wager_test_deadline ||
       *operation == InteractionOperation::wager_test_cleanup;
@@ -542,6 +588,11 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::appearance_trigger ||
       *operation == InteractionOperation::tarot_adjust ||
       *operation == InteractionOperation::tarot_reverse ||
+      *operation == InteractionOperation::tarot_draw_test ||
+      *operation == InteractionOperation::tarot_house_offer ||
+      *operation == InteractionOperation::tarot_house_deadline ||
+      *operation == InteractionOperation::tarot_house_cleanup ||
+      *operation == InteractionOperation::tarot_integration_retry ||
       *operation == InteractionOperation::wager_test_role ||
       *operation == InteractionOperation::wager_test_deadline ||
       *operation == InteractionOperation::wager_test_cleanup;

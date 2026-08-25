@@ -20,7 +20,7 @@ namespace {
 
 } // namespace
 
-TEST_CASE("relationship policies are bounded deterministic and future hooks dormant",
+TEST_CASE("relationship policies are bounded and Tarot settlement hooks are active",
           "[relationship][policy]") {
   using sanguinius::RelationshipSourceKind;
   REQUIRE((sanguinius::relationship_policy(
@@ -33,10 +33,10 @@ TEST_CASE("relationship policies are bounded deterministic and future hooks dorm
            sanguinius::RelationshipDelta{}));
   REQUIRE((sanguinius::relationship_policy(
                RelationshipSourceKind::tarot_resolved) ==
-           sanguinius::RelationshipDelta{}));
+           sanguinius::RelationshipDelta{.familiarity = 1}));
   REQUIRE((sanguinius::relationship_policy(
                RelationshipSourceKind::tarot_honored) ==
-           sanguinius::RelationshipDelta{}));
+           sanguinius::RelationshipDelta{.esteem = 1, .reliability = 1}));
   REQUIRE((sanguinius::relationship_policy(
                RelationshipSourceKind::appearance_positive_feedback) ==
            sanguinius::RelationshipDelta{}));

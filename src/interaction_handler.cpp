@@ -38,12 +38,10 @@ status_message(const FeatureConfiguration &features,
   return text_message(output.str());
 }
 
-[[nodiscard]] InteractionMessage
-privacy_message(const FeatureConfiguration &features,
-                const UserPreferences &preferences,
-                const std::size_t pending_notices,
-                const std::string_view appearance_status,
-                const std::string_view tarot_status) {
+[[nodiscard]] InteractionMessage privacy_message(
+    const FeatureConfiguration &features, const UserPreferences &preferences,
+    const std::size_t pending_notices, const std::string_view appearance_status,
+    const std::string_view tarot_status) {
   std::ostringstream output;
   output << "Your Sanguinius privacy summary\n"
          << "Discord identity cache: stored for stable account identity\n"
@@ -59,8 +57,8 @@ privacy_message(const FeatureConfiguration &features,
          << "\nVoice input globally: " << enabled(features.voice_input_enabled)
          << "\nYour voice-input opt-in: "
          << enabled(preferences.voice_input_opt_in)
-         << "\nUnopened sealed notices: " << pending_notices
-         << "\n" << tarot_status
+         << "\nUnopened sealed notices: " << pending_notices << "\n"
+         << tarot_status
          << "\nDiscord DMs are never used. Raw received voice audio is never "
             "persisted.";
   return text_message(output.str());
@@ -77,12 +75,15 @@ InteractionHandler::InteractionHandler(
     std::function<QueueSnapshot()> message_queue,
     std::function<QueueSnapshot()> ai_queue, const std::size_t queue_capacity,
     RelationshipService *relationships, AppearanceService *appearances,
-    TarotService *tarot, TarotWagerService *wagers)
+    TarotService *tarot, TarotWagerService *wagers,
+    TarotDrawService *tarot_draws, TarotHouseService *tarot_house,
+    TarotIntegrationService *tarot_integration)
     : identities_{identities}, notices_{notices}, clock_{clock},
       durable_controls_{durable_controls}, chronicle_{chronicle},
       chronicle_sessions_{chronicle_sessions}, relationships_{relationships},
       appearances_{appearances}, tarot_{tarot}, wagers_{wagers},
-      health_service_{health_service},
+      tarot_draws_{tarot_draws}, tarot_house_{tarot_house},
+      tarot_integration_{tarot_integration}, health_service_{health_service},
       diagnostics_{diagnostics}, features_{features},
       message_queue_{std::move(message_queue)}, ai_queue_{std::move(ai_queue)},
       callbacks_{std::make_shared<CallbackFence>()},
@@ -171,21 +172,20 @@ void InteractionHandler::process(const RoutedInteraction &request) {
       throw std::runtime_error{"User preferences were not initialized."};
     }
     edit(request.interaction,
-         privacy_message(features_, *preferences,
-                         notices_.pending_count(request.interaction.user_id),
-                         appearances_ ? appearances_->member_status_summary()
-                                      : "unavailable",
-                         tarot_ ? tarot_->privacy_summary(
-                                      request.interaction.user_id)
-                                : std::string{"Fate standings: "} +
-                                      (preferences
-                                               ->public_tarot_results_opt_in
-                                           ? "public"
-                                           : "private") +
-                                      "\nFate feature: disabled\nFate ledger: "
-                                      "retained as an immutable financial "
-                                      "audit; balances are derived from "
-                                      "postings."),
+         privacy_message(
+             features_, *preferences,
+             notices_.pending_count(request.interaction.user_id),
+             appearances_ ? appearances_->member_status_summary()
+                          : "unavailable",
+             tarot_
+                 ? tarot_->privacy_summary(request.interaction.user_id)
+                 : std::string{"Fate standings: "} +
+                       (preferences->public_tarot_results_opt_in ? "public"
+                                                                 : "private") +
+                       "\nFate feature: disabled\nFate ledger: "
+                       "retained as an immutable financial "
+                       "audit; balances are derived from "
+                       "postings."),
          "interaction.privacy");
     return;
   }
@@ -678,11 +678,48 @@ void InteractionHandler::process(const RoutedInteraction &request) {
     edit(request.interaction, tarot_->start_trial(request.interaction),
          "interaction.tarot_trial");
     return;
+  case InteractionOperation::tarot_draw:
+    if (!tarot_draws_)
+      throw std::runtime_error{"Tarot draw service is unavailable."};
+    edit(request.interaction, tarot_draws_->draw(request.interaction),
+         "interaction.tarot_draw");
+    return;
+  case InteractionOperation::tarot_record:
+    if (!tarot_house_)
+      throw std::runtime_error{"Tarot House service is unavailable."};
+    edit(request.interaction, tarot_house_->record(request.interaction),
+         "interaction.tarot_record");
+    return;
+  case InteractionOperation::tarot_house_offers:
+    if (!tarot_house_)
+      throw std::runtime_error{"Tarot House service is unavailable."};
+    edit(request.interaction, tarot_house_->offers(request.interaction),
+         "interaction.tarot_house_offers");
+    return;
+  case InteractionOperation::tarot_house_play:
+    if (!tarot_house_)
+      throw std::runtime_error{"Tarot House service is unavailable."};
+    edit(request.interaction, tarot_house_->play(request.interaction),
+         "interaction.tarot_house_play");
+    return;
+  case InteractionOperation::tarot_house_history:
+    if (!tarot_house_)
+      throw std::runtime_error{"Tarot House service is unavailable."};
+    edit(request.interaction, tarot_house_->history(request.interaction),
+         "interaction.tarot_house_history");
+    return;
   case InteractionOperation::tarot_component:
     if (!tarot_)
       throw std::runtime_error{"Tarot service is unavailable."};
     edit(request.interaction, tarot_->apply_component(request.interaction),
          "interaction.tarot_component");
+    return;
+  case InteractionOperation::tarot_house_component:
+    if (!tarot_house_)
+      throw std::runtime_error{"Tarot House service is unavailable."};
+    edit(request.interaction,
+         tarot_house_->apply_component(request.interaction),
+         "interaction.tarot_house_component");
     return;
   case InteractionOperation::tarot_adjust:
     if (!tarot_)
@@ -695,6 +732,60 @@ void InteractionHandler::process(const RoutedInteraction &request) {
       throw std::runtime_error{"Tarot service is unavailable."};
     edit(request.interaction, tarot_->reverse(request.interaction),
          "interaction.tarot_reverse");
+    return;
+  case InteractionOperation::tarot_economy:
+    if (!tarot_house_)
+      throw std::runtime_error{"Tarot House service is unavailable."};
+    edit(request.interaction, tarot_house_->economy(request.interaction),
+         "interaction.tarot_economy");
+    return;
+  case InteractionOperation::tarot_draw_test:
+    if (!tarot_draws_)
+      throw std::runtime_error{"Tarot draw service is unavailable."};
+    edit(request.interaction, tarot_draws_->draw(request.interaction, true),
+         "interaction.tarot_draw_test");
+    return;
+  case InteractionOperation::tarot_draw_replay:
+    if (!tarot_draws_)
+      throw std::runtime_error{"Tarot draw service is unavailable."};
+    edit(request.interaction, tarot_draws_->replay(request.interaction),
+         "interaction.tarot_draw_replay");
+    return;
+  case InteractionOperation::tarot_house_offer:
+    if (!tarot_house_)
+      throw std::runtime_error{"Tarot House service is unavailable."};
+    edit(request.interaction, tarot_house_->offer_test(request.interaction),
+         "interaction.tarot_house_offer");
+    return;
+  case InteractionOperation::tarot_house_resolve:
+    if (!tarot_house_)
+      throw std::runtime_error{"Tarot House service is unavailable."};
+    edit(request.interaction, tarot_house_->resolve(request.interaction),
+         "interaction.tarot_house_resolve");
+    return;
+  case InteractionOperation::tarot_house_deadline:
+    if (!tarot_house_)
+      throw std::runtime_error{"Tarot House service is unavailable."};
+    edit(request.interaction, tarot_house_->deadline(request.interaction),
+         "interaction.tarot_house_deadline");
+    return;
+  case InteractionOperation::tarot_house_cleanup:
+    if (!tarot_house_)
+      throw std::runtime_error{"Tarot House service is unavailable."};
+    edit(request.interaction, tarot_house_->cleanup_test(request.interaction),
+         "interaction.tarot_house_cleanup");
+    return;
+  case InteractionOperation::tarot_integration_preview:
+    if (!tarot_integration_)
+      throw std::runtime_error{"Tarot integration service is unavailable."};
+    edit(request.interaction, tarot_integration_->preview(request.interaction),
+         "interaction.tarot_integration_preview");
+    return;
+  case InteractionOperation::tarot_integration_retry:
+    if (!tarot_integration_)
+      throw std::runtime_error{"Tarot integration service is unavailable."};
+    edit(request.interaction, tarot_integration_->retry(request.interaction),
+         "interaction.tarot_integration_retry");
     return;
   case InteractionOperation::wager_create:
     if (!wagers_)
@@ -759,15 +850,13 @@ void InteractionHandler::process(const RoutedInteraction &request) {
   case InteractionOperation::wager_test_deadline:
     if (!wagers_)
       throw std::runtime_error{"Wager service is unavailable."};
-    edit(request.interaction,
-         wagers_->force_test_deadline(request.interaction),
+    edit(request.interaction, wagers_->force_test_deadline(request.interaction),
          "interaction.wager_test_deadline");
     return;
   case InteractionOperation::wager_test_cleanup:
     if (!wagers_)
       throw std::runtime_error{"Wager service is unavailable."};
-    edit(request.interaction,
-         wagers_->cleanup_test_wager(request.interaction),
+    edit(request.interaction, wagers_->cleanup_test_wager(request.interaction),
          "interaction.wager_test_cleanup");
     return;
   }

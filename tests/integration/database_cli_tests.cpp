@@ -56,7 +56,7 @@ TEST_CASE(
           temporary.path(), clock);
   REQUIRE(migrated.exit_code == 0);
   REQUIRE(migrated.output.find("database=current") != std::string::npos);
-  REQUIRE(migrated.output.find("current_schema=10") != std::string::npos);
+  REQUIRE(migrated.output.find("current_schema=11") != std::string::npos);
 
   const auto checked =
       run({sanguinius::DatabaseCommandType::check, std::nullopt},
@@ -70,18 +70,30 @@ TEST_CASE(
   REQUIRE(integrity.exit_code == 0);
   REQUIRE(integrity.output == "integrity=ok\nforeign_keys=ok\n");
 
-  const auto relationships = run(
-      {sanguinius::DatabaseCommandType::relationships_check, std::nullopt},
-      temporary.path(), clock);
+  const auto relationships =
+      run({sanguinius::DatabaseCommandType::relationships_check, std::nullopt},
+          temporary.path(), clock);
   REQUIRE(relationships.exit_code == 0);
   REQUIRE(relationships.output ==
           "relationships=ok\nevents=0\nprojections=0\nmismatches=0\n");
-  const auto tarot = run(
-      {sanguinius::DatabaseCommandType::tarot_check, std::nullopt},
-      temporary.path(), clock);
+  const auto tarot =
+      run({sanguinius::DatabaseCommandType::tarot_check, std::nullopt},
+          temporary.path(), clock);
   REQUIRE(tarot.exit_code == 0);
   REQUIRE(tarot.output.find("tarot=ok\n") == 0);
   REQUIRE(tarot.output.find("prepared=0\n") != std::string::npos);
+  REQUIRE(tarot.output.find("tarot_player_projection=ok\n") !=
+          std::string::npos);
+  REQUIRE(tarot.output.find("tarot_player_mismatches=0\n") !=
+          std::string::npos);
+  const auto tarot_rebuilt =
+      run({sanguinius::DatabaseCommandType::tarot_rebuild, std::nullopt},
+          temporary.path(), clock);
+  REQUIRE(tarot_rebuilt.exit_code == 0);
+  REQUIRE(tarot_rebuilt.output == "tarot_player_projection=rebuilt\n"
+                                  "tarot_player_events=0\n"
+                                  "tarot_player_projections=0\n"
+                                  "tarot_player_mismatches=0\n");
   const auto rebuilt = run(
       {sanguinius::DatabaseCommandType::relationships_rebuild, std::nullopt},
       temporary.path(), clock);

@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "version": "tarot-house-v1",
+  "templates": [
+    {
+      "slug": "returning-dawn",
+      "name": "Returning Dawn",
+      "proposition": "Complete a new Emperor's Tarot draw within twenty-four hours.",
+      "choices": [{"slug":"rise","label":"Meet the returning dawn","profit_numerator":0,"profit_denominator":1}],
+      "allowed_stakes": [0],
+      "eligibility_balance_below": 50,
+      "outcome_window_ms": 86400000,
+      "terminal_cooldown_ms": 604800000,
+      "recovery_reward": 5,
+      "authority": "draw",
+      "scheduled": false,
+      "recovery": true
+    },
+    {
+      "slug": "heralds-call",
+      "name": "Herald's Call",
+      "proposition": "Complete a new Emperor's Tarot draw within six hours.",
+      "choices": [{"slug":"answer","label":"Answer the call","profit_numerator":1,"profit_denominator":1}],
+      "allowed_stakes": [1,5],
+      "eligibility_balance_below": 0,
+      "outcome_window_ms": 21600000,
+      "terminal_cooldown_ms": 604800000,
+      "recovery_reward": 0,
+      "authority": "draw",
+      "scheduled": false,
+      "recovery": false
+    },
+    {
+      "slug": "final-hour",
+      "name": "Final Hour",
+      "proposition": "Will another human make a public Emperor's Tarot draw within six hours?",
+      "choices": [
+        {"slug":"yes","label":"Yes","profit_numerator":2,"profit_denominator":1},
+        {"slug":"no","label":"No","profit_numerator":1,"profit_denominator":1}
+      ],
+      "allowed_stakes": [1,5,10],
+      "eligibility_balance_below": 0,
+      "outcome_window_ms": 21600000,
+      "terminal_cooldown_ms": 0,
+      "recovery_reward": 0,
+      "authority": "public_draw",
+      "scheduled": false,
+      "recovery": false
+    },
+    {
+      "slug": "last-standard",
+      "name": "Last Standard",
+      "proposition": "Will game-night play remain underway at midnight Saturday?",
+      "choices": [
+        {"slug":"yes","label":"Yes","profit_numerator":1,"profit_denominator":1},
+        {"slug":"no","label":"No","profit_numerator":1,"profit_denominator":1}
+      ],
+      "allowed_stakes": [1,5,10],
+      "eligibility_balance_below": 0,
+      "outcome_window_ms": 195300000,
+      "terminal_cooldown_ms": 0,
+      "recovery_reward": 0,
+      "authority": "owner",
+      "scheduled": true,
+      "recovery": false
+    }
+  ]
+}

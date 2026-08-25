@@ -70,7 +70,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 10);
+      REQUIRE(migrator.apply(database.connection()).current_version == 11);
     }
     context = std::make_shared<SqliteRepositoryContext>(
         Database::open_runtime(temporary.path(), 25ms));
@@ -3714,6 +3714,44 @@ TEST_CASE(
     connection.execute(
         "UPDATE user_preference SET chronicle_opt_in=0,updated_at_ms=2100 "
         "WHERE user_id='31'");
+    cancelled(queued, "appearance_opt_out");
+  }
+
+  SECTION("Chronicle opt-out preserves Tarot appearance callback authority") {
+    const auto queued = queue(38'200);
+    auto &connection = fixture.context->connection();
+    connection.execute(
+        "UPDATE appearance_candidate SET candidate_type='tarot_event' WHERE "
+        "candidate_id='" +
+        queued.candidate_id + "'");
+    connection.execute_script(
+        "INSERT INTO chronicle_entry(entry_id,entry_type,title,body,"
+        "visibility,status,occurred_at_ms,created_at_ms,created_by_user_id,"
+        "submitted_at_ms,approved_at_ms,approved_by_user_id,source_guild_id,"
+        "source_channel_id,source_message_id,source_author_user_id,source_text,"
+        "revision,source_kind) VALUES("
+        "'00000000-0000-4000-8000-000000038300','incident','Tarot source',"
+        "'A Tarot callback source.','shared','canon',1500,1500,'31',1500,"
+        "1500,'30','10','20','38300','31','A Tarot callback source.',1,"
+        "'discord_message');"
+        "INSERT INTO chronicle_participant(entry_id,user_id,role) VALUES("
+        "'00000000-0000-4000-8000-000000038300','31','source_author');");
+    auto link =
+        connection.prepare("INSERT INTO appearance_candidate_source VALUES(?,"
+                           "'chronicle_entry',?,1)");
+    link.bind(1, queued.candidate_id);
+    link.bind(2, uuid(38'300));
+    link.execute();
+    connection.execute(
+        "UPDATE user_preference SET chronicle_opt_in=0,updated_at_ms=2100 "
+        "WHERE user_id='31'");
+    REQUIRE(
+        scalar(*fixture.context,
+               "SELECT state='pending' FROM outbox_message WHERE outbox_id='" +
+                   queued.outbox_id + "'") == 1);
+    REQUIRE(fixture.repository->set_callback_consent(
+        31, false, 2'101, uuid(38'301), "tarot-callback-opt-out",
+        "withdrawal"));
     cancelled(queued, "appearance_opt_out");
   }
 }
