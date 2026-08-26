@@ -39,6 +39,8 @@ using namespace std::chrono_literals;
       .ai_worker_count = 1,
       .interaction_queue_capacity = 64,
       .durable_delivery_receipt_wait = std::chrono::milliseconds{100},
+      .speech = {},
+      .static_speech_assets = {},
   };
 }
 
@@ -152,6 +154,8 @@ TEST_CASE("full application queue replies only to actionable input",
       .message_queue_capacity = 1,
       .ai_queue_capacity = 64,
       .ai_worker_count = 1,
+      .speech = {},
+      .static_speech_assets = {},
   }};
   fixture.log->block();
   fixture.application->start();
@@ -208,6 +212,8 @@ TEST_CASE("full AI queue preserves mention overload response",
       .message_queue_capacity = 64,
       .ai_queue_capacity = 1,
       .ai_worker_count = 1,
+      .speech = {},
+      .static_speech_assets = {},
   }};
   fixture.ai->block();
   fixture.application->start();
@@ -254,6 +260,8 @@ TEST_CASE(
       .message_queue_capacity = 64,
       .ai_queue_capacity = 64,
       .ai_worker_count = 1,
+      .speech = {},
+      .static_speech_assets = {},
   }};
   fixture.ai->block();
   bool cancelled_before_gateway_shutdown = false;

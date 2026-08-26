@@ -6,6 +6,7 @@
 #include "sanguinius/feature_config.hpp"
 #include "sanguinius/persistent_id.hpp"
 #include "sanguinius/server_scope_policy.hpp"
+#include "sanguinius/speech_service.hpp"
 #include "sanguinius/voice_gateway.hpp"
 #include "sanguinius/work_queue.hpp"
 
@@ -27,6 +28,8 @@ inline constexpr std::string_view vox_leave_timeout_job_type{
     "vox.leave_timeout.v1"};
 inline constexpr std::string_view vox_empty_timeout_job_type{
     "vox.empty_timeout.v1"};
+inline constexpr std::string_view vox_mute_expiry_job_type{
+    "vox.mute_expiry.v1"};
 inline constexpr std::int64_t vox_connect_timeout_ms = 20'000;
 inline constexpr std::int64_t vox_empty_timeout_ms = 60'000;
 inline constexpr std::size_t vox_worker_capacity = 64;
@@ -63,6 +66,9 @@ struct VoxSession {
   std::optional<std::string> fixture_marker;
   std::optional<std::int64_t> empty_since_ms;
   std::optional<std::string> timeout_job_id;
+  std::optional<std::int64_t> muted_at_ms;
+  std::optional<std::int64_t> mute_until_ms;
+  std::optional<std::string> mute_job_id;
   std::int64_t started_at_ms{};
   std::int64_t last_active_at_ms{};
   std::optional<std::int64_t> ended_at_ms;
@@ -172,6 +178,16 @@ public:
   command_leave(const VoxCommandContext &context, std::string event_id,
                 std::string timeout_job_id) = 0;
   [[nodiscard]] virtual VoxCommandResult
+  command_mute(const VoxCommandContext &context, bool unmute,
+               std::optional<std::int64_t> mute_until_ms, std::string event_id,
+               std::optional<std::string> mute_job_id) = 0;
+  [[nodiscard]] virtual std::optional<VoxCommandResult>
+  command_receipt(const VoxCommandContext &context, std::string_view operation,
+                  std::string_view request_fingerprint) = 0;
+  [[nodiscard]] virtual VoxCommandResult record_command_receipt(
+      const VoxCommandContext &context, std::string_view operation,
+      std::string_view request_fingerprint, VoxCommandResult result) = 0;
+  [[nodiscard]] virtual VoxCommandResult
   command_test_disconnect(const VoxCommandContext &context,
                           std::string event_id, std::string timeout_job_id) = 0;
   [[nodiscard]] virtual VoxCommandResult
@@ -212,6 +228,7 @@ struct VoxHealth {
   std::size_t reconciliations{};
   QueueSnapshot queue;
   std::optional<std::string> last_failure_category;
+  std::optional<SpeechServiceHealth> speech;
 };
 
 class VoxService {
@@ -224,7 +241,8 @@ public:
              Diagnostics &diagnostics, ServerScopeConfiguration scope,
              ControlConfiguration controls, std::string instance_id,
              Wake wake_scheduler, Wake wake_outbox,
-             std::size_t queue_capacity = vox_worker_capacity);
+             std::size_t queue_capacity = vox_worker_capacity,
+             SpeechService *speech = nullptr);
   ~VoxService();
 
   VoxService(const VoxService &) = delete;
@@ -238,8 +256,18 @@ public:
                                     Completion completion);
   [[nodiscard]] SubmitResult leave(VoxCommandContext context,
                                    Completion completion);
+  [[nodiscard]] SubmitResult say(VoxCommandContext context, std::string text,
+                                 Completion completion);
+  [[nodiscard]] SubmitResult mute(VoxCommandContext context,
+                                  std::string duration, Completion completion);
+  [[nodiscard]] SubmitResult voice(VoxCommandContext context,
+                                   std::optional<std::string> voice,
+                                   Completion completion);
   [[nodiscard]] SubmitResult test_disconnect(VoxCommandContext context,
                                              Completion completion);
+  [[nodiscard]] SubmitResult speech_test(VoxCommandContext context,
+                                         std::string scenario,
+                                         Completion completion);
   [[nodiscard]] SubmitResult handle_timeout(const ClaimedScheduledJob &job);
   [[nodiscard]] VoxHealth health() const;
 

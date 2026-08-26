@@ -393,6 +393,51 @@ TEST_CASE("configuration rejects voice input until receive is implemented",
   REQUIRE(contains(error, "voice output only"));
 }
 
+TEST_CASE("TTS configuration is fixed-contract and permits only lower limits",
+          "[config][vox][tts]") {
+  FakeConfigSource defaults;
+  const auto default_config = sanguinius::Config::from_source(defaults);
+  REQUIRE(default_config.tts.provider == sanguinius::TtsProvider::disabled);
+  REQUIRE(default_config.tts.model == "tts-1");
+  REQUIRE(default_config.tts.voice == "onyx");
+  REQUIRE(default_config.tts.usage_policy.rolling_day_attempts == 20);
+  REQUIRE(default_config.tts.usage_policy.rolling_day_micro_usd == 100'000);
+  REQUIRE(default_config.tts.usage_policy.calendar_month_micro_usd ==
+          2'000'000);
+
+  FakeConfigSource lowered;
+  lowered.values["SANGUINIUS_TTS_PROVIDER"] = "openai";
+  lowered.values["SANGUINIUS_TTS_MODEL"] = "tts-1";
+  lowered.values["SANGUINIUS_TTS_VOICE"] = "onyx";
+  lowered.values["SANGUINIUS_TTS_CACHE_DIRECTORY"] = "/tmp/tts-cache";
+  lowered.values["SANGUINIUS_FFMPEG_PATH"] = "/usr/bin/ffmpeg";
+  lowered.values["SANGUINIUS_FFPROBE_PATH"] = "/usr/bin/ffprobe";
+  lowered.values["SANGUINIUS_TTS_FALLBACK_DIRECTORY"] = "/tmp/tts-assets";
+  lowered.values["SANGUINIUS_TTS_ROLLING_DAY_ATTEMPTS"] = "7";
+  lowered.values["SANGUINIUS_TTS_ROLLING_DAY_MICRO_USD"] = "50000";
+  lowered.values["SANGUINIUS_TTS_MONTHLY_MICRO_USD"] = "1000000";
+  lowered.values["SANGUINIUS_TTS_CACHE_MAXIMUM_MIB"] = "64";
+  const auto configured = sanguinius::Config::from_source(lowered);
+  REQUIRE(configured.tts.provider == sanguinius::TtsProvider::openai);
+  REQUIRE(configured.tts.usage_policy.rolling_day_attempts == 7);
+  REQUIRE(configured.tts.cache_policy.maximum_bytes == 64U * 1024U * 1024U);
+
+  for (const auto &[variable, value] :
+       std::vector<std::pair<std::string, std::string>>{
+           {"SANGUINIUS_TTS_PROVIDER", "unknown"},
+           {"SANGUINIUS_TTS_MODEL", "tts-1-hd"},
+           {"SANGUINIUS_TTS_VOICE", "alloy"},
+           {"SANGUINIUS_TTS_CACHE_DIRECTORY", "relative/cache"},
+           {"SANGUINIUS_TTS_ROLLING_DAY_ATTEMPTS", "21"},
+           {"SANGUINIUS_TTS_ROLLING_DAY_MICRO_USD", "100001"},
+           {"SANGUINIUS_TTS_MONTHLY_MICRO_USD", "2000001"},
+           {"SANGUINIUS_TTS_CACHE_MAXIMUM_MIB", "129"}}) {
+    FakeConfigSource invalid;
+    invalid.values[variable] = value;
+    REQUIRE(contains(config_error(invalid), variable));
+  }
+}
+
 TEST_CASE("configuration validates appearance mode database and persona",
           "[config]") {
   for (const std::string valid : {"off", "dry_run", "live"}) {

@@ -56,6 +56,9 @@ slash_operation(const IncomingInteraction &interaction) {
     if (interaction.subcommand_group_name == "vox" &&
         interaction.subcommand_name == "disconnect")
       return InteractionOperation::vox_test_disconnect;
+    if (interaction.subcommand_group_name == "vox" &&
+        interaction.subcommand_name == "speech-test")
+      return InteractionOperation::vox_speech_test;
     if (interaction.subcommand_group_name == "tarot") {
       if (interaction.subcommand_name == "adjust")
         return InteractionOperation::tarot_adjust;
@@ -128,6 +131,12 @@ slash_operation(const IncomingInteraction &interaction) {
       return InteractionOperation::vox_status;
     if (interaction.subcommand_name == "leave")
       return InteractionOperation::vox_leave;
+    if (interaction.subcommand_name == "say")
+      return InteractionOperation::vox_say;
+    if (interaction.subcommand_name == "mute")
+      return InteractionOperation::vox_mute;
+    if (interaction.subcommand_name == "voice")
+      return InteractionOperation::vox_voice;
   }
   if (interaction.command_name == "tarot") {
     if (interaction.subcommand_group_name == "house") {
@@ -566,7 +575,11 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::vox_summon ||
       *operation == InteractionOperation::vox_status ||
       *operation == InteractionOperation::vox_leave ||
-      *operation == InteractionOperation::vox_test_disconnect;
+      *operation == InteractionOperation::vox_say ||
+      *operation == InteractionOperation::vox_mute ||
+      *operation == InteractionOperation::vox_voice ||
+      *operation == InteractionOperation::vox_test_disconnect ||
+      *operation == InteractionOperation::vox_speech_test;
   if (vox_operation && !state_->features.vox_enabled) {
     reply_ephemeral(interaction, "Vox is currently unavailable.");
     return;
@@ -598,7 +611,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::wager_test_deadline ||
       *operation == InteractionOperation::wager_test_cleanup;
   const bool vox_test_operation =
-      *operation == InteractionOperation::vox_test_disconnect;
+      *operation == InteractionOperation::vox_test_disconnect ||
+      *operation == InteractionOperation::vox_speech_test;
   const bool appearance_safety_operation =
       *operation == InteractionOperation::appearance_disable ||
       *operation == InteractionOperation::appearance_enable;

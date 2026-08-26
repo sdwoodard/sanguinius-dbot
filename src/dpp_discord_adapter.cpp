@@ -766,6 +766,9 @@ void dpp_adapter_detail::translate_slash_command(
 std::string dpp_adapter_detail::durable_public_message_json(
     const PublicMessageRequest &request,
     const std::string_view provider_nonce) {
+  if (!request.guild_id.is_set() || !request.channel_id.is_set()) {
+    throw std::invalid_argument{"Discord public-message target is incomplete."};
+  }
   if (provider_nonce.size() != 25 ||
       std::any_of(provider_nonce.begin(), provider_nonce.end(),
                   [](const char character) {
@@ -775,13 +778,35 @@ std::string dpp_adapter_detail::durable_public_message_json(
     throw std::invalid_argument{"Discord provider nonce is invalid."};
   }
   auto message = discord_message(request.message);
-  message.channel_id = dpp::snowflake{request.channel_id.value()};
-  message.guild_id = dpp::snowflake{request.guild_id.value()};
-  message.nonce = provider_nonce;
-  auto payload = message.to_json(false);
+  const auto serialized = message.to_json(false);
+  nlohmann::json payload = nlohmann::json::object();
+  if (const auto content = serialized.find("content");
+      content != serialized.end() && content->is_string() &&
+      !content->get_ref<const std::string &>().empty()) {
+    payload["content"] = *content;
+  }
+  for (const auto *field : {"embeds", "components"}) {
+    if (const auto value = serialized.find(field);
+        value != serialized.end() && value->is_array() && !value->empty()) {
+      payload[field] = *value;
+    }
+  }
+  if (const auto allowed_mentions = serialized.find("allowed_mentions");
+      allowed_mentions != serialized.end()) {
+    payload["allowed_mentions"] = *allowed_mentions;
+  }
+  if (!payload.contains("content") && !payload.contains("embeds") &&
+      !payload.contains("components")) {
+    throw std::invalid_argument{"Discord public message is empty."};
+  }
   payload["nonce"] = provider_nonce;
   payload["enforce_nonce"] = true;
   return payload.dump();
+}
+
+std::string_view
+dpp_adapter_detail::durable_public_message_base_path() noexcept {
+  return API_PATH "/channels";
 }
 
 int run_discord_command_operator(const DiscordCommandOperation operation,
@@ -1350,8 +1375,10 @@ void DppDiscordAdapter::send_public(const PublicMessageRequest &request,
 
   try {
     auto asynchronous_callback = callback;
+    const auto base_path =
+        dpp_adapter_detail::durable_public_message_base_path();
     dpp::rest_request<dpp::message>(
-        &impl_->bot_, "/channels", request.channel_id.str(), "/messages",
+        &impl_->bot_, base_path.data(), request.channel_id.str(), "/messages",
         dpp::m_post, payload,
         [callbacks = impl_->callbacks_,
          callback = std::move(asynchronous_callback)](

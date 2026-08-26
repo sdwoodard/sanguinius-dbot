@@ -863,7 +863,11 @@ void InteractionHandler::process(const RoutedInteraction &request) {
   case InteractionOperation::vox_summon:
   case InteractionOperation::vox_status:
   case InteractionOperation::vox_leave:
-  case InteractionOperation::vox_test_disconnect: {
+  case InteractionOperation::vox_say:
+  case InteractionOperation::vox_mute:
+  case InteractionOperation::vox_voice:
+  case InteractionOperation::vox_test_disconnect:
+  case InteractionOperation::vox_speech_test: {
     if (!vox_)
       throw std::runtime_error{"Vox service is unavailable."};
     const auto interaction = request.interaction;
@@ -892,6 +896,30 @@ void InteractionHandler::process(const RoutedInteraction &request) {
                       clock_.now().time_since_epoch())
                       .count(),
     };
+    const auto string_option = [&request](const std::string_view name,
+                                          const bool required)
+        -> std::optional<std::string> {
+      const auto found = std::ranges::find(request.interaction.command_options,
+                                           name, &InteractionOption::name);
+      if (found == request.interaction.command_options.end()) {
+        if (required)
+          throw std::invalid_argument{"A Vox command option is required."};
+        return std::nullopt;
+      }
+      const auto *value = std::get_if<std::string>(&found->value);
+      if (value == nullptr)
+        throw std::invalid_argument{"A Vox command option is invalid."};
+      return *value;
+    };
+    std::optional<std::string> argument;
+    if (request.operation == InteractionOperation::vox_say)
+      argument = string_option("text", true);
+    else if (request.operation == InteractionOperation::vox_mute)
+      argument = string_option("duration", true);
+    else if (request.operation == InteractionOperation::vox_voice)
+      argument = string_option("voice", false);
+    else if (request.operation == InteractionOperation::vox_speech_test)
+      argument = string_option("scenario", true);
     const auto submitted =
         request.operation == InteractionOperation::vox_summon
             ? vox_->summon(std::move(context), std::move(completion))
@@ -899,6 +927,18 @@ void InteractionHandler::process(const RoutedInteraction &request) {
             ? vox_->status(std::move(context), std::move(completion))
         : request.operation == InteractionOperation::vox_leave
             ? vox_->leave(std::move(context), std::move(completion))
+        : request.operation == InteractionOperation::vox_say
+            ? vox_->say(std::move(context), std::move(*argument),
+                        std::move(completion))
+        : request.operation == InteractionOperation::vox_mute
+            ? vox_->mute(std::move(context), std::move(*argument),
+                         std::move(completion))
+        : request.operation == InteractionOperation::vox_voice
+            ? vox_->voice(std::move(context), std::move(argument),
+                          std::move(completion))
+        : request.operation == InteractionOperation::vox_speech_test
+            ? vox_->speech_test(std::move(context), std::move(*argument),
+                                std::move(completion))
             : vox_->test_disconnect(std::move(context),
                                     std::move(completion));
     if (submitted != SubmitResult::accepted) {

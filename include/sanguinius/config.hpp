@@ -4,10 +4,13 @@
 #include "sanguinius/build_info.hpp"
 #include "sanguinius/feature_config.hpp"
 #include "sanguinius/server_scope_policy.hpp"
+#include "sanguinius/speech.hpp"
 #include "sanguinius/tarot.hpp"
 #include "sanguinius/tarot_catalog.hpp"
 #include "sanguinius/tarot_house.hpp"
 #include "sanguinius/wagers.hpp"
+#include "sanguinius/tts.hpp"
+#include "sanguinius/tts_cache.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -50,6 +53,29 @@ struct AiConfiguration {
   std::string persona;
 };
 
+enum class TtsProvider {
+  disabled,
+  openai,
+};
+
+struct TtsConfiguration {
+  TtsProvider provider{TtsProvider::disabled};
+  std::string model{"tts-1"};
+  std::string voice{"onyx"};
+  std::filesystem::path cache_directory{"/var/cache/sanguinius/tts"};
+  std::filesystem::path ffmpeg_path{"/usr/bin/ffmpeg"};
+  std::filesystem::path ffprobe_path{"/usr/bin/ffprobe"};
+  std::filesystem::path fallback_directory{
+      "/usr/local/share/sanguinius/vox"};
+  std::chrono::milliseconds connect_timeout{5'000};
+  std::chrono::milliseconds request_timeout{30'000};
+  AudioNormalizationLimits normalization_limits;
+  TtsCachePolicy cache_policy;
+  TtsUsagePolicy usage_policy;
+  std::size_t maximum_attempts{2};
+  std::size_t maximum_text_scalars{maximum_tts_scalar_count};
+};
+
 struct PathConfiguration {
   std::filesystem::path message_log{"logs/messages.log"};
   std::filesystem::path database_file{"state/sanguinius.sqlite3"};
@@ -82,6 +108,7 @@ struct ConfigurationOrigins {
 struct Config {
   DiscordConfiguration discord;
   AiConfiguration ai;
+  TtsConfiguration tts;
   PathConfiguration paths;
   ControlConfiguration controls;
   FeatureConfiguration features;
@@ -101,6 +128,8 @@ struct Config {
 
 [[nodiscard]] std::string_view
 configuration_origin_name(ConfigurationOrigin origin) noexcept;
+
+[[nodiscard]] std::string_view tts_provider_name(TtsProvider provider) noexcept;
 
 [[nodiscard]] std::string redacted_config_summary(const Config &config,
                                                   const BuildInfo &build);

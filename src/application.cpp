@@ -77,11 +77,15 @@ public:
         tarot_integration_repository_{
             std::move(dependencies.tarot_integration)},
         vox_repository_{std::move(dependencies.vox)},
+        speech_repository_{std::move(dependencies.speech)},
         random_{std::move(dependencies.random)},
         appearance_policy_{std::move(dependencies.appearance_policy)},
         ai_client_{std::move(dependencies.ai_client)},
         discord_{std::move(dependencies.discord)},
-        voice_gateway_{std::move(dependencies.voice_gateway)} {
+        voice_gateway_{std::move(dependencies.voice_gateway)},
+        text_to_speech_{std::move(dependencies.text_to_speech)},
+        audio_normalizer_{std::move(dependencies.audio_normalizer)},
+        tts_cache_{std::move(dependencies.tts_cache)} {
     if (!clock_ || !id_generator_ || !persistent_id_generator_ ||
         !diagnostics_ || !message_log_ || !application_instances_ ||
         !identities_ || !pending_notices_ || !durable_work_ || !ai_client_ ||
@@ -90,7 +94,8 @@ public:
           "Application dependencies must all be configured."};
     }
     if (options_.features.vox_enabled &&
-        (!vox_repository_ || !voice_gateway_)) {
+        (!vox_repository_ || !speech_repository_ || !voice_gateway_ ||
+         !audio_normalizer_ || !tts_cache_)) {
       throw std::invalid_argument{
           "Vox persistence and the voice gateway are required when enabled."};
     }
@@ -283,6 +288,26 @@ public:
               }}
             : JobHandlerRegistry::Handler{});
     if (options_.features.vox_enabled) {
+      speech_service_ = std::make_unique<SpeechService>(
+          *speech_repository_, text_to_speech_.get(), *audio_normalizer_,
+          *tts_cache_, *voice_gateway_, *clock_, *persistent_id_generator_,
+          *diagnostics_, std::move(options_.static_speech_assets),
+          options_.speech,
+          [this](std::string provider_nonce, std::string message) {
+            discord_->send_public(
+                {.guild_id = options_.server_scope.guild_id,
+                 .channel_id = options_.server_scope.primary_channel_id,
+                 .message = text_message(std::move(message))},
+                discord_nonce_from_uuid(provider_nonce),
+                [this](const PublicDeliveryReceipt receipt) {
+                  if (receipt.result != DeliveryResult::success) {
+                    diagnostics_->emit(
+                        {DiagnosticSeverity::warning, "vox.tts.text_fallback",
+                         "A public-safe Vox failure notice was not delivered.",
+                         {}});
+                  }
+                });
+          });
       vox_service_ = std::make_unique<VoxService>(
           *vox_repository_, *voice_gateway_, *clock_,
           *persistent_id_generator_, *diagnostics_, options_.server_scope,
@@ -291,7 +316,8 @@ public:
             if (scheduler_)
               scheduler_->wake();
           },
-          [this] { outbox_->wake(); });
+          [this] { outbox_->wake(); }, vox_worker_capacity,
+          speech_service_.get());
     }
     const auto add_vox_handler = [this](const std::string_view job_type) {
       scheduler_->add_handler(
@@ -313,6 +339,7 @@ public:
     add_vox_handler(vox_reconnect_timeout_job_type);
     add_vox_handler(vox_leave_timeout_job_type);
     add_vox_handler(vox_empty_timeout_job_type);
+    add_vox_handler(vox_mute_expiry_job_type);
     scheduler_->add_handler(std::string{wager_deadline_job_type},
                             [this](const ClaimedScheduledJob &job) {
                               if (!wager_service_) {
@@ -485,6 +512,19 @@ public:
               job, current, current + recurrence_ms);
           if (status != WorkMutationStatus::applied)
             throw std::runtime_error{"Appearance purge claim became stale."};
+        });
+    scheduler_->add_handler(
+        std::string{vox_tts_purge_job_type},
+        [this](const ClaimedScheduledJob &job) {
+          if (!std::holds_alternative<std::monostate>(job.payload))
+            throw std::invalid_argument{"Invalid TTS purge payload."};
+          if (speech_service_)
+            static_cast<void>(speech_service_->purge());
+          const auto current = unix_milliseconds(*clock_);
+          const auto status = durable_work_->reschedule_job(
+              job, current, current + vox_tts_purge_interval_ms);
+          if (status != WorkMutationStatus::applied)
+            throw std::runtime_error{"TTS purge claim became stale."};
         });
     durable_controls_ = std::make_unique<DurableWorkControlService>(
         *durable_work_, *clock_, *persistent_id_generator_,
@@ -709,6 +749,10 @@ public:
       message_handler_started_ = true;
       interaction_handler_->start();
       interaction_handler_started_ = true;
+      if (speech_service_) {
+        speech_service_->start();
+        speech_started_ = true;
+      }
       if (vox_service_) {
         vox_service_->start();
         vox_started_ = true;
@@ -794,6 +838,10 @@ private:
       vox_service_->stop();
       vox_started_ = false;
     }
+    if (speech_started_) {
+      speech_service_->stop();
+      speech_started_ = false;
+    }
     if (outbox_started_) {
       outbox_->stop();
       outbox_started_ = false;
@@ -856,11 +904,15 @@ private:
   std::unique_ptr<TarotHouseRepository> tarot_house_repository_;
   std::unique_ptr<TarotIntegrationRepository> tarot_integration_repository_;
   std::unique_ptr<VoxRepository> vox_repository_;
+  std::unique_ptr<SpeechRepository> speech_repository_;
   std::unique_ptr<Random> random_;
   std::optional<AppearancePolicy> appearance_policy_;
   std::unique_ptr<AiClient> ai_client_;
   std::unique_ptr<DiscordRuntime> discord_;
   std::unique_ptr<VoiceGateway> voice_gateway_;
+  std::unique_ptr<TextToSpeechClient> text_to_speech_;
+  std::unique_ptr<AudioNormalizer> audio_normalizer_;
+  std::unique_ptr<TtsCache> tts_cache_;
   std::unique_ptr<AiResponder> ai_responder_;
   std::unique_ptr<AiWorkService> ai_work_;
   std::unique_ptr<ServerScopePolicy> scope_policy_;
@@ -879,6 +931,7 @@ private:
   std::unique_ptr<TarotHouseService> tarot_house_service_;
   std::unique_ptr<TarotIntegrationService> tarot_integration_service_;
   std::unique_ptr<VoxService> vox_service_;
+  std::unique_ptr<SpeechService> speech_service_;
   std::unique_ptr<SchedulerService> scheduler_;
   std::unique_ptr<DurableWorkControlService> durable_controls_;
   std::unique_ptr<InteractionHandler> interaction_handler_;
@@ -891,6 +944,7 @@ private:
   bool outbox_started_{false};
   bool scheduler_started_{false};
   bool vox_started_{false};
+  bool speech_started_{false};
   bool instance_started_{false};
   bool instance_finished_{false};
 };

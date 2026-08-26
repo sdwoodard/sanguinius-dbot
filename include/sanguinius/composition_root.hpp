@@ -7,6 +7,8 @@
 
 namespace sanguinius {
 
+void validate_runtime_configuration(const Config &config);
+
 [[nodiscard]] std::unique_ptr<Application>
 make_application(const Config &config);
 

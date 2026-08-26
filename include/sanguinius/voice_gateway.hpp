@@ -65,6 +65,7 @@ struct VoiceGatewaySnapshot {
   bool ready{};
   bool dave_active{};
   bool marker_completed{};
+  std::string completed_marker;
   bool bot_moved{};
   std::string session_id;
   DiscordSnowflake guild_id;

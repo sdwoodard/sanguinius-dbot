@@ -25,6 +25,7 @@ endif()
 find_package(dpp 10.1.7 CONFIG REQUIRED)
 find_package(CURL REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
 
@@ -112,6 +113,7 @@ sanguinius_embed_migrations(
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0010_peer_wagers.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0011_tarot_house_integration.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0012_vox_foundation.sql"
+    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0013_vox_tts.sql"
 )
 
 function(sanguinius_enable_warnings target)
@@ -163,11 +165,15 @@ add_library(sanguinius_core STATIC
     src/repositories.cpp
     src/scheduler.cpp
     src/server_scope_policy.cpp
+    src/speech.cpp
+    src/speech_service.cpp
+    src/static_speech_assets.cpp
     src/snowflake.cpp
     src/tarot.cpp
     src/tarot_catalog.cpp
     src/tarot_house.cpp
     src/tarot_integration.cpp
+    src/tts.cpp
     src/wagers.cpp
     src/vox.cpp
     src/work_queue.cpp
@@ -183,6 +189,7 @@ sanguinius_enable_warnings(sanguinius_core)
 target_link_libraries(sanguinius_core
     PUBLIC
         Threads::Threads
+        OpenSSL::Crypto
     PRIVATE
         nlohmann_json::nlohmann_json
 )
@@ -199,6 +206,7 @@ add_library(sanguinius_persistence STATIC
     src/persistence/sqlite_appearance_repository.cpp
     src/persistence/sqlite_durable_work_repository.cpp
     src/persistence/sqlite_relationship_repository.cpp
+    src/persistence/sqlite_speech_repository.cpp
     src/persistence/sqlite_repositories.cpp
     src/persistence/sqlite_tarot_repository.cpp
     src/persistence/sqlite_tarot_catalog_repository.cpp
@@ -229,8 +237,11 @@ add_library(sanguinius_runtime STATIC
     src/dpp_command_registry.cpp
     src/dpp_discord_adapter.cpp
     src/dpp_voice_gateway.cpp
+    src/ffmpeg_audio_normalizer.cpp
     src/openai_client.cpp
+    src/openai_tts_client.cpp
     src/process_signals.cpp
+    src/tts_cache.cpp
 )
 
 target_compile_features(sanguinius_runtime PUBLIC cxx_std_20)
@@ -289,6 +300,7 @@ if(BUILD_TESTING)
         tests/unit/snowflake_tests.cpp
         tests/unit/tarot_tests.cpp
         tests/unit/tarot_catalog_tests.cpp
+        tests/unit/tts_tests.cpp
         tests/unit/wager_tests.cpp
         tests/unit/vox_tests.cpp
         tests/unit/work_queue_tests.cpp
@@ -309,6 +321,7 @@ if(BUILD_TESTING)
         tests/integration/migration_tests.cpp
         tests/integration/repository_tests.cpp
         tests/integration/relationship_repository_tests.cpp
+        tests/integration/speech_repository_tests.cpp
         tests/integration/sqlite_tests.cpp
         tests/integration/tarot_repository_tests.cpp
         tests/integration/tarot_house_repository_tests.cpp
@@ -331,10 +344,14 @@ if(BUILD_TESTING)
 
     add_executable(sanguinius_runtime_tests
         tests/runtime/dpp_command_registration_tests.cpp
+        tests/runtime/tts_runtime_tests.cpp
     )
     target_compile_features(sanguinius_runtime_tests PRIVATE cxx_std_20)
     target_include_directories(sanguinius_runtime_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+    )
+    target_compile_definitions(sanguinius_runtime_tests PRIVATE
+        SANGUINIUS_TEST_VOX_ASSET_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/assets/vox"
     )
     sanguinius_enable_warnings(sanguinius_runtime_tests)
     target_link_libraries(sanguinius_runtime_tests PRIVATE
@@ -379,6 +396,24 @@ if(BUILD_TESTING)
         --unset=SANGUINIUS_APPEARANCES_MODE
         --unset=SANGUINIUS_VOX_ENABLED
         --unset=SANGUINIUS_VOICE_INPUT_ENABLED
+        --unset=SANGUINIUS_TTS_PROVIDER
+        --unset=SANGUINIUS_TTS_MODEL
+        --unset=SANGUINIUS_TTS_VOICE
+        --unset=SANGUINIUS_TTS_CACHE_DIRECTORY
+        --unset=SANGUINIUS_FFMPEG_PATH
+        --unset=SANGUINIUS_FFPROBE_PATH
+        --unset=SANGUINIUS_TTS_FALLBACK_DIRECTORY
+        --unset=SANGUINIUS_TTS_MAXIMUM_TEXT_SCALARS
+        --unset=SANGUINIUS_TTS_ROLLING_DAY_ATTEMPTS
+        --unset=SANGUINIUS_TTS_ROLLING_DAY_MICRO_USD
+        --unset=SANGUINIUS_TTS_MONTHLY_MICRO_USD
+        --unset=SANGUINIUS_TTS_CACHE_MAXIMUM_MIB
+        --unset=SANGUINIUS_TTS_CACHE_MAXIMUM_DAYS
+        --unset=SANGUINIUS_TTS_MAXIMUM_DURATION_SECONDS
+        --unset=SANGUINIUS_TTS_CONNECT_TIMEOUT_MS
+        --unset=SANGUINIUS_TTS_REQUEST_TIMEOUT_MS
+        --unset=SANGUINIUS_FFPROBE_TIMEOUT_MS
+        --unset=SANGUINIUS_FFMPEG_TIMEOUT_MS
         --unset=SANGUINIUS_TIMEZONE
         --unset=SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS
     )
@@ -508,3 +543,9 @@ if(BUILD_TESTING)
 endif()
 
 install(TARGETS sanguinius RUNTIME DESTINATION bin)
+install(DIRECTORY assets/vox/
+    DESTINATION share/sanguinius/vox
+    FILES_MATCHING
+    PATTERN "*.pcm"
+    PATTERN "fallbacks-v1.json"
+)

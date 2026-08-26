@@ -22,10 +22,10 @@ namespace {
 
 } // namespace
 
-TEST_CASE("command catalog version eleven is deterministic and feature gated",
+TEST_CASE("command catalog version twelve is deterministic and feature gated",
           "[interaction][commands]") {
   const auto public_catalog = sanguinius::command_catalog(false);
-  REQUIRE(public_catalog.version == 11);
+  REQUIRE(public_catalog.version == 12);
   REQUIRE(public_catalog.commands.size() == 2);
   REQUIRE(public_catalog.commands[0].name == "sanguinius");
   REQUIRE(public_catalog.commands[0].subcommands.size() == 5);
@@ -76,7 +76,7 @@ TEST_CASE("command catalog version eleven is deterministic and feature gated",
   REQUIRE(chronicle_catalog.commands[3].name == "sang-admin");
 
   const auto tarot_catalog = sanguinius::command_catalog(true, false, true);
-  REQUIRE(tarot_catalog.version == 11);
+  REQUIRE(tarot_catalog.version == 12);
   REQUIRE(tarot_catalog.commands.size() == 3);
   REQUIRE(tarot_catalog.commands[1].name == "tarot");
   REQUIRE(tarot_catalog.commands[1].subcommands.size() == 15);
@@ -108,11 +108,16 @@ TEST_CASE("command catalog version eleven is deterministic and feature gated",
       sanguinius::command_catalog(true, false, false, true);
   REQUIRE(vox_catalog.commands.size() == 3);
   REQUIRE(vox_catalog.commands[1].name == "vox");
-  REQUIRE(vox_catalog.commands[1].subcommands.size() == 3);
+  REQUIRE(vox_catalog.commands[1].subcommands.size() == 6);
   REQUIRE(vox_catalog.commands[1].subcommands[0].name == "summon");
   REQUIRE(vox_catalog.commands[1].subcommands[1].name == "status");
   REQUIRE(vox_catalog.commands[1].subcommands[2].name == "leave");
+  REQUIRE(vox_catalog.commands[1].subcommands[3].name == "say");
+  REQUIRE(vox_catalog.commands[1].subcommands[4].name == "mute");
+  REQUIRE(vox_catalog.commands[1].subcommands[5].name == "voice");
   REQUIRE(vox_catalog.commands[2].subcommand_groups.size() == 2);
+  REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands.size() ==
+          2);
   REQUIRE(vox_catalog.commands[2].subcommand_groups[1].name == "vox");
   REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands[0].name ==
           "disconnect");

@@ -16,11 +16,14 @@ namespace {
                            ? fallback_code
                            : sqlite3_extended_errcode(connection);
   const int primary = extended & 0xff;
+  const std::string detail =
+      connection == nullptr ? std::string{} : std::string{sqlite3_errmsg(connection)};
   return DatabaseError{
       database_error_category(primary), primary, extended,
       "SQLite " + std::string{operation} + " failed (" +
           database_error_category_name(database_error_category(primary)) +
-          ")."};
+          ")" + (detail.empty() ? std::string{"."}
+                                : std::string{": "} + detail + ".")};
 }
 
 [[nodiscard]] bool only_space(const char *begin, const char *end) {

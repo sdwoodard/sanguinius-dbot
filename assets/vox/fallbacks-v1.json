@@ -1,0 +1,28 @@
+{
+  "approved": true,
+  "clips": {
+    "entrance": {
+      "file": "entrance.pcm",
+      "sha256": "597ac0d5226f159c33836989b6f4f7d23e41e9f5de5a06f407a42bff85811acb",
+      "text": "The vox is open. Sanguinius attends."
+    },
+    "error": {
+      "file": "error.pcm",
+      "sha256": "a50c27987b21cb646b3b72720ba755d5749a9360197089de19de883cec0aa5c8",
+      "text": "The vox falters. Read the channel for details."
+    },
+    "farewell": {
+      "file": "farewell.pcm",
+      "sha256": "f1119738ce7dbaa3c04797149990ebd9c34a171dd992cd8feae654fddcf4df27",
+      "text": "The channel closes. Until we speak again."
+    }
+  },
+  "generation_date": "2026-08-25",
+  "manifest_version": 1,
+  "model": "tts-1",
+  "provider": "openai",
+  "response_format": "wav",
+  "speed": 1.0,
+  "target_format": "s16le/48000/stereo",
+  "voice": "onyx"
+}

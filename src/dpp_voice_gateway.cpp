@@ -2,9 +2,11 @@
 
 #include "sanguinius/callback_fence.hpp"
 #include "sanguinius/dpp_cluster_host.hpp"
+#include "sanguinius/tts.hpp"
 
 #include <dpp/dpp.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <limits>
@@ -174,6 +176,22 @@ bool dpp_voice_gateway_detail::matches_voice_client(
          current_voice_client == observed_voice_client;
 }
 
+std::vector<std::size_t> dpp_voice_gateway_detail::pcm_chunk_sizes(
+    const std::size_t byte_count, const std::size_t maximum_chunk_bytes) {
+  if (byte_count == 0 || byte_count % 4 != 0 ||
+      maximum_chunk_bytes == 0 || maximum_chunk_bytes % 4 != 0)
+    return {};
+  std::vector<std::size_t> chunks;
+  chunks.reserve((byte_count + maximum_chunk_bytes - 1) /
+                 maximum_chunk_bytes);
+  for (std::size_t remaining = byte_count; remaining != 0;) {
+    const auto chunk = std::min(remaining, maximum_chunk_bytes);
+    chunks.push_back(chunk);
+    remaining -= chunk;
+  }
+  return chunks;
+}
+
 class DppVoiceGateway::Impl {
 public:
   struct Binding {
@@ -192,6 +210,7 @@ public:
     bool marker_completed{};
     bool bot_moved{};
     std::string expected_marker;
+    std::string completed_marker;
   };
 
   Impl(std::shared_ptr<DppClusterHost> cluster_host, Diagnostics &diagnostics)
@@ -341,7 +360,8 @@ public:
                          .dave_active = false,
                          .marker_completed = false,
                          .bot_moved = false,
-                         .expected_marker = {}};
+                         .expected_marker = {},
+                         .completed_marker = {}};
     }
     try {
       shard->connect_voice(dpp::snowflake{request.guild_id.value()},
@@ -387,10 +407,11 @@ public:
   VoiceGatewaySubmit send_pcm(const std::string_view session_id,
                               const PcmAudio &audio,
                               const std::string_view marker) {
-    constexpr auto expected_bytes = std::size_t{115'200};
+    const auto byte_count = audio.samples.size() * sizeof(std::int16_t);
     if (audio.sample_rate != 48'000 || audio.channels != 2 ||
         audio.bits_per_sample != 16 || marker.empty() ||
-        audio.samples.size() * sizeof(std::int16_t) != expected_bytes)
+        byte_count == 0 || byte_count > maximum_tts_pcm_bytes ||
+        byte_count % 4 != 0)
       return VoiceGatewaySubmit::invalid;
     {
       const std::scoped_lock lock{mutex_};
@@ -399,16 +420,19 @@ public:
         return VoiceGatewaySubmit::unavailable;
       binding_->expected_marker = std::string{marker};
       binding_->marker_completed = false;
+      binding_->completed_marker.clear();
     }
     return with_voice_client(
         session_id, [&audio, marker](dpp::discord_voice_client &voice) {
-          constexpr auto chunk_bytes = dpp::send_audio_raw_max_length;
-          constexpr auto samples_per_chunk = chunk_bytes / sizeof(std::int16_t);
-          for (std::size_t offset = 0; offset < audio.samples.size();
-               offset += samples_per_chunk) {
+          const auto chunks = dpp_voice_gateway_detail::pcm_chunk_sizes(
+              audio.samples.size() * sizeof(std::int16_t),
+              dpp::send_audio_raw_max_length);
+          std::size_t offset{};
+          for (const auto current_bytes : chunks) {
             auto *samples = reinterpret_cast<std::uint16_t *>(
                 const_cast<std::int16_t *>(audio.samples.data() + offset));
-            voice.send_audio_raw(samples, chunk_bytes);
+            voice.send_audio_raw(samples, current_bytes);
+            offset += current_bytes / sizeof(std::int16_t);
           }
           voice.insert_marker(std::string{marker});
         });
@@ -430,6 +454,7 @@ public:
             .ready = binding_->ready,
             .dave_active = binding_->dave_active,
             .marker_completed = binding_->marker_completed,
+            .completed_marker = binding_->completed_marker,
             .bot_moved = binding_->bot_moved,
             .session_id = binding_->session_id,
             .guild_id = binding_->guild_id,
@@ -631,6 +656,7 @@ private:
           event.track_meta != binding_->expected_marker)
         return;
       binding_->marker_completed = true;
+      binding_->completed_marker = event.track_meta;
       translated = event_from(*binding_, VoiceEventKind::track_marker);
       translated.marker = event.track_meta;
     }

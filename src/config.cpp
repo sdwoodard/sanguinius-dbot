@@ -184,6 +184,48 @@ request_timeout(const ConfigSource &source, ConfigurationOrigin &origin) {
                            " must be exactly off, dry_run, or live."};
 }
 
+[[nodiscard]] TtsProvider tts_provider(const ConfigSource &source) {
+  constexpr std::string_view variable{"SANGUINIUS_TTS_PROVIDER"};
+  const auto value = source.environment(variable);
+  if (!value.has_value() || *value == "disabled") {
+    return TtsProvider::disabled;
+  }
+  if (*value == "openai") {
+    return TtsProvider::openai;
+  }
+  throw std::runtime_error{std::string{variable} +
+                           " must be exactly disabled or openai."};
+}
+
+void require_exact_tts_value(const ConfigSource &source,
+                             const std::string_view variable,
+                             const std::string_view expected,
+                             std::string &destination) {
+  const auto value = optional_nonempty(source, variable);
+  if (value.has_value() && *value != expected) {
+    throw std::runtime_error{std::string{variable} + " must be exactly " +
+                             std::string{expected} + "."};
+  }
+  if (value.has_value()) {
+    destination = *value;
+  }
+}
+
+void optional_absolute_path(const ConfigSource &source,
+                            const std::string_view variable,
+                            std::filesystem::path &destination) {
+  const auto value = optional_nonempty(source, variable);
+  if (!value.has_value()) {
+    return;
+  }
+  const std::filesystem::path path{*value};
+  if (!path.is_absolute()) {
+    throw std::runtime_error{std::string{variable} +
+                             " must be an absolute path."};
+  }
+  destination = path;
+}
+
 [[nodiscard]] std::string enabled(const bool value) {
   return value ? "enabled" : "disabled";
 }
@@ -392,9 +434,52 @@ Config Config::from_source(const ConfigSource &source) {
       optional_boolean(source, "SANGUINIUS_VOICE_INPUT_ENABLED", false);
   if (config.features.voice_input_enabled) {
     throw std::runtime_error{
-        "SANGUINIUS_VOICE_INPUT_ENABLED=true is unsupported; Milestone 14 "
-        "implements voice output only."};
+        "SANGUINIUS_VOICE_INPUT_ENABLED=true is unsupported; Milestone 15 "
+        "remains voice output only."};
   }
+
+  config.tts.provider = tts_provider(source);
+  require_exact_tts_value(source, "SANGUINIUS_TTS_MODEL", "tts-1",
+                          config.tts.model);
+  require_exact_tts_value(source, "SANGUINIUS_TTS_VOICE", "onyx",
+                          config.tts.voice);
+  optional_absolute_path(source, "SANGUINIUS_TTS_CACHE_DIRECTORY",
+                         config.tts.cache_directory);
+  optional_absolute_path(source, "SANGUINIUS_FFMPEG_PATH",
+                         config.tts.ffmpeg_path);
+  optional_absolute_path(source, "SANGUINIUS_FFPROBE_PATH",
+                         config.tts.ffprobe_path);
+  optional_absolute_path(source, "SANGUINIUS_TTS_FALLBACK_DIRECTORY",
+                         config.tts.fallback_directory);
+  config.tts.maximum_text_scalars = static_cast<std::size_t>(optional_integer(
+      source, "SANGUINIUS_TTS_MAXIMUM_TEXT_SCALARS", 350, 1, 350));
+  config.tts.usage_policy.rolling_day_attempts =
+      static_cast<std::size_t>(optional_integer(
+          source, "SANGUINIUS_TTS_ROLLING_DAY_ATTEMPTS", 20, 1, 20));
+  config.tts.usage_policy.rolling_day_micro_usd = optional_integer(
+      source, "SANGUINIUS_TTS_ROLLING_DAY_MICRO_USD", 100'000, 1, 100'000);
+  config.tts.usage_policy.calendar_month_micro_usd = optional_integer(
+      source, "SANGUINIUS_TTS_MONTHLY_MICRO_USD", 2'000'000, 1, 2'000'000);
+  config.tts.cache_policy.maximum_bytes =
+      static_cast<std::uintmax_t>(optional_integer(
+          source, "SANGUINIUS_TTS_CACHE_MAXIMUM_MIB", 128, 1, 128)) *
+      1024U * 1024U;
+  config.tts.cache_policy.maximum_age = std::chrono::hours{
+      optional_integer(source, "SANGUINIUS_TTS_CACHE_MAXIMUM_DAYS", 30, 1,
+                       30) *
+      24};
+  config.tts.normalization_limits.maximum_duration_ms = optional_integer(
+      source, "SANGUINIUS_TTS_MAXIMUM_DURATION_SECONDS", 20, 1, 20) * 1'000;
+  config.tts.connect_timeout = std::chrono::milliseconds{optional_integer(
+      source, "SANGUINIUS_TTS_CONNECT_TIMEOUT_MS", 5'000, 1, 5'000)};
+  config.tts.request_timeout = std::chrono::milliseconds{optional_integer(
+      source, "SANGUINIUS_TTS_REQUEST_TIMEOUT_MS", 30'000, 1, 30'000)};
+  config.tts.normalization_limits.probe_timeout =
+      std::chrono::milliseconds{optional_integer(
+          source, "SANGUINIUS_FFPROBE_TIMEOUT_MS", 5'000, 1, 5'000)};
+  config.tts.normalization_limits.decode_timeout =
+      std::chrono::milliseconds{optional_integer(
+          source, "SANGUINIUS_FFMPEG_TIMEOUT_MS", 10'000, 1, 10'000)};
 
   if (const auto policy_file =
           optional_nonempty(source, "SANGUINIUS_APPEARANCE_POLICY_FILE")) {
@@ -445,6 +530,16 @@ configuration_origin_name(const ConfigurationOrigin origin) noexcept {
     return "default";
   case ConfigurationOrigin::configured:
     return "configured";
+  }
+  return "unknown";
+}
+
+std::string_view tts_provider_name(const TtsProvider provider) noexcept {
+  switch (provider) {
+  case TtsProvider::disabled:
+    return "disabled";
+  case TtsProvider::openai:
+    return "openai";
   }
   return "unknown";
 }
@@ -525,6 +620,17 @@ std::string redacted_config_summary(const Config &config,
          << "appearances="
          << appearance_mode_name(config.features.appearances_mode) << '\n'
          << "vox=" << enabled(config.features.vox_enabled) << '\n'
+         << "tts_provider=" << tts_provider_name(config.tts.provider) << '\n'
+         << "tts_model=tts-1\n"
+         << "tts_voice=onyx\n"
+         << "tts_daily_attempts="
+         << config.tts.usage_policy.rolling_day_attempts << '\n'
+         << "tts_daily_micro_usd="
+         << config.tts.usage_policy.rolling_day_micro_usd << '\n'
+         << "tts_monthly_micro_usd="
+         << config.tts.usage_policy.calendar_month_micro_usd << '\n'
+         << "tts_cache_mib="
+         << config.tts.cache_policy.maximum_bytes / (1024U * 1024U) << '\n'
          << "voice_input=" << enabled(config.features.voice_input_enabled)
          << '\n';
   return output.str();

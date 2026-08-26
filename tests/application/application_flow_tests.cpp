@@ -41,6 +41,8 @@ using namespace std::chrono_literals;
       .ai_worker_count = 2,
       .interaction_queue_capacity = 64,
       .durable_delivery_receipt_wait = std::chrono::milliseconds{100},
+      .speech = {},
+      .static_speech_assets = {},
   };
   return options;
 }
@@ -253,6 +255,8 @@ TEST_CASE("configured owner receives redacted health in primary scope",
       .message_queue_capacity = 64,
       .ai_queue_capacity = 64,
       .ai_worker_count = 2,
+      .speech = {},
+      .static_speech_assets = {},
   }};
   fixture.application->start();
   REQUIRE(fixture.chronicle_sessions->anniversary_queue_calls == 0);
@@ -411,6 +415,8 @@ TEST_CASE("owner admin route is silent when disabled or outside scope",
         .message_queue_capacity = 64,
         .ai_queue_capacity = 64,
         .ai_worker_count = 2,
+        .speech = {},
+        .static_speech_assets = {},
     }};
     fixture.application->start();
 

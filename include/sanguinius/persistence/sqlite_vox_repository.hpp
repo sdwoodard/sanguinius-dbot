@@ -28,6 +28,16 @@ public:
   command_leave(const VoxCommandContext &context, std::string event_id,
                 std::string timeout_job_id) override;
   [[nodiscard]] VoxCommandResult
+  command_mute(const VoxCommandContext &context, bool unmute,
+               std::optional<std::int64_t> mute_until_ms, std::string event_id,
+               std::optional<std::string> mute_job_id) override;
+  [[nodiscard]] std::optional<VoxCommandResult>
+  command_receipt(const VoxCommandContext &context, std::string_view operation,
+                  std::string_view request_fingerprint) override;
+  [[nodiscard]] VoxCommandResult record_command_receipt(
+      const VoxCommandContext &context, std::string_view operation,
+      std::string_view request_fingerprint, VoxCommandResult result) override;
+  [[nodiscard]] VoxCommandResult
   command_test_disconnect(const VoxCommandContext &context,
                           std::string event_id,
                           std::string timeout_job_id) override;

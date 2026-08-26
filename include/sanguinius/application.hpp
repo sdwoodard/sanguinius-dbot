@@ -19,6 +19,7 @@
 #include "sanguinius/relationships.hpp"
 #include "sanguinius/random.hpp"
 #include "sanguinius/server_scope_policy.hpp"
+#include "sanguinius/speech_service.hpp"
 #include "sanguinius/tarot.hpp"
 #include "sanguinius/tarot_house.hpp"
 #include "sanguinius/tarot_integration.hpp"
@@ -58,6 +59,8 @@ struct ApplicationOptions {
   std::size_t interaction_queue_capacity{64};
   std::chrono::milliseconds durable_delivery_receipt_wait{
       std::chrono::seconds{90}};
+  SpeechServiceConfiguration speech;
+  StaticSpeechAssets static_speech_assets;
 };
 
 struct ApplicationDependencies {
@@ -81,11 +84,15 @@ struct ApplicationDependencies {
   std::unique_ptr<TarotHouseRepository> tarot_house;
   std::unique_ptr<TarotIntegrationRepository> tarot_integration;
   std::unique_ptr<VoxRepository> vox;
+  std::unique_ptr<SpeechRepository> speech;
   std::unique_ptr<Random> random;
   std::optional<AppearancePolicy> appearance_policy;
   std::unique_ptr<AiClient> ai_client;
   std::unique_ptr<DiscordRuntime> discord;
   std::unique_ptr<VoiceGateway> voice_gateway;
+  std::unique_ptr<TextToSpeechClient> text_to_speech;
+  std::unique_ptr<AudioNormalizer> audio_normalizer;
+  std::unique_ptr<TtsCache> tts_cache;
 };
 
 class Application {

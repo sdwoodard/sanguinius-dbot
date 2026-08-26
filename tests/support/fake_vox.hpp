@@ -4,8 +4,10 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,6 +36,9 @@ public:
         .fixture_marker = "vox-proof:seeded",
         .empty_since_ms = std::nullopt,
         .timeout_job_id = std::nullopt,
+        .muted_at_ms = std::nullopt,
+        .mute_until_ms = std::nullopt,
+        .mute_job_id = std::nullopt,
         .started_at_ms = 0,
         .last_active_at_ms = 0,
         .ended_at_ms = std::nullopt,
@@ -75,6 +80,9 @@ public:
         .fixture_marker = std::nullopt,
         .empty_since_ms = std::nullopt,
         .timeout_job_id = request.timeout_job_id,
+        .muted_at_ms = std::nullopt,
+        .mute_until_ms = std::nullopt,
+        .mute_job_id = std::nullopt,
         .started_at_ms = request.context.now_ms,
         .last_active_at_ms = request.context.now_ms,
         .ended_at_ms = std::nullopt,
@@ -125,6 +133,78 @@ public:
     return transition_unlocked(VoxState::leaving, context.now_ms,
                                "commanded_leave", false,
                                std::move(timeout_job_id));
+  }
+
+  VoxCommandResult
+  command_mute(const VoxCommandContext &context, const bool unmute,
+               const std::optional<std::int64_t> mute_until_ms, std::string,
+               std::optional<std::string> mute_job_id) override {
+    const std::scoped_lock lock{mutex_};
+    if (!active_unlocked())
+      return result(VoxResultCode::inactive);
+    if (context.actor_user_id != context.owner_user_id &&
+        context.actor_user_id != session_->summoner_user_id)
+      return result(VoxResultCode::unauthorized, session_, "unauthorized");
+    if (unmute && session_->state == VoxState::muted) {
+      auto changed = transition_unlocked(VoxState::ready, context.now_ms,
+                                         "mute_off", false, std::nullopt);
+      session_->muted_at_ms.reset();
+      session_->mute_until_ms.reset();
+      session_->mute_job_id.reset();
+      changed.session = session_;
+      return changed;
+    }
+    if (!unmute && session_->state == VoxState::ready) {
+      auto changed = transition_unlocked(VoxState::muted, context.now_ms,
+                                         "mute_on", false, mute_job_id);
+      session_->muted_at_ms = context.now_ms;
+      session_->mute_until_ms = mute_until_ms;
+      session_->mute_job_id = std::move(mute_job_id);
+      changed.session = session_;
+      changed.wake_scheduler = mute_until_ms.has_value();
+      return changed;
+    }
+    return result(VoxResultCode::invalid_state, session_);
+  }
+
+  std::optional<VoxCommandResult>
+  command_receipt(const VoxCommandContext &context,
+                  const std::string_view operation,
+                  const std::string_view request_fingerprint) override {
+    const std::scoped_lock lock{mutex_};
+    const auto found =
+        command_receipts_.find(context.interaction_idempotency_key);
+    if (found == command_receipts_.end())
+      return std::nullopt;
+    if (found->second.operation != operation ||
+        found->second.request_fingerprint != request_fingerprint)
+      throw std::invalid_argument{
+          "Vox interaction idempotency key was reused."};
+    auto replay = found->second.result;
+    replay.code = VoxResultCode::replay;
+    return replay;
+  }
+
+  VoxCommandResult
+  record_command_receipt(const VoxCommandContext &context,
+                         const std::string_view operation,
+                         const std::string_view request_fingerprint,
+                         VoxCommandResult result) override {
+    const std::scoped_lock lock{mutex_};
+    const auto [found, inserted] = command_receipts_.try_emplace(
+        context.interaction_idempotency_key,
+        CommandReceipt{std::string{operation}, std::string{request_fingerprint},
+                       result});
+    if (!inserted) {
+      if (found->second.operation != operation ||
+          found->second.request_fingerprint != request_fingerprint)
+        throw std::invalid_argument{
+            "Vox interaction idempotency key was reused."};
+      auto replay = found->second.result;
+      replay.code = VoxResultCode::replay;
+      return replay;
+    }
+    return result;
   }
 
   VoxCommandResult
@@ -238,7 +318,18 @@ public:
     return recover_calls_;
   }
 
+  [[nodiscard]] std::size_t command_receipt_count() const {
+    const std::scoped_lock lock{mutex_};
+    return command_receipts_.size();
+  }
+
 private:
+  struct CommandReceipt {
+    std::string operation;
+    std::string request_fingerprint;
+    VoxCommandResult result;
+  };
+
   static VoxCommandResult
   result(const VoxResultCode code,
          std::optional<VoxSession> session = std::nullopt,
@@ -280,6 +371,7 @@ private:
   mutable std::mutex mutex_;
   mutable std::condition_variable changed_;
   std::optional<VoxSession> session_;
+  std::map<std::string, CommandReceipt> command_receipts_;
   std::size_t recover_calls_{};
 };
 
@@ -310,6 +402,7 @@ public:
                  .ready = false,
                  .dave_active = false,
                  .marker_completed = false,
+                 .completed_marker = {},
                  .bot_moved = false,
                  .session_id = request.session_id,
                  .guild_id = request.guild_id,
@@ -403,6 +496,7 @@ public:
         snapshot_.bot_moved = true;
       } else if (kind == VoiceEventKind::track_marker) {
         snapshot_.marker_completed = true;
+        snapshot_.completed_marker = marker_;
       }
     }
     if (callback)
@@ -435,6 +529,21 @@ public:
   [[nodiscard]] std::size_t send_count() const {
     const std::scoped_lock lock{mutex_};
     return send_count_;
+  }
+
+  [[nodiscard]] std::size_t stop_audio_count() const {
+    const std::scoped_lock lock{mutex_};
+    return stop_audio_count_;
+  }
+
+  [[nodiscard]] std::string marker() const {
+    const std::scoped_lock lock{mutex_};
+    return marker_;
+  }
+
+  void set_send_result(const VoiceGatewaySubmit result) {
+    const std::scoped_lock lock{mutex_};
+    send_result_ = result;
   }
 
   [[nodiscard]] std::size_t disconnect_count() const {

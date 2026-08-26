@@ -14,6 +14,7 @@
 #include "support/fake_message_log.hpp"
 #include "support/fake_random.hpp"
 #include "support/fake_relationship_repository.hpp"
+#include "support/fake_speech.hpp"
 #include "support/fake_repositories.hpp"
 #include "support/fake_tarot_house_repository.hpp"
 #include "support/fake_tarot_repository.hpp"
@@ -51,6 +52,11 @@ public:
           .ai_worker_count = 2,
           .interaction_queue_capacity = 64,
           .durable_delivery_receipt_wait = std::chrono::milliseconds{100},
+          .speech = {},
+          .static_speech_assets =
+              {.entrance = make_vox_proof_chime(),
+               .error = make_vox_proof_chime(),
+               .farewell = make_vox_proof_chime()},
       }) {
     auto owned_clock = std::make_unique<FakeClock>();
     auto owned_ids = std::make_unique<FakeIdGenerator>(std::vector<std::string>{
@@ -81,11 +87,14 @@ public:
     auto owned_tarot_integration =
         std::make_unique<FakeTarotIntegrationRepository>();
     auto owned_vox = std::make_unique<FakeVoxRepository>();
+    auto owned_speech = std::make_unique<FakeSpeechRepository>();
     auto owned_random =
         std::make_unique<FakeRandom>(std::vector<std::uint64_t>(128, 0));
     auto owned_ai = std::make_unique<FakeAiClient>();
     auto owned_discord = std::make_unique<FakeDiscord>();
     auto owned_voice_gateway = std::make_unique<FakeVoiceGateway>();
+    auto owned_audio_normalizer = std::make_unique<FakeAudioNormalizer>();
+    auto owned_tts_cache = std::make_unique<FakeTtsCache>();
 
     clock = owned_clock.get();
     ids = owned_ids.get();
@@ -133,11 +142,15 @@ public:
             .tarot_house = std::move(owned_tarot_house),
             .tarot_integration = std::move(owned_tarot_integration),
             .vox = std::move(owned_vox),
+            .speech = std::move(owned_speech),
             .random = std::move(owned_random),
             .appearance_policy = test_appearance_policy(),
             .ai_client = std::move(owned_ai),
             .discord = std::move(owned_discord),
             .voice_gateway = std::move(owned_voice_gateway),
+            .text_to_speech = nullptr,
+            .audio_normalizer = std::move(owned_audio_normalizer),
+            .tts_cache = std::move(owned_tts_cache),
         });
   }
 

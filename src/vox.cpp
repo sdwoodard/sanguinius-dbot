@@ -1,5 +1,7 @@
 #include "sanguinius/vox.hpp"
 
+#include "sanguinius/tts.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -171,13 +173,18 @@ bool vox_transition_allowed(const VoxState from, const VoxState to,
     return to == VoxState::ready || to == VoxState::failed ||
            to == VoxState::leaving;
   case VoxState::ready:
+    return to == VoxState::muted ||
+           (to == VoxState::reconnecting && reconnect_count == 0) ||
+           to == VoxState::leaving || to == VoxState::failed ||
+           (to == VoxState::inactive && reason == "empty_timeout");
   case VoxState::muted:
-    return (to == VoxState::reconnecting && reconnect_count == 0) ||
+    return to == VoxState::ready ||
+           (to == VoxState::reconnecting && reconnect_count == 0) ||
            to == VoxState::leaving || to == VoxState::failed ||
            (to == VoxState::inactive && reason == "empty_timeout");
   case VoxState::reconnecting:
-    return to == VoxState::ready || to == VoxState::leaving ||
-           to == VoxState::failed;
+    return to == VoxState::ready || to == VoxState::muted ||
+           to == VoxState::leaving || to == VoxState::failed;
   case VoxState::leaving:
     return to == VoxState::inactive;
   case VoxState::inactive:
@@ -228,6 +235,14 @@ std::string render_vox_status(const VoxSession *session,
                                                  session->started_at_ms) /
                        1'000)
          << "s.";
+  if (session->state == VoxState::muted) {
+    output << " Speech is muted";
+    if (session->mute_until_ms)
+      output << " until <t:" << *session->mute_until_ms / 1'000 << ":R>";
+    else
+      output << " for this session";
+    output << ".";
+  }
   return output.str();
 }
 
@@ -237,14 +252,14 @@ public:
        PersistentIdGenerator &ids, Diagnostics &diagnostics,
        ServerScopeConfiguration scope, ControlConfiguration controls,
        std::string instance_id, Wake wake_scheduler, Wake wake_outbox,
-       const std::size_t queue_capacity)
+       const std::size_t queue_capacity, SpeechService *speech)
       : repository_{repository}, gateway_{gateway}, clock_{clock}, ids_{ids},
         diagnostics_{diagnostics}, scope_{std::move(scope)},
         controls_{controls}, instance_id_{std::move(instance_id)},
         wake_scheduler_{std::move(wake_scheduler)},
         wake_outbox_{std::move(wake_outbox)}, worker_{queue_capacity, 1},
         callback_responder_{queue_capacity, 1},
-        resolution_capacity_{queue_capacity} {
+        resolution_capacity_{queue_capacity}, speech_{speech} {
     if (instance_id_.empty() || !wake_scheduler_ || !wake_outbox_)
       throw std::invalid_argument{"Vox service dependencies are incomplete."};
   }
@@ -320,6 +335,8 @@ public:
               shutdown_fixture_failure_category));
         } catch (...) {
         }
+        if (speech_)
+          speech_->session_closed(session_id);
         teardown_transport(session_id, true);
       }
       gateway_.shutdown();
@@ -438,6 +455,18 @@ public:
                   result.message = render_vox_status(
                       result.session ? &*result.session : nullptr,
                       context.now_ms);
+                if (speech_) {
+                  const auto speech_health = speech_->health();
+                  result.message +=
+                      " Voice: " +
+                      speech_->selected_voice(context.guild_id.str()) +
+                      ". Speech service: available. Queue: " +
+                      std::to_string(speech_health.repository.queued +
+                                     speech_health.repository.synthesizing +
+                                     speech_health.repository.ready +
+                                     speech_health.repository.playing) +
+                      ".";
+                }
                 guarded->complete(std::move(result));
               });
         },
@@ -469,7 +498,12 @@ public:
                 if (result.wake_scheduler)
                   wake_scheduler_();
                 if (result.code == VoxResultCode::accepted && result.session) {
-                  teardown_transport(result.session->session_id, false);
+                  const auto farewell_queued =
+                      speech_ &&
+                      speech_->session_leaving(result.session->session_id,
+                                               result.session->guild_id.str());
+                  if (!farewell_queued)
+                    teardown_transport(result.session->session_id, false);
                   result.session = fail_queued_fixture(*result.session,
                                                        "playback_interrupted",
                                                        "vox.command.leave");
@@ -477,6 +511,215 @@ public:
                 if (result.wake_outbox)
                   wake_outbox_();
                 guarded->complete(std::move(result));
+              });
+        },
+        [guarded] { guarded->unavailable(); });
+  }
+
+  SubmitResult say(VoxCommandContext context, std::string text,
+                   Completion completion) {
+    context.owner_user_id = scope_.owner_user_id;
+    const auto guarded =
+        make_completion(std::move(completion), context.correlation_id);
+    return worker_.try_submit(
+        [this, context = std::move(context), text = std::move(text),
+         guarded](std::stop_token) mutable {
+          const std::scoped_lock operation_lock{operation_mutex_};
+          if (stopped_.load()) {
+            guarded->unavailable();
+            return;
+          }
+          execute_command(
+              guarded, context.correlation_id,
+              [this, &context, &text, &guarded] {
+                context.now_ms = now_ms(clock_);
+                const auto fingerprint =
+                    "sha256:" + sha256_hex(std::as_bytes(
+                                    std::span{text.data(), text.size()}));
+                if (auto receipt = repository_.command_receipt(context, "say",
+                                                               fingerprint)) {
+                  guarded->complete(std::move(*receipt));
+                  return;
+                }
+                const auto complete = [this, &context, &fingerprint,
+                                       &guarded](VoxCommandResult result) {
+                  guarded->complete(repository_.record_command_receipt(
+                      context, "say", fingerprint, std::move(result)));
+                };
+                if (!in_scope(context) ||
+                    context.actor_user_id != scope_.owner_user_id) {
+                  complete(
+                      command_result(VoxResultCode::unauthorized,
+                                     "Only the owner may ask Vox to speak."));
+                  return;
+                }
+                const auto current = repository_.active();
+                if (!current || (current->state != VoxState::ready &&
+                                 current->state != VoxState::muted)) {
+                  complete(command_result(
+                      VoxResultCode::invalid_state,
+                      "Vox must be connected before speech can be queued."));
+                  return;
+                }
+                if (!speech_) {
+                  complete(
+                      command_result(VoxResultCode::unavailable,
+                                     "Generated Vox speech is unavailable."));
+                  return;
+                }
+                const auto admitted =
+                    speech_->say(current->session_id, current->guild_id.str(),
+                                 std::move(text),
+                                 context.interaction_idempotency_key + ":say",
+                                 context.now_ms);
+                VoxResultCode code = VoxResultCode::accepted;
+                if (admitted.status == SpeechEnqueueStatus::replay)
+                  code = VoxResultCode::replay;
+                else if (admitted.status != SpeechEnqueueStatus::accepted)
+                  code = VoxResultCode::unavailable;
+                auto response = command_result(code, admitted.message);
+                response.session = current;
+                complete(std::move(response));
+              });
+        },
+        [guarded] { guarded->unavailable(); });
+  }
+
+  SubmitResult mute(VoxCommandContext context, std::string duration,
+                    Completion completion) {
+    context.owner_user_id = scope_.owner_user_id;
+    const auto guarded =
+        make_completion(std::move(completion), context.correlation_id);
+    return worker_.try_submit(
+        [this, context = std::move(context), duration = std::move(duration),
+         guarded](std::stop_token) mutable {
+          const std::scoped_lock operation_lock{operation_mutex_};
+          if (stopped_.load()) {
+            guarded->unavailable();
+            return;
+          }
+          execute_command(
+              guarded, context.correlation_id,
+              [this, &context, &duration, &guarded] {
+                context.now_ms = now_ms(clock_);
+                if (!in_scope(context)) {
+                  guarded->complete(command_result(
+                      VoxResultCode::unauthorized,
+                      "Use Vox in the configured primary channel."));
+                  return;
+                }
+                bool unmute = false;
+                std::optional<std::int64_t> until;
+                if (duration == "off") {
+                  unmute = true;
+                } else if (duration == "15m") {
+                  until = context.now_ms + 15 * 60'000;
+                } else if (duration == "1h") {
+                  until = context.now_ms + 60 * 60'000;
+                } else if (duration == "4h") {
+                  until = context.now_ms + 4 * 60 * 60'000;
+                } else if (duration != "session") {
+                  guarded->complete(
+                      command_result(VoxResultCode::invalid_state,
+                                     "Choose 15m, 1h, 4h, session, or off."));
+                  return;
+                }
+                auto result = repository_.command_mute(
+                    context, unmute, until, ids_.next_id(),
+                    until ? std::optional{ids_.next_id()} : std::nullopt);
+                if ((result.code == VoxResultCode::accepted ||
+                     result.code == VoxResultCode::replay) &&
+                    result.session) {
+                  const auto muted = result.session->state == VoxState::muted;
+                  if (speech_) {
+                    if (muted && result.session->fixture_state ==
+                                     VoxFixtureState::queued) {
+                      static_cast<void>(
+                          gateway_.stop_audio(result.session->session_id));
+                      result.session = fail_queued_fixture(
+                          *result.session, "muted", "vox.command.mute");
+                      speech_->session_ready(result.session->session_id,
+                                             result.session->guild_id.str(),
+                                             true, false);
+                    } else {
+                      speech_->set_muted(result.session->session_id, muted);
+                    }
+                  }
+                  if (result.message.empty()) {
+                    result.message = muted ? "Vox speech is muted; the voice "
+                                             "connection remains open."
+                                           : "Vox speech is no longer muted.";
+                  }
+                }
+                if (result.wake_scheduler)
+                  wake_scheduler_();
+                guarded->complete(std::move(result));
+              });
+        },
+        [guarded] { guarded->unavailable(); });
+  }
+
+  SubmitResult voice(VoxCommandContext context,
+                     std::optional<std::string> voice, Completion completion) {
+    context.owner_user_id = scope_.owner_user_id;
+    const auto guarded =
+        make_completion(std::move(completion), context.correlation_id);
+    return worker_.try_submit(
+        [this, context = std::move(context), voice = std::move(voice),
+         guarded](std::stop_token) mutable {
+          const std::scoped_lock operation_lock{operation_mutex_};
+          if (stopped_.load()) {
+            guarded->unavailable();
+            return;
+          }
+          execute_command(
+              guarded, context.correlation_id,
+              [this, &context, &voice, &guarded] {
+                context.now_ms = now_ms(clock_);
+                const auto fingerprint =
+                    voice ? "select:" + *voice : std::string{"inspect"};
+                if (auto receipt = repository_.command_receipt(context, "voice",
+                                                               fingerprint)) {
+                  guarded->complete(std::move(*receipt));
+                  return;
+                }
+                const auto complete = [this, &context, &fingerprint,
+                                       &guarded](VoxCommandResult result) {
+                  guarded->complete(repository_.record_command_receipt(
+                      context, "voice", fingerprint, std::move(result)));
+                };
+                if (!in_scope(context) || !speech_) {
+                  complete(command_result(
+                      VoxResultCode::unauthorized,
+                      "Use Vox in the configured primary channel."));
+                  return;
+                }
+                if (!voice) {
+                  complete(command_result(
+                      VoxResultCode::accepted,
+                      "The selected Vox voice is " +
+                          speech_->selected_voice(context.guild_id.str()) +
+                          "."));
+                  return;
+                }
+                if (context.actor_user_id != scope_.owner_user_id) {
+                  complete(command_result(
+                      VoxResultCode::unauthorized,
+                      "Only the owner may change the Vox voice."));
+                  return;
+                }
+                const auto status = speech_->select_voice(
+                    context.guild_id.str(), *voice, context.actor_user_id.str(),
+                    context.now_ms);
+                complete(command_result(
+                    status == SpeechMutationStatus::invalid_state
+                        ? VoxResultCode::invalid_state
+                    : status == SpeechMutationStatus::unchanged
+                        ? VoxResultCode::replay
+                        : VoxResultCode::accepted,
+                    status == SpeechMutationStatus::invalid_state
+                        ? "That Vox voice is not allowed."
+                        : "The selected Vox voice is " + *voice + "."));
               });
         },
         [guarded] { guarded->unavailable(); });
@@ -516,12 +759,81 @@ public:
                 if (result.wake_scheduler)
                   wake_scheduler_();
                 if (result.code == VoxResultCode::accepted && result.session) {
+                  if (speech_)
+                    speech_->session_reconnecting(result.session->session_id);
                   teardown_transport(result.session->session_id, false);
                   result.session = fail_queued_fixture(
                       *result.session, "playback_interrupted",
                       "vox.command.test_disconnect");
                 }
                 guarded->complete(std::move(result));
+              });
+        },
+        [guarded] { guarded->unavailable(); });
+  }
+
+  SubmitResult speech_test(VoxCommandContext context, std::string scenario,
+                           Completion completion) {
+    context.owner_user_id = scope_.owner_user_id;
+    const auto guarded =
+        make_completion(std::move(completion), context.correlation_id);
+    return worker_.try_submit(
+        [this, context = std::move(context), scenario = std::move(scenario),
+         guarded](std::stop_token) mutable {
+          const std::scoped_lock operation_lock{operation_mutex_};
+          if (stopped_.load()) {
+            guarded->unavailable();
+            return;
+          }
+          execute_command(
+              guarded, context.correlation_id,
+              [this, &context, &scenario, &guarded] {
+                context.now_ms = now_ms(clock_);
+                const auto fingerprint = "scenario:" + scenario;
+                if (auto receipt = repository_.command_receipt(
+                        context, "speech_test", fingerprint)) {
+                  guarded->complete(std::move(*receipt));
+                  return;
+                }
+                const auto complete = [this, &context, &fingerprint,
+                                       &guarded](VoxCommandResult result) {
+                  guarded->complete(repository_.record_command_receipt(
+                      context, "speech_test", fingerprint, std::move(result)));
+                };
+                const bool valid_scenario = scenario == "queue" ||
+                                            scenario == "provider-failure" ||
+                                            scenario == "budget-limit";
+                if (!in_scope(context) ||
+                    context.actor_user_id != scope_.owner_user_id ||
+                    !controls_.admin_commands_enabled || !controls_.test_mode ||
+                    !valid_scenario) {
+                  complete(command_result(
+                      controls_.test_mode ? VoxResultCode::unauthorized
+                                          : VoxResultCode::test_mode_disabled,
+                      "This owner speech test is unavailable."));
+                  return;
+                }
+                const auto current = repository_.active();
+                if (!current ||
+                    (current->state != VoxState::ready &&
+                     current->state != VoxState::muted) ||
+                    !speech_) {
+                  complete(command_result(
+                      VoxResultCode::invalid_state,
+                      "Vox must be connected for a speech test."));
+                  return;
+                }
+                const auto queued = speech_->run_test_scenario(
+                    current->session_id, current->guild_id.str(), scenario,
+                    context.interaction_idempotency_key);
+                complete(command_result(
+                    queued ? VoxResultCode::accepted
+                           : VoxResultCode::unavailable,
+                    queued
+                        ? "The deterministic " + scenario +
+                              " speech scenario was queued without a provider "
+                              "call."
+                        : "The deterministic speech scenario queue is full."));
               });
         },
         [guarded] { guarded->unavailable(); });
@@ -554,8 +866,16 @@ public:
                 ids_.next_id(), observed_humans);
             if (result.session && result.session->last_failure_category)
               record_failure(*result.session->last_failure_category);
-            if (result.code == VoxResultCode::accepted && result.session)
-              teardown_transport(result.session->session_id, true);
+            if (result.code == VoxResultCode::accepted && result.session) {
+              if (job.job_type == vox_mute_expiry_job_type) {
+                if (speech_)
+                  speech_->set_muted(result.session->session_id, false);
+              } else {
+                if (speech_)
+                  speech_->session_closed(result.session->session_id);
+                teardown_transport(result.session->session_id, true);
+              }
+            }
             if (result.wake_outbox)
               wake_outbox_();
           } catch (...) {
@@ -594,7 +914,9 @@ public:
             .queue = worker_.snapshot(),
             .last_failure_category = current && current->last_failure_category
                                          ? current->last_failure_category
-                                         : std::move(last_failure)};
+                                         : std::move(last_failure),
+            .speech =
+                speech_ ? std::optional{speech_->health()} : std::nullopt};
   }
 
 private:
@@ -848,6 +1170,9 @@ private:
       return;
     const auto current_time = now_ms(clock_);
     if (event.kind == VoiceEventKind::ready) {
+      const bool completing_connection =
+          current->state == VoxState::connecting ||
+          current->state == VoxState::reconnecting;
       if (!event.dave_active) {
         fail(*current, "dave_unavailable",
              current->state != VoxState::connecting);
@@ -863,10 +1188,11 @@ private:
         if (!initial)
           current = fail_queued_fixture(*current, "playback_interrupted",
                                         "vox.gateway.ready");
+        const auto restore_mute = !initial && current->muted_at_ms.has_value();
         auto result = repository_.transition(
             {.session_id = current->session_id,
              .expected_revision = current->revision,
-             .target = VoxState::ready,
+             .target = restore_mute ? VoxState::muted : VoxState::ready,
              .reason = initial ? "voice_ready" : "voice_reconnected",
              .actor_user_id = std::nullopt,
              .event_id = ids_.next_id(),
@@ -904,7 +1230,8 @@ private:
              .failure_category = std::nullopt});
         if (queued.code == VoxResultCode::accepted && queued.session) {
           if (gateway_.send_pcm(queued.session->session_id,
-                                make_vox_proof_chime(),
+                                speech_ ? speech_->entrance_clip()
+                                        : make_vox_proof_chime(),
                                 marker) != VoiceGatewaySubmit::accepted) {
             pending_fixture_failure_ =
                 PendingFixtureFailure{.session_id = queued.session->session_id,
@@ -916,15 +1243,32 @@ private:
         }
       }
       const auto ready_session = repository_.active();
-      if (ready_session && ready_session->state == VoxState::ready)
+      if (ready_session && (ready_session->state == VoxState::ready ||
+                            ready_session->state == VoxState::muted)) {
+        if (speech_ && completing_connection &&
+            ready_session->fixture_state != VoxFixtureState::queued)
+          speech_->session_ready(
+              ready_session->session_id, ready_session->guild_id.str(),
+              ready_session->state == VoxState::muted, false);
         update_occupancy(*ready_session, event.human_count,
                          "vox.gateway.ready.occupancy");
+      }
       return;
     }
     if (event.kind == VoiceEventKind::track_marker) {
+      if (speech_ &&
+          !speech_->track_marker(current->session_id, event.marker)) {
+        reconcile_required_.store(true);
+        request_reconciliation_retry();
+      }
+      if (current->state == VoxState::leaving &&
+          event.marker.starts_with("speech:farewell:")) {
+        teardown_transport(current->session_id, false);
+        return;
+      }
       if (current->fixture_state == VoxFixtureState::queued &&
           current->fixture_marker == event.marker) {
-        static_cast<void>(repository_.fixture(
+        const auto played = repository_.fixture(
             {.session_id = current->session_id,
              .expected_revision = current->revision,
              .target = VoxFixtureState::played,
@@ -933,7 +1277,12 @@ private:
              .idempotency_key = "vox:fixture-played:" + current->session_id,
              .correlation_id = "vox.gateway.marker",
              .now_ms = current_time,
-             .failure_category = std::nullopt}));
+             .failure_category = std::nullopt});
+        if (speech_ && played.code == VoxResultCode::accepted &&
+            played.session) {
+          speech_->session_ready(played.session->session_id,
+                                 played.session->guild_id.str(), false, false);
+        }
       }
       return;
     }
@@ -970,13 +1319,17 @@ private:
             ids_.next_id());
         if (result.wake_outbox)
           wake_outbox_();
-        if (result.code == VoxResultCode::accepted && result.session)
+        if (result.code == VoxResultCode::accepted && result.session) {
+          if (speech_)
+            speech_->session_closed(result.session->session_id);
           gateway_.release_binding(result.session->session_id);
+        }
       } else if (current->state == VoxState::reconnecting) {
         current = fail_queued_fixture(*current, "playback_interrupted",
                                       "vox.gateway.reconnect");
         dispatch_rejoin_once(*current);
-      } else if (current->state == VoxState::ready &&
+      } else if ((current->state == VoxState::ready ||
+                  current->state == VoxState::muted) &&
                  current->reconnect_count == 0) {
         current = fail_queued_fixture(*current, "playback_interrupted",
                                       "vox.gateway.disconnect");
@@ -996,8 +1349,11 @@ private:
              .public_card = false});
         if (result.wake_scheduler)
           wake_scheduler_();
-        if (result.session)
+        if (result.session) {
+          if (speech_)
+            speech_->session_reconnecting(result.session->session_id);
           dispatch_rejoin_once(*result.session);
+        }
       } else if (current->state != VoxState::leaving) {
         fail(*current, "unexpected_disconnect",
              current->state != VoxState::connecting);
@@ -1014,6 +1370,8 @@ private:
 
   void fail(const VoxSession &current, std::string category,
             const bool public_card) {
+    if (speech_)
+      speech_->session_closed(current.session_id);
     teardown_transport(current.session_id, false);
     rejoin_dispatched_session_.clear();
     record_failure(category);
@@ -1243,9 +1601,7 @@ private:
                     .failure_category = {}});
       return;
     }
-    if (snapshot.marker_completed &&
-        current->fixture_state == VoxFixtureState::queued &&
-        current->fixture_marker) {
+    if (snapshot.marker_completed && !snapshot.completed_marker.empty()) {
       handle_event({.kind = VoiceEventKind::track_marker,
                     .session_id = current->session_id,
                     .guild_id = current->guild_id,
@@ -1253,7 +1609,7 @@ private:
                     .generation = current->connection_generation,
                     .human_count = snapshot.human_count,
                     .dave_active = snapshot.dave_active,
-                    .marker = *current->fixture_marker,
+                    .marker = snapshot.completed_marker,
                     .failure_category = {}});
     }
     const auto refreshed = repository_.active();
@@ -1302,6 +1658,7 @@ private:
   std::optional<std::string> last_failure_category_;
   std::string rejoin_dispatched_session_;
   std::optional<PendingFixtureFailure> pending_fixture_failure_;
+  SpeechService *speech_{};
 };
 
 VoxService::VoxService(VoxRepository &repository, VoiceGateway &gateway,
@@ -1309,11 +1666,11 @@ VoxService::VoxService(VoxRepository &repository, VoiceGateway &gateway,
                        Diagnostics &diagnostics, ServerScopeConfiguration scope,
                        ControlConfiguration controls, std::string instance_id,
                        Wake wake_scheduler, Wake wake_outbox,
-                       const std::size_t queue_capacity)
+                       const std::size_t queue_capacity, SpeechService *speech)
     : impl_{std::make_unique<Impl>(
           repository, gateway, clock, ids, diagnostics, std::move(scope),
           controls, std::move(instance_id), std::move(wake_scheduler),
-          std::move(wake_outbox), queue_capacity)} {}
+          std::move(wake_outbox), queue_capacity, speech)} {}
 
 VoxService::~VoxService() { stop(); }
 void VoxService::start() { impl_->start(); }
@@ -1330,9 +1687,30 @@ SubmitResult VoxService::leave(VoxCommandContext context,
                                Completion completion) {
   return impl_->leave(std::move(context), std::move(completion));
 }
+SubmitResult VoxService::say(VoxCommandContext context, std::string text,
+                             Completion completion) {
+  return impl_->say(std::move(context), std::move(text), std::move(completion));
+}
+SubmitResult VoxService::mute(VoxCommandContext context, std::string duration,
+                              Completion completion) {
+  return impl_->mute(std::move(context), std::move(duration),
+                     std::move(completion));
+}
+SubmitResult VoxService::voice(VoxCommandContext context,
+                               std::optional<std::string> voice,
+                               Completion completion) {
+  return impl_->voice(std::move(context), std::move(voice),
+                      std::move(completion));
+}
 SubmitResult VoxService::test_disconnect(VoxCommandContext context,
                                          Completion completion) {
   return impl_->test_disconnect(std::move(context), std::move(completion));
+}
+SubmitResult VoxService::speech_test(VoxCommandContext context,
+                                     std::string scenario,
+                                     Completion completion) {
+  return impl_->speech_test(std::move(context), std::move(scenario),
+                            std::move(completion));
 }
 SubmitResult VoxService::handle_timeout(const ClaimedScheduledJob &job) {
   return impl_->handle_timeout(job);

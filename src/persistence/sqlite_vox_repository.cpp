@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <mutex>
+#include <ranges>
 #include <sqlite3.h>
 #include <stdexcept>
 #include <utility>
@@ -93,6 +94,9 @@ make_result(VoxResultCode code,
           .fixture_marker = optional_text(query, 11),
           .empty_since_ms = optional_time(query, 12),
           .timeout_job_id = optional_text(query, 13),
+          .muted_at_ms = optional_time(query, 19),
+          .mute_until_ms = optional_time(query, 20),
+          .mute_job_id = optional_text(query, 21),
           .started_at_ms = query.column_int64(14),
           .last_active_at_ms = query.column_int64(15),
           .ended_at_ms = optional_time(query, 16),
@@ -107,7 +111,8 @@ load_session(SqliteConnection &connection, const std::string_view session_id) {
       "summoner_user_id,deployment_instance_id,state,state_version,"
       "connection_generation,reconnect_count,fixture_state,fixture_marker,"
       "empty_since_ms,timeout_job_id,started_at_ms,last_active_at_ms,"
-      "ended_at_ms,end_reason,last_failure_category FROM voice_session WHERE "
+      "ended_at_ms,end_reason,last_failure_category,muted_at_ms,mute_until_ms,"
+      "mute_job_id FROM voice_session WHERE "
       "session_id=?");
   query.bind(1, session_id);
   if (!query.step())
@@ -126,7 +131,8 @@ load_active(SqliteConnection &connection) {
       "summoner_user_id,deployment_instance_id,state,state_version,"
       "connection_generation,reconnect_count,fixture_state,fixture_marker,"
       "empty_since_ms,timeout_job_id,started_at_ms,last_active_at_ms,"
-      "ended_at_ms,end_reason,last_failure_category FROM voice_session WHERE "
+      "ended_at_ms,end_reason,last_failure_category,muted_at_ms,mute_until_ms,"
+      "mute_job_id FROM voice_session WHERE "
       "state IN ('connecting','ready','muted','reconnecting','leaving') "
       "ORDER BY started_at_ms DESC LIMIT 1");
   if (!query.step())
@@ -261,6 +267,8 @@ void insert_timeout_job(SqliteConnection &connection, const VoxSession &session,
     kind = vox_reconnect_timeout_job_type;
   else if (request.target == VoxState::leaving)
     kind = vox_leave_timeout_job_type;
+  else if (request.target == VoxState::muted)
+    kind = vox_mute_expiry_job_type;
   const ScheduledJobEnqueue job{
       .job_id = *request.timeout_job_id,
       .job_type = std::string{kind},
@@ -432,10 +440,12 @@ load_timeout_session(SqliteConnection &connection,
       "summoner_user_id,deployment_instance_id,state,state_version,"
       "connection_generation,reconnect_count,fixture_state,fixture_marker,"
       "empty_since_ms,timeout_job_id,started_at_ms,last_active_at_ms,"
-      "ended_at_ms,end_reason,last_failure_category FROM voice_session WHERE "
-      "timeout_job_id=? AND state IN "
+      "ended_at_ms,end_reason,last_failure_category,muted_at_ms,mute_until_ms,"
+      "mute_job_id FROM voice_session WHERE "
+      "(timeout_job_id=? OR mute_job_id=?) AND state IN "
       "('connecting','ready','muted','reconnecting','leaving') LIMIT 1");
   query.bind(1, job_id);
+  query.bind(2, job_id);
   return query.step() ? std::optional{session_from(query)} : std::nullopt;
 }
 
@@ -476,17 +486,30 @@ apply_transition(SqliteConnection &connection,
                               before->reconnect_count))
     return make_result(VoxResultCode::invalid_state, before);
 
-  cancel_job(connection, before->timeout_job_id, request.now_ms);
+  const auto preserve_lifecycle_timeout =
+      (before->state == VoxState::ready && request.target == VoxState::muted) ||
+      (before->state == VoxState::muted && request.target == VoxState::ready &&
+       (request.reason == "mute_off" || request.reason == "mute_expired"));
+  if (!preserve_lifecycle_timeout)
+    cancel_job(connection, before->timeout_job_id, request.now_ms);
+  const auto preserve_existing_mute =
+      (before->state == VoxState::muted &&
+       request.target == VoxState::reconnecting) ||
+      (before->state == VoxState::reconnecting && before->muted_at_ms &&
+       request.target == VoxState::muted);
+  if (!preserve_existing_mute)
+    cancel_job(connection, before->mute_job_id, request.now_ms);
   const auto new_revision = before->revision + 1;
   insert_event(connection, *before, request);
   insert_timeout_job(connection, *before, request, new_revision);
 
   auto update = connection.prepare(
       "UPDATE voice_session SET state=?,state_version=?,reconnect_count=?,"
-      "connection_generation=?,timeout_job_id=?,empty_since_ms=NULL,last_"
+      "connection_generation=?,timeout_job_id=?,empty_since_ms=?,last_"
       "active_at_ms=max("
-      "last_active_at_ms,?),ended_at_ms=?,end_reason=?,last_failure_category=? "
-      "WHERE session_id=? AND state_version=?");
+      "last_active_at_ms,?),ended_at_ms=?,end_reason=?,last_failure_category=?,"
+      "muted_at_ms=?,mute_until_ms=?,mute_job_id=? WHERE session_id=? AND "
+      "state_version=?");
   update.bind(1, vox_state_name(request.target));
   update.bind(2, static_cast<std::int64_t>(new_revision));
   const auto reconnects = before->reconnect_count +
@@ -495,30 +518,60 @@ apply_transition(SqliteConnection &connection,
   const auto generation = before->connection_generation +
                           (request.target == VoxState::reconnecting ? 1U : 0U);
   update.bind(4, static_cast<std::int64_t>(generation));
-  if (request.timeout_job_id)
+  if (preserve_lifecycle_timeout && before->timeout_job_id)
+    update.bind(5, *before->timeout_job_id);
+  else if (request.target != VoxState::muted && request.timeout_job_id)
     update.bind(5, *request.timeout_job_id);
   else
     update.bind_null(5);
-  update.bind(6, request.now_ms);
+  if (preserve_lifecycle_timeout && before->empty_since_ms)
+    update.bind(6, *before->empty_since_ms);
+  else
+    update.bind_null(6);
+  update.bind(7, request.now_ms);
   if (request.target == VoxState::inactive ||
       request.target == VoxState::failed) {
-    update.bind(7, std::max({request.now_ms, before->started_at_ms,
+    update.bind(8, std::max({request.now_ms, before->started_at_ms,
                              before->last_active_at_ms}));
-    update.bind(8, request.reason);
+    update.bind(9, request.reason);
   } else {
-    update.bind_null(7);
     update.bind_null(8);
+    update.bind_null(9);
   }
   if (request.failure_category)
-    update.bind(9, *request.failure_category);
+    update.bind(10, *request.failure_category);
   else if (request.target == VoxState::ready)
-    update.bind_null(9);
+    update.bind_null(10);
   else if (before->last_failure_category)
-    update.bind(9, *before->last_failure_category);
+    update.bind(10, *before->last_failure_category);
   else
-    update.bind_null(9);
-  update.bind(10, before->session_id);
-  update.bind(11, static_cast<std::int64_t>(before->revision));
+    update.bind_null(10);
+  const auto preserve_mute =
+      (request.target == VoxState::reconnecting &&
+       before->state == VoxState::muted) ||
+      (request.target == VoxState::muted &&
+       before->state == VoxState::reconnecting && before->muted_at_ms);
+  if (request.target == VoxState::muted || preserve_mute) {
+    update.bind(11, preserve_mute ? *before->muted_at_ms : request.now_ms);
+    if (preserve_mute && before->mute_until_ms)
+      update.bind(12, *before->mute_until_ms);
+    else if (request.timeout_due_at_ms)
+      update.bind(12, *request.timeout_due_at_ms);
+    else
+      update.bind_null(12);
+    if (preserve_mute && before->mute_job_id)
+      update.bind(13, *before->mute_job_id);
+    else if (request.timeout_job_id)
+      update.bind(13, *request.timeout_job_id);
+    else
+      update.bind_null(13);
+  } else {
+    update.bind_null(11);
+    update.bind_null(12);
+    update.bind_null(13);
+  }
+  update.bind(14, before->session_id);
+  update.bind(15, static_cast<std::int64_t>(before->revision));
   update.execute();
   if (connection.changes() != 1)
     return make_result(VoxResultCode::invalid_state);
@@ -537,12 +590,26 @@ apply_transition(SqliteConnection &connection,
   return std::to_string(static_cast<int>(code));
 }
 
-void insert_receipt(SqliteConnection &connection,
-                    const VoxCommandContext &context,
-                    const std::string_view operation,
-                    const VoxCommandResult &result) {
-  const auto request = Json{{"operation", operation},
-                            {"actor_user_id", context.actor_user_id.str()}};
+void validate_auxiliary_receipt(const std::string_view operation,
+                                const std::string_view fingerprint) {
+  if ((operation != "say" && operation != "voice" &&
+       operation != "speech_test") ||
+      fingerprint.empty() || fingerprint.size() > 128 ||
+      std::ranges::any_of(fingerprint, [](const char value) {
+        const auto byte = static_cast<unsigned char>(value);
+        return byte < 0x21U || byte > 0x7eU;
+      }))
+    throw std::invalid_argument{"Vox command receipt is invalid."};
+}
+
+void insert_receipt(
+    SqliteConnection &connection, const VoxCommandContext &context,
+    const std::string_view operation, const VoxCommandResult &result,
+    const std::optional<std::string_view> request_fingerprint = std::nullopt) {
+  auto request = Json{{"operation", operation},
+                      {"actor_user_id", context.actor_user_id.str()}};
+  if (request_fingerprint)
+    request["request_fingerprint"] = *request_fingerprint;
   Json response{{"code", code_name(result.code)}, {"message", result.message}};
   if (result.session) {
     response["state"] = vox_state_name(result.session->state);
@@ -567,12 +634,14 @@ void insert_receipt(SqliteConnection &connection,
   insert.execute();
 }
 
-[[nodiscard]] std::optional<VoxCommandResult>
-load_receipt(SqliteConnection &connection, const VoxCommandContext &context,
-             const std::string_view operation) {
+[[nodiscard]] std::optional<VoxCommandResult> load_receipt(
+    SqliteConnection &connection, const VoxCommandContext &context,
+    const std::string_view operation,
+    const std::optional<std::string_view> request_fingerprint = std::nullopt) {
   auto query = connection.prepare(
-      "SELECT operation,actor_user_id,guild_id,channel_id,result_json,"
-      "session_id FROM voice_interaction_receipt WHERE idempotency_key=?");
+      "SELECT operation,actor_user_id,guild_id,channel_id,request_json,"
+      "result_json,session_id FROM voice_interaction_receipt WHERE "
+      "idempotency_key=?");
   query.bind(1, context.interaction_idempotency_key);
   if (!query.step())
     return std::nullopt;
@@ -581,10 +650,15 @@ load_receipt(SqliteConnection &connection, const VoxCommandContext &context,
       query.column_text(2) != context.guild_id.str() ||
       query.column_text(3) != context.text_channel_id.str())
     throw std::invalid_argument{"Vox interaction idempotency key was reused."};
-  const auto result = Json::parse(query.column_text(4));
+  const auto stored_request = Json::parse(query.column_text(4));
+  if (request_fingerprint &&
+      stored_request.value("request_fingerprint", std::string{}) !=
+          *request_fingerprint)
+    throw std::invalid_argument{"Vox interaction idempotency key was reused."};
+  const auto result = Json::parse(query.column_text(5));
   std::optional<VoxSession> session;
-  if (!query.column_is_null(5))
-    session = load_session(connection, query.column_text(5));
+  if (!query.column_is_null(6))
+    session = load_session(connection, query.column_text(6));
   return VoxCommandResult{.code = VoxResultCode::replay,
                           .session = std::move(session),
                           .message = result.value("message", std::string{})};
@@ -738,6 +812,9 @@ VoxCommandResult SqliteVoxRepository::start(const VoxStartRequest &request) {
                            .fixture_marker = std::nullopt,
                            .empty_since_ms = std::nullopt,
                            .timeout_job_id = request.timeout_job_id,
+                           .muted_at_ms = std::nullopt,
+                           .mute_until_ms = std::nullopt,
+                           .mute_job_id = std::nullopt,
                            .started_at_ms = request.context.now_ms,
                            .last_active_at_ms = request.context.now_ms,
                            .ended_at_ms = std::nullopt,
@@ -910,6 +987,101 @@ SqliteVoxRepository::command_leave(const VoxCommandContext &context,
       std::nullopt);
   result.message = "Vox Sanguinius is leaving the voice channel.";
   insert_receipt(connection, context, "leave", result);
+  transaction.commit();
+  return result;
+}
+
+VoxCommandResult SqliteVoxRepository::command_mute(
+    const VoxCommandContext &context, const bool unmute,
+    const std::optional<std::int64_t> mute_until_ms, std::string event_id,
+    std::optional<std::string> mute_job_id) {
+  if (unmute && (mute_until_ms || mute_job_id))
+    throw std::invalid_argument{"Unmute must not carry expiry metadata."};
+  if (mute_until_ms.has_value() != mute_job_id.has_value() ||
+      (mute_until_ms && *mute_until_ms <= context.now_ms))
+    throw std::invalid_argument{"Timed mute metadata is incomplete."};
+
+  std::scoped_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  Transaction transaction{connection, TransactionMode::immediate};
+  if (const auto receipt = load_receipt(connection, context, "mute")) {
+    transaction.commit();
+    return *receipt;
+  }
+  const auto current = load_active(connection);
+  VoxCommandResult result;
+  if (!current) {
+    result = make_result(VoxResultCode::inactive, std::nullopt,
+                         "Vox is not active.");
+  } else if (context.actor_user_id != context.owner_user_id &&
+             context.actor_user_id != current->summoner_user_id) {
+    result = make_result(VoxResultCode::unauthorized, current,
+                         "Only the summoner or owner may mute Vox.");
+  } else if (unmute && current->state == VoxState::ready) {
+    result = make_result(VoxResultCode::replay, current,
+                         "Vox speech is already unmuted.");
+  } else if (!unmute && current->state == VoxState::muted) {
+    result = make_result(VoxResultCode::replay, current,
+                         "Vox speech is already muted.");
+  } else if ((unmute && current->state != VoxState::muted) ||
+             (!unmute && current->state != VoxState::ready)) {
+    result = make_result(VoxResultCode::invalid_state, current,
+                         "Vox must be ready before changing mute state.");
+  } else {
+    result = apply_transition(
+        connection,
+        {.session_id = current->session_id,
+         .expected_revision = current->revision,
+         .target = unmute ? VoxState::ready : VoxState::muted,
+         .reason = unmute ? "mute_off" : "mute_on",
+         .actor_user_id = context.actor_user_id,
+         .event_id = std::move(event_id),
+         .idempotency_key = context.interaction_idempotency_key +
+                            (unmute ? ":unmute" : ":mute"),
+         .correlation_id = context.correlation_id,
+         .now_ms = context.now_ms,
+         .timeout_job_id = std::move(mute_job_id),
+         .timeout_due_at_ms = mute_until_ms,
+         .failure_category = std::nullopt,
+         .public_card = false},
+        std::nullopt);
+    result.message = unmute          ? "Vox speech is unmuted."
+                     : mute_until_ms ? "Vox speech is muted until the "
+                                       "selected expiry."
+                                     : "Vox speech is muted for this "
+                                       "session.";
+  }
+  insert_receipt(connection, context, "mute", result);
+  transaction.commit();
+  return result;
+}
+
+std::optional<VoxCommandResult> SqliteVoxRepository::command_receipt(
+    const VoxCommandContext &context, const std::string_view operation,
+    const std::string_view request_fingerprint) {
+  validate_auxiliary_receipt(operation, request_fingerprint);
+  std::scoped_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  Transaction transaction{connection, TransactionMode::immediate};
+  auto receipt =
+      load_receipt(connection, context, operation, request_fingerprint);
+  transaction.commit();
+  return receipt;
+}
+
+VoxCommandResult SqliteVoxRepository::record_command_receipt(
+    const VoxCommandContext &context, const std::string_view operation,
+    const std::string_view request_fingerprint, VoxCommandResult result) {
+  validate_auxiliary_receipt(operation, request_fingerprint);
+  std::scoped_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  Transaction transaction{connection, TransactionMode::immediate};
+  if (auto receipt =
+          load_receipt(connection, context, operation, request_fingerprint)) {
+    transaction.commit();
+    return *receipt;
+  }
+  insert_receipt(connection, context, operation, result, request_fingerprint);
   transaction.commit();
   return result;
 }
@@ -1221,7 +1393,11 @@ VoxCommandResult SqliteVoxRepository::handle_timeout(
   auto &connection = context_->connection();
   Transaction transaction{connection, TransactionMode::immediate};
   auto before = load_session(connection, payload->session_id);
-  if (!before || before->timeout_job_id != job.job_id) {
+  const auto linked_job = before && job.job_type == vox_mute_expiry_job_type
+                              ? before->mute_job_id
+                          : before ? before->timeout_job_id
+                                   : std::nullopt;
+  if (!before || linked_job != job.job_id) {
     complete_claimed_job(connection, job, now_ms);
     transaction.commit();
     return make_result(VoxResultCode::replay, before);
@@ -1276,6 +1452,56 @@ VoxCommandResult SqliteVoxRepository::handle_timeout(
     transaction.commit();
     return result;
   }
+  if (job.job_type == vox_mute_expiry_job_type &&
+      before->state == VoxState::reconnecting) {
+    const auto new_revision = before->revision + 1;
+    static_cast<void>(detail::insert_event_uncommitted(
+        connection, {.event_id = event_id,
+                     .event_type = "vox.session_unmuted.v1",
+                     .aggregate_type = "voice_session",
+                     .aggregate_id = before->session_id,
+                     .actor_user_id = std::nullopt,
+                     .guild_id = before->guild_id,
+                     .channel_id = before->text_channel_id,
+                     .source_message_id = std::nullopt,
+                     .occurred_at_ms = now_ms,
+                     .recorded_at_ms = now_ms,
+                     .correlation_id = job.correlation_id,
+                     .causation_id = job.causation_event_id,
+                     .idempotency_key = "vox:mute-expired:" + job.job_id,
+                     .payload_json = Json{{"session_id", before->session_id},
+                                          {"state", "reconnecting"}}
+                                         .dump()}));
+    auto update = connection.prepare(
+        "UPDATE voice_session SET state_version=?,muted_at_ms=NULL,"
+        "mute_until_ms=NULL,mute_job_id=NULL,last_active_at_ms=max("
+        "last_active_at_ms,?) WHERE session_id=? AND state_version=?");
+    update.bind(1, static_cast<std::int64_t>(new_revision));
+    update.bind(2, now_ms);
+    update.bind(3, before->session_id);
+    update.bind(4, static_cast<std::int64_t>(before->revision));
+    update.execute();
+    const VoxTransitionRequest transition{
+        .session_id = before->session_id,
+        .expected_revision = before->revision,
+        .target = VoxState::reconnecting,
+        .reason = "mute_expired",
+        .actor_user_id = std::nullopt,
+        .event_id = event_id,
+        .idempotency_key = "vox:mute-expired-transition:" + job.job_id,
+        .correlation_id = job.correlation_id,
+        .now_ms = now_ms,
+        .timeout_job_id = std::nullopt,
+        .timeout_due_at_ms = std::nullopt,
+        .failure_category = std::nullopt,
+        .public_card = false};
+    insert_transition(connection, *before, transition, new_revision);
+    complete_claimed_job(connection, job, now_ms);
+    auto result = make_result(VoxResultCode::accepted,
+                              load_session(connection, before->session_id));
+    transaction.commit();
+    return result;
+  }
   VoxState target = VoxState::failed;
   std::string reason = "connect_timeout";
   bool public_card = false;
@@ -1290,9 +1516,13 @@ VoxCommandResult SqliteVoxRepository::handle_timeout(
   } else if (job.job_type == vox_reconnect_timeout_job_type) {
     reason = "reconnect_timeout";
     public_card = true;
+  } else if (job.job_type == vox_mute_expiry_job_type) {
+    target = VoxState::ready;
+    reason = "mute_expired";
   }
-  *before = fail_queued_fixture_uncommitted(
-      connection, *before, fixture_event_id, job.correlation_id, now_ms);
+  if (job.job_type != vox_mute_expiry_job_type)
+    *before = fail_queued_fixture_uncommitted(
+        connection, *before, fixture_event_id, job.correlation_id, now_ms);
   complete_claimed_job(connection, job, now_ms);
   auto result = apply_transition(
       connection,

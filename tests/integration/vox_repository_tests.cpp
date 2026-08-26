@@ -11,9 +11,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <chrono>
 #include <memory>
 #include <string>
+#include <utility>
 #include <variant>
 
 namespace {
@@ -39,7 +41,7 @@ struct VoxFixture {
         sanguinius::persistence::production_migrations(),
         {"test-version", "test-revision"},
         clock};
-    REQUIRE(migrator.apply(database.connection()).current_version == 12);
+    REQUIRE(migrator.apply(database.connection()).current_version == 13);
     context =
         std::make_shared<sanguinius::persistence::SqliteRepositoryContext>(
             std::move(database));
@@ -478,6 +480,232 @@ TEST_CASE("Vox ready fixture occupancy and leave transitions are durable",
       fixture.command(30, "leave:owner", 210), uuid(720), uuid(721));
   REQUIRE(owner_leave.code == VoxResultCode::accepted);
   REQUIRE(owner_leave.session->state == VoxState::leaving);
+}
+
+TEST_CASE("Vox timed mute is authorized durable and revision fenced",
+          "[vox][persistence][mute]") {
+  VoxFixture fixture;
+  const auto ready = fixture.ready(*fixture.summon().session);
+  REQUIRE(ready.session->state == VoxState::ready);
+
+  const auto unauthorized = fixture.repository->command_mute(
+      fixture.command(32, "mute:unauthorized", 250), false, std::nullopt,
+      uuid(610), std::nullopt);
+  REQUIRE(unauthorized.code == VoxResultCode::unauthorized);
+  REQUIRE(unauthorized.session->state == VoxState::ready);
+
+  constexpr std::int64_t expiry = 3'600'300;
+  const auto context = fixture.command(31, "mute:timed", 300);
+  const auto muted = fixture.repository->command_mute(context, false, expiry,
+                                                      uuid(611), uuid(612));
+  REQUIRE(muted.code == VoxResultCode::accepted);
+  REQUIRE(muted.session->state == VoxState::muted);
+  REQUIRE(muted.session->muted_at_ms == 300);
+  REQUIRE(muted.session->mute_until_ms == expiry);
+  REQUIRE(muted.session->mute_job_id == uuid(612));
+  REQUIRE(muted.wake_scheduler);
+
+  const auto replay = fixture.repository->command_mute(context, false, expiry,
+                                                       uuid(613), uuid(614));
+  REQUIRE(replay.code == VoxResultCode::replay);
+  REQUIRE(replay.session->mute_job_id == uuid(612));
+
+  const auto reconnecting = fixture.repository->transition(
+      {.session_id = muted.session->session_id,
+       .expected_revision = muted.session->revision,
+       .target = VoxState::reconnecting,
+       .reason = "unexpected_disconnect",
+       .actor_user_id = std::nullopt,
+       .event_id = uuid(620),
+       .idempotency_key = "mute:reconnecting",
+       .correlation_id = "mute-reconnect",
+       .now_ms = 400,
+       .timeout_job_id = uuid(621),
+       .timeout_due_at_ms = 10'400,
+       .failure_category = std::nullopt,
+       .public_card = false},
+      std::nullopt);
+  REQUIRE(reconnecting.code == VoxResultCode::accepted);
+  REQUIRE(reconnecting.session->state == VoxState::reconnecting);
+  REQUIRE(reconnecting.session->muted_at_ms == 300);
+  REQUIRE(reconnecting.session->mute_until_ms == expiry);
+  REQUIRE(reconnecting.session->mute_job_id == uuid(612));
+  const auto reconnected = fixture.repository->transition(
+      {.session_id = muted.session->session_id,
+       .expected_revision = reconnecting.session->revision,
+       .target = VoxState::muted,
+       .reason = "voice_reconnected",
+       .actor_user_id = std::nullopt,
+       .event_id = uuid(622),
+       .idempotency_key = "mute:reconnected",
+       .correlation_id = "mute-reconnect",
+       .now_ms = 500,
+       .timeout_job_id = std::nullopt,
+       .timeout_due_at_ms = std::nullopt,
+       .failure_category = std::nullopt,
+       .public_card = false},
+      std::nullopt);
+  REQUIRE(reconnected.code == VoxResultCode::accepted);
+  REQUIRE(reconnected.session->state == VoxState::muted);
+  REQUIRE(reconnected.session->muted_at_ms == 300);
+  REQUIRE(reconnected.session->mute_job_id == uuid(612));
+
+  const auto claimed =
+      fixture.work->claim_due_job(expiry, expiry + 10'000, "worker", uuid(615));
+  REQUIRE(claimed.has_value());
+  REQUIRE(claimed->job_type == sanguinius::vox_mute_expiry_job_type);
+  const auto expired = fixture.repository->handle_timeout(
+      *claimed, expiry, uuid(616), uuid(617), uuid(618), std::nullopt);
+  REQUIRE(expired.code == VoxResultCode::accepted);
+  REQUIRE(expired.session->state == VoxState::ready);
+  REQUIRE_FALSE(expired.session->muted_at_ms);
+  REQUIRE_FALSE(expired.session->mute_until_ms);
+  REQUIRE_FALSE(expired.session->mute_job_id);
+}
+
+TEST_CASE("Vox auxiliary command receipts audit fingerprints and replay",
+          "[vox][persistence][receipt][tts]") {
+  VoxFixture fixture;
+  const auto ready = fixture.ready(*fixture.summon().session);
+  REQUIRE(ready.session->state == VoxState::ready);
+
+  const std::array commands{
+      std::pair{
+          "say",
+          "sha256:"
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+      std::pair{"voice", "select:onyx"},
+      std::pair{"speech_test", "scenario:provider-failure"}};
+  std::int64_t now = 700;
+  for (const auto &[operation, fingerprint] : commands) {
+    const auto context =
+        fixture.command(30, "receipt:" + std::string{operation}, now++);
+    REQUIRE_FALSE(
+        fixture.repository->command_receipt(context, operation, fingerprint));
+    auto result =
+        sanguinius::VoxCommandResult{.code = VoxResultCode::accepted,
+                                     .session = ready.session,
+                                     .message = "Audited command accepted."};
+    const auto recorded = fixture.repository->record_command_receipt(
+        context, operation, fingerprint, result);
+    REQUIRE(recorded.code == VoxResultCode::accepted);
+
+    sanguinius::persistence::SqliteVoxRepository restarted{fixture.context};
+    const auto replay =
+        restarted.command_receipt(context, operation, fingerprint);
+    REQUIRE(replay);
+    REQUIRE(replay->code == VoxResultCode::replay);
+    REQUIRE(replay->message == "Audited command accepted.");
+    REQUIRE_THROWS(
+        restarted.command_receipt(context, operation, "altered:fingerprint"));
+  }
+
+  REQUIRE(count(*fixture.context, "voice_interaction_receipt") == 4);
+  auto stored = fixture.context->connection().prepare(
+      "SELECT operation,json_extract(request_json,'$.request_fingerprint') "
+      "FROM voice_interaction_receipt WHERE operation IN "
+      "('say','voice','speech_test') ORDER BY operation");
+  std::size_t rows{};
+  while (stored.step()) {
+    REQUIRE_FALSE(stored.column_text(1).empty());
+    ++rows;
+  }
+  REQUIRE(rows == commands.size());
+  REQUIRE_THROWS(fixture.repository->command_receipt(
+      fixture.command(30, "invalid:receipt", now), "status", "inspect"));
+}
+
+TEST_CASE("Vox mute preserves empty cleanup and reconnect fencing",
+          "[vox][persistence][mute][timeout][reconnect]") {
+  SECTION("empty cleanup survives mute and unmute") {
+    VoxFixture fixture;
+    const auto ready = fixture.ready(*fixture.summon().session);
+    const auto empty = fixture.repository->occupancy(
+        {.session_id = ready.session->session_id,
+         .expected_revision = ready.session->revision,
+         .human_count = 0,
+         .now_ms = 300,
+         .empty_job_id = uuid(630),
+         .event_id = uuid(631),
+         .idempotency_key = "mute:empty",
+         .correlation_id = "mute-empty"});
+    REQUIRE(empty.code == VoxResultCode::accepted);
+    const auto muted = fixture.repository->command_mute(
+        fixture.command(31, "mute:empty:on", 400), false, std::nullopt,
+        uuid(632), std::nullopt);
+    REQUIRE(muted.code == VoxResultCode::accepted);
+    REQUIRE(muted.session->state == VoxState::muted);
+    REQUIRE(muted.session->empty_since_ms == 300);
+    REQUIRE(muted.session->timeout_job_id == uuid(630));
+    const auto unmuted = fixture.repository->command_mute(
+        fixture.command(31, "mute:empty:off", 500), true, std::nullopt,
+        uuid(633), std::nullopt);
+    REQUIRE(unmuted.code == VoxResultCode::accepted);
+    REQUIRE(unmuted.session->state == VoxState::ready);
+    REQUIRE(unmuted.session->empty_since_ms == 300);
+    REQUIRE(unmuted.session->timeout_job_id == uuid(630));
+    const auto claimed =
+        fixture.work->claim_due_job(60'300, 30'000, "worker", uuid(634));
+    REQUIRE(claimed);
+    REQUIRE(claimed->job_type == sanguinius::vox_empty_timeout_job_type);
+    const auto closed = fixture.repository->handle_timeout(
+        *claimed, 60'300, uuid(635), uuid(636), uuid(637), 0);
+    REQUIRE(closed.code == VoxResultCode::accepted);
+    REQUIRE(closed.session->state == VoxState::inactive);
+  }
+
+  SECTION("mute expiry cannot complete an unfinished reconnect") {
+    VoxFixture fixture;
+    const auto ready = fixture.ready(*fixture.summon().session);
+    const auto muted = fixture.repository->command_mute(
+        fixture.command(31, "mute:reconnect:on", 300), false, 500, uuid(640),
+        uuid(641));
+    REQUIRE(muted.code == VoxResultCode::accepted);
+    const auto reconnecting = fixture.repository->transition(
+        {.session_id = ready.session->session_id,
+         .expected_revision = muted.session->revision,
+         .target = VoxState::reconnecting,
+         .reason = "unexpected_disconnect",
+         .actor_user_id = std::nullopt,
+         .event_id = uuid(642),
+         .idempotency_key = "mute:expiry:reconnecting",
+         .correlation_id = "mute-expiry-reconnect",
+         .now_ms = 400,
+         .timeout_job_id = uuid(643),
+         .timeout_due_at_ms = 10'400,
+         .failure_category = std::nullopt,
+         .public_card = false},
+        std::nullopt);
+    REQUIRE(reconnecting.code == VoxResultCode::accepted);
+    const auto claimed =
+        fixture.work->claim_due_job(500, 30'000, "worker", uuid(644));
+    REQUIRE(claimed);
+    REQUIRE(claimed->job_type == sanguinius::vox_mute_expiry_job_type);
+    const auto expired = fixture.repository->handle_timeout(
+        *claimed, 500, uuid(645), uuid(646), uuid(647), std::nullopt);
+    REQUIRE(expired.code == VoxResultCode::accepted);
+    REQUIRE(expired.session->state == VoxState::reconnecting);
+    REQUIRE(expired.session->timeout_job_id == uuid(643));
+    REQUIRE_FALSE(expired.session->muted_at_ms);
+    REQUIRE_FALSE(expired.session->mute_job_id);
+    const auto reconnected = fixture.repository->transition(
+        {.session_id = expired.session->session_id,
+         .expected_revision = expired.session->revision,
+         .target = VoxState::ready,
+         .reason = "voice_reconnected",
+         .actor_user_id = std::nullopt,
+         .event_id = uuid(648),
+         .idempotency_key = "mute:expiry:reconnected",
+         .correlation_id = "mute-expiry-reconnect",
+         .now_ms = 600,
+         .timeout_job_id = std::nullopt,
+         .timeout_due_at_ms = std::nullopt,
+         .failure_category = std::nullopt,
+         .public_card = false},
+        std::nullopt);
+    REQUIRE(reconnected.code == VoxResultCode::accepted);
+    REQUIRE(reconnected.session->state == VoxState::ready);
+  }
 }
 
 TEST_CASE("Vox rollback-safe cleanup preserves ready-before-terminal delivery",

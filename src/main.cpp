@@ -137,6 +137,7 @@ int main(const int argc, char **argv) {
     }
 
     const auto config = sanguinius::Config::from_environment();
+    sanguinius::validate_runtime_configuration(config);
     if (argc == 2) {
       std::cout << sanguinius::redacted_config_summary(
           config, sanguinius::current_build_info());

@@ -5,7 +5,7 @@ It supports guild-scoped slash commands, sealed notices, an optional Living
 Chronicle, a persistent original Emperor's Tarot and Fate economy, and
 persistent unsolicited appearances with off, dry-run, and conservatively
 budgeted live modes, plus feature-flagged output-only Discord voice sessions
-with a deterministic static proof chime. It
+with owner-requested, budgeted TTS and approved static fallbacks. It
 preserves two public prefix commands, answers messages that begin with a bot
 mention through the OpenAI Responses API, and writes every visible guild
 message-create event to an append-only text log. Typed configuration fixes the
@@ -18,7 +18,7 @@ bot's feature boundary to one guild, one primary text channel, and one owner.
 | `!help` | List the supported commands. |
 | `!repo` | Link to this source repository. |
 
-The configured guild receives command catalog version 11. Chronicle, Tarot,
+The configured guild receives command catalog version 12. Chronicle, Tarot,
 and Vox
 commands are registered only when their corresponding feature flag is enabled;
 owner commands remain separately gated:
@@ -63,8 +63,12 @@ owner commands remain separately gated:
 | `/tarot evidence reference:<uuid> evidence:<text>` | Appends immutable private participant evidence. |
 | `/tarot judgment reference:<uuid> result:<creator\|target\|void> reason:<text>` | Allows the designated judge before dispute or the owner after dispute to enter a bounded reasoned result. |
 | `/tarot disputes [reference]` | Shows only disputes visible to a participant or the owner. |
-| `/vox summon` | Ephemerally resolves the invoker's current ordinary voice channel, persists one output-only session, connects with required DAVE/E2EE, and plays the original 600 ms proof chime once. |
-| `/vox status` | Publicly reports only the active state, voice-channel mention, elapsed seconds, reconnect count, and static-proof state. |
+| `/vox summon` | Ephemerally resolves the invoker's current ordinary voice channel, persists one output-only session, connects with required DAVE/E2EE, and plays the approved static entrance once. |
+| `/vox status` | Publicly reports only the active state, voice-channel mention, elapsed seconds, reconnect count, static-proof state, selected voice, mute state, bounded queue depth, and speech-service availability. |
+| `/vox say text:<line>` | Owner-only ephemeral admission of a normalized, budgeted generated line while Vox is ready or muted. Distinct interactions remain distinct queue items; cache reuse consumes no provider budget. |
+| `/vox mute duration:<15m\|1h\|4h\|session\|off>` | Owner or active summoner control that preserves the connection, durably expires timed mute, blocks automatic/flavor speech, and still permits direct owner speech. |
+| `/vox voice [voice:onyx]` | Any in-scope member may inspect the selected voice ephemerally; only the owner may change it to the configured allowlist. |
+| `/sang-admin vox speech-test scenario:<queue\|provider-failure\|budget-limit>` | Owner-only, admin/test-mode deterministic queue and fallback acceptance scenarios. Simulated failures never call the live provider. |
 | `/vox leave` | Ephemerally dismisses the active session for its summoner or the configured owner. |
 | `/sang-admin health` | Ephemeral owner-only health; registered only when admin commands are enabled. |
 | `/sang-admin work-recent` | Ephemeral owner-only inspection of the ten most recent redacted event/job/outbox summaries. |
@@ -282,6 +286,9 @@ AI work run outside D++ gateway callbacks.
 - D++ 10.1.7 or newer with shared-library voice, Opus, OpenSSL, zlib, and
   integrated DAVE/MLS support enabled
 - libcurl
+- OpenSSL libcrypto (for SHA-256 cache and asset verification)
+- FFmpeg and FFprobe 9.x at fixed absolute paths for bounded WAV inspection and
+  conversion to 48 kHz signed 16-bit stereo PCM; libav is not linked
 - nlohmann-json
 - SQLite 3.51.3 or newer, or the fixed 3.50.7/3.44.6 backport
 - SQLite must include FTS5, and the C++ standard library must provide the IANA
@@ -304,8 +311,9 @@ prefix, configure with `-DCMAKE_PREFIX_PATH=/path/to/prefix`.
 CMake compiles and links a configure-time probe for the Guild Voice States
 intent, DAVE-enabled `connect_voice`, E2EE status, raw PCM send, marker, and
 disconnect APIs. Configuration fails with a voice-support diagnostic when the
-installed package cannot supply that surface; no separate libdave, decoder, or
-FFmpeg dependency is part of Milestone 14.
+installed package cannot supply that surface. Milestone 15 adds fixed-argument
+FFmpeg/FFprobe child processes; provider text is never placed in argv or a
+temporary media filename.
 
 Catch2 is a development-only dependency. CMake requires it only when
 `BUILD_TESTING=ON`; a prebuilt production executable does not require Catch2 on
@@ -417,6 +425,18 @@ Optional settings are:
 | `SANGUINIUS_APPEARANCES_MODE` | `off` | Appearance engine mode: `off`, inspection-only `dry_run`, or conservatively budgeted `live`. |
 | `SANGUINIUS_VOX_ENABLED` | `false` | Register output-only Vox commands/callbacks and the Guild Voice States intent. Disabled startup still closes stale persisted sessions. |
 | `SANGUINIUS_VOICE_INPUT_ENABLED` | `false` | Reserved privacy gate. Setting this to `true` is rejected because receive/transcription is not implemented. |
+| `SANGUINIUS_TTS_PROVIDER` | `disabled` | `disabled` or the fixed OpenAI speech adapter. Disabled keeps approved static/text fallback available. |
+| `SANGUINIUS_TTS_MODEL` / `SANGUINIUS_TTS_VOICE` | `tts-1` / `onyx` | Exact allowed production pair; other values fail configuration. |
+| `SANGUINIUS_TTS_CACHE_DIRECTORY` | `/var/cache/sanguinius/tts` | Absolute cache path outside releases, state, and backups. |
+| `SANGUINIUS_FFMPEG_PATH` / `SANGUINIUS_FFPROBE_PATH` | `/usr/bin/ffmpeg` / `/usr/bin/ffprobe` | Absolute tested FFmpeg 9 executables. |
+| `SANGUINIUS_TTS_FALLBACK_DIRECTORY` | `/usr/local/share/sanguinius/vox` | Absolute directory containing the approved `fallbacks-v1.json` and normalized PCM clips. |
+| `SANGUINIUS_TTS_MAXIMUM_TEXT_SCALARS` | `350` | Lowerable direct-speech input ceiling. |
+| `SANGUINIUS_TTS_ROLLING_DAY_ATTEMPTS` | `20` | Lowerable rolling 24-hour provider-attempt ceiling. |
+| `SANGUINIUS_TTS_ROLLING_DAY_MICRO_USD` / `SANGUINIUS_TTS_MONTHLY_MICRO_USD` | `100000` / `2000000` | Lowerable estimated-cost ceilings ($0.10 rolling day and $2 UTC month). |
+| `SANGUINIUS_TTS_CACHE_MAXIMUM_MIB` / `SANGUINIUS_TTS_CACHE_MAXIMUM_DAYS` | `128` / `30` | Lowerable cache size and age ceilings. |
+| `SANGUINIUS_TTS_MAXIMUM_DURATION_SECONDS` | `20` | Lowerable decoded-duration ceiling. |
+| `SANGUINIUS_TTS_CONNECT_TIMEOUT_MS` / `SANGUINIUS_TTS_REQUEST_TIMEOUT_MS` | `5000` / `30000` | Lowerable verified-HTTPS connect and total synthesis deadlines. |
+| `SANGUINIUS_FFPROBE_TIMEOUT_MS` / `SANGUINIUS_FFMPEG_TIMEOUT_MS` | `5000` / `10000` | Lowerable fixed-process probe and normalization deadlines. |
 
 Boolean variables accept only the exact lowercase values `true` and `false`.
 Every explicitly supplied variable must have a nonempty value; omit an
@@ -590,6 +610,15 @@ audio, or transcripts.
 It is forward-only: rollback preserves the failed schema-v12 database and
 diagnostics, then restores a checksum-verified schema-v11 backup and its
 matching catalog-v10 artifact rather than applying reverse SQL.
+Migration `0013_vox_tts` adds snapshotted speech items and append-only
+transitions, pessimistic provider-attempt accounting, normalized-cache
+metadata, one-guild voice selection, timed mute metadata, and the durable
+hourly TTS purge. Raw line text is cleared when normalized media is published
+or the item becomes terminal. Sanitized usage remains for 13 months; terminal
+speech metadata remains for 30 days. It is forward-only: rollback preserves
+schema-v13 diagnostics/cache for inspection, restores the verified schema-v12
+backup, and activates the accepted M14 artifact and catalog v11. Never reverse
+schema 13 in place.
 The readable SQL for each ordered migration is
 embedded independently with its SHA-256
 checksum. Applied history must be ordered, contiguous, and byte-for-byte

@@ -143,7 +143,7 @@ TEST_CASE("DPP voice catalog and intent are independently feature gated",
   const auto vox = std::ranges::find(translated, std::string{"vox"},
                                      &dpp::slashcommand::name);
   REQUIRE(vox != translated.end());
-  REQUIRE(vox->options.size() == 3);
+  REQUIRE(vox->options.size() == 6);
   const auto admin = std::ranges::find(translated, std::string{"sang-admin"},
                                        &dpp::slashcommand::name);
   REQUIRE(admin != translated.end());
@@ -167,6 +167,8 @@ TEST_CASE("DPP voice-ready translation and binding replacement fail closed",
                                                  .ready = false,
                                                  .dave_active = false,
                                                  .marker_completed = false,
+                                                 .completed_marker = {},
+                                                 .bot_moved = false,
                                                  .session_id = "session-one",
                                                  .guild_id = 10,
                                                  .channel_id = 40,
@@ -212,6 +214,14 @@ TEST_CASE("DPP voice-ready translation and binding replacement fail closed",
       &current_voice_client, &stale_voice_client));
   REQUIRE_FALSE(sanguinius::dpp_voice_gateway_detail::matches_voice_client(
       nullptr, &current_voice_client));
+
+  const auto chunks =
+      sanguinius::dpp_voice_gateway_detail::pcm_chunk_sizes(23'044);
+  REQUIRE(chunks == std::vector<std::size_t>{11'520, 11'520, 4});
+  REQUIRE(std::ranges::all_of(chunks,
+                              [](const auto bytes) { return bytes % 4 == 0; }));
+  REQUIRE(sanguinius::dpp_voice_gateway_detail::pcm_chunk_sizes(23'043)
+              .empty());
 }
 
 TEST_CASE("DPP translates bounded Tarot integer adjustments",
@@ -429,6 +439,8 @@ TEST_CASE("callback fence waits for active work and suppresses late callbacks",
 
 TEST_CASE("durable Discord payload enforces nonce and suppresses mentions",
           "[discord][outbox][contract]") {
+  REQUIRE(sanguinius::dpp_adapter_detail::durable_public_message_base_path() ==
+          "/api/v10/channels");
   const sanguinius::PublicMessageRequest request{
       .guild_id = 10,
       .channel_id = 20,
@@ -446,8 +458,24 @@ TEST_CASE("durable Discord payload enforces nonce and suppresses mentions",
   REQUIRE(payload.at("allowed_mentions").at("parse").empty());
   REQUIRE(payload.at("allowed_mentions").at("users").size() == 1);
   REQUIRE(payload.at("allowed_mentions").at("users")[0] == "30");
+  REQUIRE(payload.size() == 4);
+  REQUIRE(payload.contains("content"));
+  REQUIRE_FALSE(payload.contains("channel_id"));
+  REQUIRE_FALSE(payload.contains("guild_id"));
+  REQUIRE_FALSE(payload.contains("type"));
+  REQUIRE_FALSE(payload.contains("attachments"));
+  REQUIRE_FALSE(payload.contains("flags"));
+  REQUIRE_FALSE(payload.contains("tts"));
   REQUIRE_THROWS(sanguinius::dpp_adapter_detail::durable_public_message_json(
       request, "invalid"));
+  auto incomplete = request;
+  incomplete.channel_id = {};
+  REQUIRE_THROWS(sanguinius::dpp_adapter_detail::durable_public_message_json(
+      incomplete, nonce));
+  auto empty = request;
+  empty.message.content.clear();
+  REQUIRE_THROWS(sanguinius::dpp_adapter_detail::durable_public_message_json(
+      empty, nonce));
   dpp::message receipt;
   receipt.id = 777;
   REQUIRE(sanguinius::dpp_adapter_detail::provider_message_id(receipt) == 777);

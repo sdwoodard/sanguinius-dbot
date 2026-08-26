@@ -1,5 +1,7 @@
 #include "sanguinius/persistence/sqlite_durable_work_repository.hpp"
 
+#include "sanguinius/speech.hpp"
+
 #include "sqlite_durable_work_writes.hpp"
 
 #include "sanguinius/chronicle_sessions.hpp"
@@ -605,8 +607,12 @@ decode_tarot_house_weekly_offer(const Json &value) {
     if (kind == "vox.connect_timeout.v1" ||
         kind == "vox.reconnect_timeout.v1" ||
         kind == "vox.leave_timeout.v1" ||
-        kind == "vox.empty_timeout.v1")
+        kind == "vox.empty_timeout.v1" ||
+        kind == "vox.mute_expiry.v1")
       return decode_vox_timeout(value);
+    if (kind == vox_tts_purge_job_type && value.is_object() &&
+        value.value("payload_version", 0) == 1)
+      return std::monostate{};
   } catch (const std::exception &) {
     return std::monostate{};
   }

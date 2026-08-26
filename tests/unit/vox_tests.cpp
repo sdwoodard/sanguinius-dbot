@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -152,6 +153,9 @@ public:
         .fixture_marker = std::nullopt,
         .empty_since_ms = std::nullopt,
         .timeout_job_id = request.timeout_job_id,
+        .muted_at_ms = std::nullopt,
+        .mute_until_ms = std::nullopt,
+        .mute_job_id = std::nullopt,
         .started_at_ms = request.context.now_ms,
         .last_active_at_ms = request.context.now_ms,
         .ended_at_ms = std::nullopt,
@@ -215,6 +219,77 @@ public:
     changed_.notify_all();
     return fake_result(sanguinius::VoxResultCode::accepted, session_,
                        "Vox Sanguinius is leaving the voice channel.", true);
+  }
+
+  sanguinius::VoxCommandResult
+  command_mute(const sanguinius::VoxCommandContext &context, const bool unmute,
+               const std::optional<std::int64_t> mute_until_ms, std::string,
+               std::optional<std::string> mute_job_id) override {
+    const std::scoped_lock lock{mutex_};
+    if (!session_)
+      return fake_result(sanguinius::VoxResultCode::inactive);
+    if (context.actor_user_id != context.owner_user_id &&
+        context.actor_user_id != session_->summoner_user_id)
+      return fake_result(sanguinius::VoxResultCode::unauthorized, session_);
+    if (unmute && session_->state == sanguinius::VoxState::muted) {
+      session_->state = sanguinius::VoxState::ready;
+      session_->muted_at_ms.reset();
+      session_->mute_until_ms.reset();
+      session_->mute_job_id.reset();
+      session_->timeout_job_id.reset();
+    } else if (!unmute && session_->state == sanguinius::VoxState::ready) {
+      session_->state = sanguinius::VoxState::muted;
+      session_->muted_at_ms = context.now_ms;
+      session_->mute_until_ms = mute_until_ms;
+      session_->mute_job_id = mute_job_id;
+      session_->timeout_job_id = std::move(mute_job_id);
+    } else {
+      return fake_result(sanguinius::VoxResultCode::invalid_state, session_);
+    }
+    ++session_->revision;
+    changed_.notify_all();
+    return fake_result(sanguinius::VoxResultCode::accepted, session_, {},
+                       mute_until_ms.has_value());
+  }
+
+  std::optional<sanguinius::VoxCommandResult>
+  command_receipt(const sanguinius::VoxCommandContext &context,
+                  const std::string_view operation,
+                  const std::string_view request_fingerprint) override {
+    const std::scoped_lock lock{mutex_};
+    const auto found =
+        command_receipts_.find(context.interaction_idempotency_key);
+    if (found == command_receipts_.end())
+      return std::nullopt;
+    if (found->second.operation != operation ||
+        found->second.request_fingerprint != request_fingerprint)
+      throw std::invalid_argument{
+          "Vox interaction idempotency key was reused."};
+    auto replay = found->second.result;
+    replay.code = sanguinius::VoxResultCode::replay;
+    return replay;
+  }
+
+  sanguinius::VoxCommandResult
+  record_command_receipt(const sanguinius::VoxCommandContext &context,
+                         const std::string_view operation,
+                         const std::string_view request_fingerprint,
+                         sanguinius::VoxCommandResult result) override {
+    const std::scoped_lock lock{mutex_};
+    const auto [found, inserted] = command_receipts_.try_emplace(
+        context.interaction_idempotency_key,
+        CommandReceipt{std::string{operation}, std::string{request_fingerprint},
+                       result});
+    if (!inserted) {
+      if (found->second.operation != operation ||
+          found->second.request_fingerprint != request_fingerprint)
+        throw std::invalid_argument{
+            "Vox interaction idempotency key was reused."};
+      auto replay = found->second.result;
+      replay.code = sanguinius::VoxResultCode::replay;
+      return replay;
+    }
+    return result;
   }
 
   sanguinius::VoxCommandResult
@@ -542,9 +617,16 @@ public:
   }
 
 private:
+  struct CommandReceipt {
+    std::string operation;
+    std::string request_fingerprint;
+    sanguinius::VoxCommandResult result;
+  };
+
   mutable std::mutex mutex_;
   mutable std::condition_variable changed_;
   std::optional<sanguinius::VoxSession> session_;
+  std::map<std::string, CommandReceipt> command_receipts_;
   bool block_status_{};
   bool status_entered_{};
   bool status_released_{};
@@ -614,6 +696,7 @@ public:
                    .ready = false,
                    .dave_active = false,
                    .marker_completed = false,
+                   .completed_marker = {},
                    .bot_moved = false,
                    .session_id = request.session_id,
                    .guild_id = request.guild_id,
@@ -713,8 +796,10 @@ public:
         snapshot_.dave_active = false;
         snapshot_.bot_moved = true;
       }
-      if (kind == sanguinius::VoiceEventKind::track_marker)
+      if (kind == sanguinius::VoiceEventKind::track_marker) {
         snapshot_.marker_completed = true;
+        snapshot_.completed_marker = marker_;
+      }
       snapshot_.human_count = human_count;
     }
     callback(std::move(event));
@@ -1471,12 +1556,14 @@ TEST_CASE("Vox state machine accepts only the governed edges",
       return to == VoxState::ready || to == VoxState::leaving ||
              to == VoxState::failed;
     case VoxState::ready:
+      return to == VoxState::muted || to == VoxState::reconnecting ||
+             to == VoxState::leaving || to == VoxState::failed;
     case VoxState::muted:
-      return to == VoxState::reconnecting || to == VoxState::leaving ||
-             to == VoxState::failed;
+      return to == VoxState::ready || to == VoxState::reconnecting ||
+             to == VoxState::leaving || to == VoxState::failed;
     case VoxState::reconnecting:
-      return to == VoxState::ready || to == VoxState::leaving ||
-             to == VoxState::failed;
+      return to == VoxState::ready || to == VoxState::muted ||
+             to == VoxState::leaving || to == VoxState::failed;
     case VoxState::leaving:
       return to == VoxState::inactive;
     case VoxState::inactive:

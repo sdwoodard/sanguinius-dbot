@@ -21,6 +21,8 @@ namespace dpp_adapter_detail {
 [[nodiscard]] std::string
 durable_public_message_json(const PublicMessageRequest &request,
                             std::string_view provider_nonce);
+[[nodiscard]] std::string_view
+durable_public_message_base_path() noexcept;
 [[nodiscard]] DeliveryResult
 classify_http_delivery(bool succeeded, int http_status,
                        bool transport_failed) noexcept;

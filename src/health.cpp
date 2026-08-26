@@ -1,5 +1,6 @@
 #include "sanguinius/health.hpp"
 
+#include <algorithm>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -223,6 +224,58 @@ std::string render_health(const HealthSnapshot &snapshot) {
       output << "vox_last_failure="
              << safe_build_metadata(*snapshot.vox->last_failure_category)
              << '\n';
+    if (snapshot.vox->speech) {
+      const auto &speech = *snapshot.vox->speech;
+      output << "tts_provider=" << enabled(speech.provider_enabled) << '\n'
+             << "tts_voice=" << safe_build_metadata(speech.voice) << '\n'
+             << "tts_day_attempts="
+             << speech.repository.usage.rolling_day_attempts << '\n'
+             << "tts_day_micro_usd="
+             << speech.repository.usage.rolling_day_micro_usd << '\n'
+             << "tts_month_micro_usd="
+             << speech.repository.usage.calendar_month_micro_usd << '\n'
+             << "tts_day_remaining_attempts="
+             << (speech.repository.usage.rolling_day_attempts >=
+                         speech.usage_policy.rolling_day_attempts
+                     ? 0
+                     : speech.usage_policy.rolling_day_attempts -
+                           speech.repository.usage.rolling_day_attempts)
+             << '\n'
+             << "tts_day_remaining_micro_usd="
+             << std::max<std::int64_t>(
+                    0, speech.usage_policy.rolling_day_micro_usd -
+                           speech.repository.usage.rolling_day_micro_usd)
+             << '\n'
+             << "tts_month_remaining_micro_usd="
+             << std::max<std::int64_t>(
+                    0, speech.usage_policy.calendar_month_micro_usd -
+                           speech.repository.usage.calendar_month_micro_usd)
+             << '\n'
+             << "tts_day_outcomes="
+             << speech.repository.usage.rolling_day_succeeded << " succeeded, "
+             << speech.repository.usage.rolling_day_failed << " failed, "
+             << speech.repository.usage.rolling_day_unknown << " unknown\n"
+             << "tts_cache_entries=" << speech.cache.entries << '\n'
+             << "tts_cache_bytes=" << speech.cache.bytes << '\n'
+             << "tts_cache_hits=" << speech.cache.hits << '\n'
+             << "tts_cache_misses=" << speech.cache.misses << '\n'
+             << "tts_queue_items="
+             << speech.repository.queued + speech.repository.synthesizing +
+                    speech.repository.ready + speech.repository.playing
+             << '\n'
+             << "tts_synthesis_worker_rejections="
+             << speech.synthesis_worker_rejections << '\n'
+             << "tts_playback_worker_rejections="
+             << speech.playback_worker_rejections << '\n';
+      if (speech.last_normalization_latency_ms)
+        output << "tts_last_decoder_ms="
+               << *speech.last_normalization_latency_ms << '\n';
+      append_queue(output, "tts_synthesis_worker", speech.synthesis_worker);
+      append_queue(output, "tts_playback_worker", speech.playback_worker);
+      if (speech.last_failure_category)
+        output << "tts_last_failure="
+               << safe_build_metadata(*speech.last_failure_category) << '\n';
+    }
   }
   output << "admin_commands="
          << enabled(snapshot.controls.admin_commands_enabled) << '\n'

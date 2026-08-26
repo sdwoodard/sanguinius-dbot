@@ -22,6 +22,9 @@ matches_voice_session(std::string_view expected_session_id,
 [[nodiscard]] bool
 matches_voice_client(const void *current_voice_client,
                      const void *observed_voice_client) noexcept;
+[[nodiscard]] std::vector<std::size_t>
+pcm_chunk_sizes(std::size_t byte_count,
+                std::size_t maximum_chunk_bytes = 11'520);
 
 } // namespace dpp_voice_gateway_detail
 

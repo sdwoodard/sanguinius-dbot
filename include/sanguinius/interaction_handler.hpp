@@ -115,7 +115,11 @@ enum class InteractionOperation {
   vox_summon,
   vox_status,
   vox_leave,
+  vox_say,
+  vox_mute,
+  vox_voice,
   vox_test_disconnect,
+  vox_speech_test,
 };
 
 struct RoutedInteraction {

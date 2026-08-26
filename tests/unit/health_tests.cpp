@@ -103,7 +103,8 @@ TEST_CASE("health snapshot renders build queues and configured modes",
                        .queued = 1,
                        .active = 1,
                        .accepting = true},
-             .last_failure_category = "transport_closed"}};
+             .last_failure_category = "transport_closed",
+             .speech = std::nullopt}};
        }}};
 
   const auto snapshot = service.snapshot(
