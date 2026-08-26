@@ -71,7 +71,7 @@ public:
       auto database = Database::open_migration(temporary.path());
       const Migrator migrator{
           persistence::production_migrations(), {"test", "revision"}, clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 13);
+      REQUIRE(migrator.apply(database.connection()).current_version == 14);
     }
     open_runtime();
     SqliteCoreIdentityRepository identities{context};
@@ -300,6 +300,14 @@ TEST_CASE("peer wager funding and mutual settlement are atomic and replayable",
   REQUIRE(fixture.balance(WagerFixture::owner) == 90);
   REQUIRE(fixture.balance(WagerFixture::target) == 90);
   REQUIRE(fixture.escrow_balance() == 20);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM outbox_message outbox JOIN "
+                 "event_journal event ON event.event_id=json_extract("
+                 "outbox.payload_json,'$.causation_event_id') WHERE "
+                 "outbox.aggregate_id='" +
+                     wager_id +
+                     "' AND outbox.kind='discord.message_edit.v1' AND "
+                     "event.event_type='tarot.wager_funded.v1'") == 1);
   REQUIRE(text_scalar(*fixture.context,
                       "SELECT event.event_type FROM event_journal event "
                       "JOIN tarot_transaction tx ON tx.event_id=event.event_id "
@@ -329,6 +337,14 @@ TEST_CASE("peer wager funding and mutual settlement are atomic and replayable",
   REQUIRE(fixture.balance(WagerFixture::owner) == 110);
   REQUIRE(fixture.balance(WagerFixture::target) == 90);
   REQUIRE(fixture.escrow_balance() == 0);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM outbox_message outbox JOIN "
+                 "event_journal event ON event.event_id=json_extract("
+                 "outbox.payload_json,'$.causation_event_id') WHERE "
+                 "outbox.aggregate_id='" +
+                     wager_id +
+                     "' AND outbox.kind='discord.message_edit.v1' AND "
+                     "event.event_type='tarot.wager_resolved.v1'") == 1);
 
   const auto replay =
       fixture.outcome(WagerFixture::target, wager_id, WagerRole::creator,

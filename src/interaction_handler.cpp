@@ -77,14 +77,15 @@ InteractionHandler::InteractionHandler(
     RelationshipService *relationships, AppearanceService *appearances,
     TarotService *tarot, TarotWagerService *wagers,
     TarotDrawService *tarot_draws, TarotHouseService *tarot_house,
-    TarotIntegrationService *tarot_integration, VoxService *vox)
+    TarotIntegrationService *tarot_integration, VoxService *vox,
+    VoxNarrationService *vox_narration)
     : identities_{identities}, notices_{notices}, clock_{clock},
       durable_controls_{durable_controls}, chronicle_{chronicle},
       chronicle_sessions_{chronicle_sessions}, relationships_{relationships},
       appearances_{appearances}, tarot_{tarot}, wagers_{wagers},
       tarot_draws_{tarot_draws}, tarot_house_{tarot_house},
       tarot_integration_{tarot_integration}, vox_{vox},
-      health_service_{health_service},
+      vox_narration_{vox_narration}, health_service_{health_service},
       diagnostics_{diagnostics}, features_{features},
       message_queue_{std::move(message_queue)}, ai_queue_{std::move(ai_queue)},
       callbacks_{std::make_shared<CallbackFence>()},
@@ -860,6 +861,94 @@ void InteractionHandler::process(const RoutedInteraction &request) {
     edit(request.interaction, wagers_->cleanup_test_wager(request.interaction),
          "interaction.wager_test_cleanup");
     return;
+  case InteractionOperation::vox_narration_preview:
+  case InteractionOperation::vox_narration_enqueue: {
+    if (!vox_narration_)
+      throw std::runtime_error{"Vox narration service is unavailable."};
+    const auto option =
+        std::ranges::find(request.interaction.command_options, "reference",
+                          &InteractionOption::name);
+    if (option == request.interaction.command_options.end())
+      throw std::invalid_argument{"A narration event reference is required."};
+    const auto *reference = std::get_if<std::string>(&option->value);
+    if (reference == nullptr)
+      throw std::invalid_argument{"The narration event reference is invalid."};
+    const VoxNarrationControlContext receipt_context{
+        .idempotency_key =
+            "vox:interaction:" + request.interaction.interaction_id.str(),
+        .operation =
+            request.operation == InteractionOperation::vox_narration_preview
+                ? "narration_preview"
+                : "narration_enqueue",
+        .actor_user_id = request.interaction.user_id.str(),
+        .guild_id = request.interaction.guild_id.str(),
+        .channel_id = request.interaction.channel_id.str(),
+        .request_fingerprint = *reference,
+        .now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      clock_.now().time_since_epoch())
+                      .count()};
+    const std::string_view narration_category =
+        request.operation == InteractionOperation::vox_narration_preview
+            ? "interaction.vox_narration_preview"
+            : "interaction.vox_narration_enqueue";
+    if (const auto receipt = vox_narration_->control_receipt(receipt_context)) {
+      edit(request.interaction, text_message(*receipt), narration_category);
+      return;
+    }
+    const auto complete = [&](std::string message,
+                              const std::string_view category) {
+      auto response = vox_narration_->record_control_receipt(
+          receipt_context, std::move(message));
+      edit(request.interaction, text_message(std::move(response)), category);
+    };
+    const auto candidate = vox_narration_->preview(*reference);
+    if (!candidate) {
+      complete("That event is unknown, stale, private, or ineligible for "
+               "narration.",
+               narration_category);
+      return;
+    }
+    if (request.operation == InteractionOperation::vox_narration_enqueue) {
+      if (!candidate->is_test) {
+        complete("Narration enqueue accepts only explicitly tagged owner-test "
+                 "events.",
+                 "interaction.vox_narration_enqueue");
+        return;
+      }
+      auto response =
+          vox_narration_->enqueue_with_receipt(*reference, receipt_context);
+      edit(request.interaction, text_message(std::move(response)),
+           "interaction.vox_narration_enqueue");
+      return;
+    }
+    std::ostringstream output;
+    output << "Narration projection "
+           << shortened_persistent_id(candidate->source_event_id) << ": "
+           << candidate->event_type << ", feature "
+           << vox_narration_feature_name(candidate->feature) << ", rank "
+           << static_cast<unsigned int>(candidate->rank)
+           << ". No line was generated and no speech budget was used.";
+    complete(output.str(), "interaction.vox_narration_preview");
+    return;
+  }
+  case InteractionOperation::vox_narration_recent: {
+    if (!vox_narration_)
+      throw std::runtime_error{"Vox narration service is unavailable."};
+    const auto recent = vox_narration_->recent();
+    std::ostringstream output;
+    output << "Recent Vox narration audit (line content omitted):";
+    if (recent.empty())
+      output << " none.";
+    for (const auto &item : recent) {
+      output << "\n- " << shortened_persistent_id(item.intent_id) << " "
+             << item.feature << "/" << item.state;
+      if (item.reason)
+        output << " (" << *item.reason << ")";
+    }
+    edit(request.interaction, text_message(output.str()),
+         "interaction.vox_narration_recent");
+    return;
+  }
   case InteractionOperation::vox_summon:
   case InteractionOperation::vox_status:
   case InteractionOperation::vox_leave:
@@ -872,18 +961,18 @@ void InteractionHandler::process(const RoutedInteraction &request) {
       throw std::runtime_error{"Vox service is unavailable."};
     const auto interaction = request.interaction;
     const auto callback_fence = callbacks_;
-    auto completion =
-        [this, interaction, callback_fence](VoxCommandResult result) mutable {
-          try {
-            static_cast<void>(callback_fence->invoke(
-                [this, interaction = std::move(interaction),
-                 result = std::move(result)]() mutable {
-                  edit(interaction, text_message(result.message),
-                       "interaction.vox");
-                }));
-          } catch (...) {
-          }
-        };
+    auto completion = [this, interaction,
+                       callback_fence](VoxCommandResult result) mutable {
+      try {
+        static_cast<void>(
+            callback_fence->invoke([this, interaction = std::move(interaction),
+                                    result = std::move(result)]() mutable {
+              edit(interaction, text_message(result.message),
+                   "interaction.vox");
+            }));
+      } catch (...) {
+      }
+    };
     VoxCommandContext context{
         .guild_id = request.interaction.guild_id,
         .text_channel_id = request.interaction.channel_id,
@@ -896,9 +985,9 @@ void InteractionHandler::process(const RoutedInteraction &request) {
                       clock_.now().time_since_epoch())
                       .count(),
     };
-    const auto string_option = [&request](const std::string_view name,
-                                          const bool required)
-        -> std::optional<std::string> {
+    const auto string_option =
+        [&request](const std::string_view name,
+                   const bool required) -> std::optional<std::string> {
       const auto found = std::ranges::find(request.interaction.command_options,
                                            name, &InteractionOption::name);
       if (found == request.interaction.command_options.end()) {
@@ -939,8 +1028,7 @@ void InteractionHandler::process(const RoutedInteraction &request) {
         : request.operation == InteractionOperation::vox_speech_test
             ? vox_->speech_test(std::move(context), std::move(*argument),
                                 std::move(completion))
-            : vox_->test_disconnect(std::move(context),
-                                    std::move(completion));
+            : vox_->test_disconnect(std::move(context), std::move(completion));
     if (submitted != SubmitResult::accepted) {
       edit(request.interaction,
            text_message("Vox is handling another request. Please try again."),

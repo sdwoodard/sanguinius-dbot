@@ -19,10 +19,13 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -48,7 +51,7 @@ struct SpeechFixture {
         sanguinius::persistence::production_migrations(),
         {"test", "revision"},
         clock};
-    REQUIRE(migrator.apply(database.connection()).current_version == 13);
+    REQUIRE(migrator.apply(database.connection()).current_version == 14);
     context =
         std::make_shared<sanguinius::persistence::SqliteRepositoryContext>(
             std::move(database));
@@ -164,6 +167,107 @@ private:
   mutable std::size_t calls_{};
 };
 
+class BlockingFlavorTts final : public sanguinius::TextToSpeechClient {
+public:
+  sanguinius::SynthesizedAudio
+  synthesize(const sanguinius::TtsRequest &request,
+             const std::stop_token stop_token) const override {
+    std::unique_lock lock{mutex_};
+    ++calls_;
+    if (request.text == "Context entrance waits.") {
+      entrance_timeout_ = request.timeout;
+      entrance_entered_ = true;
+      changed_.notify_all();
+      changed_.wait(lock, stop_token, [this] { return released_; });
+      if (stop_token.stop_requested())
+        throw sanguinius::TtsError{sanguinius::TtsFailureCategory::cancelled,
+                                   "Contextual synthesis was cancelled."};
+    }
+    changed_.notify_all();
+    return {.bytes = {std::byte{'R'}, std::byte{'I'}, std::byte{'F'},
+                      std::byte{'F'}, std::byte{0}, std::byte{0}, std::byte{0},
+                      std::byte{0}, std::byte{'W'}, std::byte{'A'},
+                      std::byte{'V'}, std::byte{'E'}},
+            .format = sanguinius::AudioFormat::wav,
+            .content_type = "audio/wav",
+            .provider_request_id = "blocking-flavor-fixture"};
+  }
+
+  [[nodiscard]] bool
+  wait_for_entrance(const std::chrono::milliseconds timeout) const {
+    std::unique_lock lock{mutex_};
+    return changed_.wait_for(lock, timeout,
+                             [this] { return entrance_entered_; });
+  }
+
+  [[nodiscard]] bool
+  wait_for_calls(const std::size_t count,
+                 const std::chrono::milliseconds timeout) const {
+    std::unique_lock lock{mutex_};
+    return changed_.wait_for(lock, timeout,
+                             [this, count] { return calls_ >= count; });
+  }
+
+  void release() {
+    const std::scoped_lock lock{mutex_};
+    released_ = true;
+    changed_.notify_all();
+  }
+
+  [[nodiscard]] std::chrono::milliseconds entrance_timeout() const {
+    const std::scoped_lock lock{mutex_};
+    return entrance_timeout_;
+  }
+
+  [[nodiscard]] std::size_t calls() const {
+    const std::scoped_lock lock{mutex_};
+    return calls_;
+  }
+
+private:
+  mutable std::mutex mutex_;
+  mutable std::condition_variable_any changed_;
+  mutable std::size_t calls_{};
+  mutable bool entrance_entered_{};
+  mutable bool released_{};
+  mutable std::chrono::milliseconds entrance_timeout_{};
+};
+
+class BlockingFailureTts final : public sanguinius::TextToSpeechClient {
+public:
+  sanguinius::SynthesizedAudio
+  synthesize(const sanguinius::TtsRequest &,
+             const std::stop_token stop_token) const override {
+    std::unique_lock lock{mutex_};
+    entered_ = true;
+    changed_.notify_all();
+    changed_.wait(lock, stop_token, [this] { return released_; });
+    if (stop_token.stop_requested())
+      throw sanguinius::TtsError{sanguinius::TtsFailureCategory::cancelled,
+                                 "Failure fixture was cancelled."};
+    throw sanguinius::TtsError{sanguinius::TtsFailureCategory::transport,
+                               "Failure fixture transport error."};
+  }
+
+  [[nodiscard]] bool
+  wait_for_call(const std::chrono::milliseconds timeout) const {
+    std::unique_lock lock{mutex_};
+    return changed_.wait_for(lock, timeout, [this] { return entered_; });
+  }
+
+  void release() {
+    const std::scoped_lock lock{mutex_};
+    released_ = true;
+    changed_.notify_all();
+  }
+
+private:
+  mutable std::mutex mutex_;
+  mutable std::condition_variable_any changed_;
+  mutable bool entered_{};
+  mutable bool released_{};
+};
+
 bool wait_for_count(const std::atomic<std::size_t> &value,
                     const std::size_t expected) {
   for (std::size_t attempt = 0; attempt < 200; ++attempt) {
@@ -204,6 +308,42 @@ TEST_CASE("speech queue persists priority ordering and duplicate replay",
   REQUIRE(claimed->speech_id == interactive.item->speech_id);
   REQUIRE(claimed->state == SpeechState::synthesizing);
   REQUIRE(claimed->text.has_value());
+}
+
+TEST_CASE("event narration uses immutable rank within its speech priority",
+          "[speech][persistence][narration][queue]") {
+  SpeechFixture fixture;
+  auto lower = fixture.request(1, SpeechPriority::event_narration,
+                               "A lower-ranked public event.");
+  lower.source_kind = "vox_feature_narration";
+  lower.narration_rank = 40;
+  auto higher = fixture.request(2, SpeechPriority::event_narration,
+                                "A higher-ranked public event.");
+  higher.source_kind = "vox_feature_narration";
+  higher.narration_rank = 100;
+  REQUIRE(fixture.speech->enqueue(lower).status ==
+          SpeechEnqueueStatus::accepted);
+  REQUIRE(fixture.speech->enqueue(higher).status ==
+          SpeechEnqueueStatus::accepted);
+
+  const auto claimed = fixture.speech->claim_next(
+      fixture.session_id, 301, uuid(300), "speech:claim:narration-rank");
+  REQUIRE(claimed);
+  CHECK(claimed->speech_id == higher.speech_id);
+  CHECK(claimed->narration_rank == 100);
+
+  auto mutate_rank = fixture.context->connection().prepare(
+      "UPDATE speech_item SET narration_rank=99,state_version=state_version+1 "
+      "WHERE speech_id=?");
+  mutate_rank.bind(1, lower.speech_id);
+  CHECK_THROWS(mutate_rank.execute());
+
+  auto invalid_direct = fixture.request(3, SpeechPriority::interactive);
+  invalid_direct.narration_rank = 10;
+  CHECK_THROWS(fixture.speech->enqueue(invalid_direct));
+  auto invalid_narration = fixture.request(4, SpeechPriority::event_narration);
+  invalid_narration.narration_rank = 0;
+  CHECK_THROWS(fixture.speech->enqueue(invalid_narration));
 }
 
 TEST_CASE(
@@ -365,20 +505,39 @@ TEST_CASE("speech queue expires stale work and protects reserved control slots",
               .status == SpeechEnqueueStatus::queue_full);
 }
 
-TEST_CASE("speech reconnect keeps direct work and cancels flavor",
+TEST_CASE("speech reconnect defers narration while cancelling ordinary flavor",
           "[speech][persistence][queue][reconnect]") {
   SpeechFixture fixture;
   REQUIRE(fixture.speech->enqueue(fixture.request(1, SpeechPriority::flavor))
               .status == SpeechEnqueueStatus::accepted);
+  auto narration = fixture.request(3, SpeechPriority::event_narration,
+                                   "A public event is remembered.");
+  narration.source_kind = "vox_feature_narration";
+  narration.narration_rank = 80;
+  REQUIRE(fixture.speech->enqueue(narration).status ==
+          SpeechEnqueueStatus::accepted);
+  const auto synthesizing = fixture.speech->claim_next(
+      fixture.session_id, 350, uuid(359), "speech:claim:narration");
+  REQUIRE(synthesizing);
+  REQUIRE(synthesizing->priority == SpeechPriority::event_narration);
   REQUIRE(
       fixture.speech->enqueue(fixture.request(2, SpeechPriority::interactive))
           .status == SpeechEnqueueStatus::accepted);
   REQUIRE(fixture.speech->cancel_session(fixture.session_id, 400,
-                                         "reconnect_stale", false) == 1);
+                                         "reconnect_stale", false, true) == 2);
+  const auto cancelled_flavor = fixture.speech->find(uuid(101));
+  REQUIRE(cancelled_flavor);
+  CHECK(cancelled_flavor->state == SpeechState::cancelled);
   const auto retained = fixture.speech->claim_next(
       fixture.session_id, 401, uuid(360), "speech:claim:retained");
   REQUIRE(retained.has_value());
   REQUIRE(retained->priority == SpeechPriority::interactive);
+  const auto deferred = fixture.speech->claim_next(
+      fixture.session_id, 402, uuid(361), "speech:claim:deferred");
+  REQUIRE(deferred);
+  CHECK(deferred->priority == SpeechPriority::event_narration);
+  REQUIRE(deferred->text);
+  CHECK(*deferred->text == "A public event is remembered.");
 }
 
 TEST_CASE("a leaving session accepts only its bounded static farewell",
@@ -818,6 +977,607 @@ TEST_CASE("speech mute immediately stops active automatic playback",
   service.set_muted(fixture.session_id, true);
   REQUIRE(gateway.stop_audio_count() == 1);
   REQUIRE(service.health().repository.playing == 0);
+  service.stop();
+}
+
+TEST_CASE("quiet is rechecked at the final narration playback handoff",
+          "[speech][service][narration][quiet][concurrency]") {
+  sanguinius::test::FakeSpeechRepository repository;
+  sanguinius::test::FakeClock clock;
+  clock.set(std::chrono::sys_seconds{std::chrono::seconds{1}});
+  sanguinius::test::FakeVoiceGateway gateway;
+  gateway.start([](sanguinius::VoiceEvent) {});
+  REQUIRE(gateway.connect({.session_id = "session",
+                           .guild_id = 10,
+                           .channel_id = 40,
+                           .member_user_id = 31,
+                           .generation = 1,
+                           .validate_member_channel = true}) ==
+          sanguinius::VoiceGatewaySubmit::accepted);
+  gateway.emit(sanguinius::VoiceEventKind::ready);
+  sanguinius::test::FakeAudioNormalizer normalizer;
+  sanguinius::test::FakeTtsCache cache;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  auto clip = sanguinius::make_vox_proof_chime();
+  std::atomic<std::size_t> policy_checks{};
+  sanguinius::SpeechService service{
+      repository,
+      nullptr,
+      normalizer,
+      cache,
+      gateway,
+      clock,
+      ids,
+      diagnostics,
+      {.entrance = clip, .error = clip, .farewell = clip},
+      speech_configuration(false),
+      {},
+      [&policy_checks] { return ++policy_checks >= 3; }};
+  service.start();
+  service.session_ready("session", "10", false, false);
+  const auto normalized =
+      sanguinius::normalize_tts_text("A public event is remembered.");
+  const auto hash = sanguinius::sha256_hex(
+      std::as_bytes(std::span{normalized.text.data(), normalized.text.size()}));
+  REQUIRE(repository
+              .enqueue({.speech_id = uuid(450),
+                        .voice_session_id = "session",
+                        .source_event_id = uuid(451),
+                        .source_kind = "vox_feature_narration",
+                        .text = normalized,
+                        .text_hash = hash,
+                        .provider = "static",
+                        .model = "static-v1",
+                        .voice = "onyx",
+                        .priority = SpeechPriority::event_narration,
+                        .narration_rank = 60,
+                        .earliest_at_ms = 1'000,
+                        .expires_at_ms = 121'000,
+                        .interruptible = true,
+                        .deduplication_key = "speech:quiet-final-handoff",
+                        .created_at_ms = 1'000})
+              .status == SpeechEnqueueStatus::accepted);
+  service.wake();
+
+  bool cancelled{};
+  for (std::size_t attempt = 0; attempt < 200 && !cancelled; ++attempt) {
+    const auto items = repository.items();
+    cancelled =
+        items.size() == 1 && items.front().state == SpeechState::cancelled;
+    if (!cancelled)
+      std::this_thread::sleep_for(5ms);
+  }
+  REQUIRE(cancelled);
+  CHECK(policy_checks.load() >= 3);
+  CHECK(gateway.send_count() == 0);
+  service.stop();
+}
+
+TEST_CASE("intentional narration cancellation at readiness is silent",
+          "[speech][service][narration][supersession][concurrency]") {
+  sanguinius::test::FakeSpeechRepository repository;
+  sanguinius::test::FakeClock clock;
+  clock.set(std::chrono::sys_seconds{std::chrono::seconds{1}});
+  sanguinius::test::FakeVoiceGateway gateway;
+  gateway.start([](sanguinius::VoiceEvent) {});
+  REQUIRE(gateway.connect({.session_id = "session",
+                           .guild_id = 10,
+                           .channel_id = 40,
+                           .member_user_id = 31,
+                           .generation = 1,
+                           .validate_member_channel = true}) ==
+          sanguinius::VoiceGatewaySubmit::accepted);
+  gateway.emit(sanguinius::VoiceEventKind::ready);
+  BlockingFlavorTts client;
+  sanguinius::test::FakeAudioNormalizer normalizer;
+  sanguinius::test::FakeTtsCache cache;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  auto clip = sanguinius::make_vox_proof_chime();
+  std::atomic<std::size_t> policy_checks{};
+  std::atomic<std::size_t> notices{};
+  sanguinius::SpeechService service{
+      repository,
+      &client,
+      normalizer,
+      cache,
+      gateway,
+      clock,
+      ids,
+      diagnostics,
+      {.entrance = clip, .error = clip, .farewell = clip},
+      speech_configuration(true),
+      [&notices](std::string, std::string) { ++notices; },
+      [&repository, &policy_checks] {
+        const auto check = ++policy_checks;
+        if (check == 2)
+          static_cast<void>(repository.cancel_session(
+              "session", 1'001, "narration_superseded", true));
+        return false;
+      }};
+  service.start();
+  service.session_ready("session", "10", false, false);
+  const auto normalized =
+      sanguinius::normalize_tts_text("A lower-ranked public event yields.");
+  const auto hash = sanguinius::sha256_hex(
+      std::as_bytes(std::span{normalized.text.data(), normalized.text.size()}));
+  REQUIRE(repository
+              .enqueue({.speech_id = uuid(460),
+                        .voice_session_id = "session",
+                        .source_event_id = uuid(461),
+                        .source_kind = "vox_feature_narration",
+                        .text = normalized,
+                        .text_hash = hash,
+                        .provider = "openai",
+                        .model = "tts-1",
+                        .voice = "onyx",
+                        .priority = SpeechPriority::event_narration,
+                        .narration_rank = 40,
+                        .earliest_at_ms = 1'000,
+                        .expires_at_ms = 121'000,
+                        .interruptible = true,
+                        .deduplication_key = "speech:superseded-readiness",
+                        .created_at_ms = 1'000})
+              .status == SpeechEnqueueStatus::accepted);
+  service.wake();
+
+  REQUIRE(client.wait_for_calls(1, 2s));
+  bool cancelled{};
+  for (std::size_t attempt = 0; attempt < 200 && !cancelled; ++attempt) {
+    const auto items = repository.items();
+    cancelled =
+        items.size() == 1 && items.front().state == SpeechState::cancelled;
+    if (!cancelled)
+      std::this_thread::sleep_for(5ms);
+  }
+  REQUIRE(cancelled);
+  std::this_thread::sleep_for(50ms);
+  CHECK(policy_checks.load() >= 2);
+  CHECK(notices.load() == 0);
+  CHECK(gateway.send_count() == 0);
+  CHECK(repository.items().size() == 1);
+  service.stop();
+}
+
+TEST_CASE("intentional narration cancellation during TTS failure is silent",
+          "[speech][service][narration][supersession][concurrency]") {
+  sanguinius::test::FakeSpeechRepository repository;
+  sanguinius::test::FakeClock clock;
+  clock.set(std::chrono::sys_seconds{std::chrono::seconds{1}});
+  sanguinius::test::FakeVoiceGateway gateway;
+  gateway.start([](sanguinius::VoiceEvent) {});
+  REQUIRE(gateway.connect({.session_id = "session",
+                           .guild_id = 10,
+                           .channel_id = 40,
+                           .member_user_id = 31,
+                           .generation = 1,
+                           .validate_member_channel = true}) ==
+          sanguinius::VoiceGatewaySubmit::accepted);
+  gateway.emit(sanguinius::VoiceEventKind::ready);
+  BlockingFailureTts client;
+  sanguinius::test::FakeAudioNormalizer normalizer;
+  sanguinius::test::FakeTtsCache cache;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  auto clip = sanguinius::make_vox_proof_chime();
+  std::atomic<std::size_t> notices{};
+  sanguinius::SpeechService service{
+      repository,
+      &client,
+      normalizer,
+      cache,
+      gateway,
+      clock,
+      ids,
+      diagnostics,
+      {.entrance = clip, .error = clip, .farewell = clip},
+      speech_configuration(true),
+      [&notices](std::string, std::string) { ++notices; }};
+  service.start();
+  service.session_ready("session", "10", false, false);
+  const auto normalized =
+      sanguinius::normalize_tts_text("A lower-ranked public event yields.");
+  const auto hash = sanguinius::sha256_hex(
+      std::as_bytes(std::span{normalized.text.data(), normalized.text.size()}));
+  REQUIRE(repository
+              .enqueue({.speech_id = uuid(470),
+                        .voice_session_id = "session",
+                        .source_event_id = uuid(471),
+                        .source_kind = "vox_feature_narration",
+                        .text = normalized,
+                        .text_hash = hash,
+                        .provider = "openai",
+                        .model = "tts-1",
+                        .voice = "onyx",
+                        .priority = SpeechPriority::event_narration,
+                        .narration_rank = 40,
+                        .earliest_at_ms = 1'000,
+                        .expires_at_ms = 121'000,
+                        .interruptible = true,
+                        .deduplication_key = "speech:superseded-tts-failure",
+                        .created_at_ms = 1'000})
+              .status == SpeechEnqueueStatus::accepted);
+  service.wake();
+
+  REQUIRE(client.wait_for_call(2s));
+  REQUIRE(repository.cancel_session("session", 1'001, "narration_superseded",
+                                    true) == 1);
+  client.release();
+
+  bool handled{};
+  for (std::size_t attempt = 0; attempt < 200 && !handled; ++attempt) {
+    handled = service.health().last_failure_category == "transport";
+    if (!handled)
+      std::this_thread::sleep_for(5ms);
+  }
+  REQUIRE(handled);
+  std::this_thread::sleep_for(50ms);
+  CHECK(notices.load() == 0);
+  CHECK(gateway.send_count() == 0);
+  const auto items = repository.items();
+  REQUIRE(items.size() == 1);
+  CHECK(items.front().state == SpeechState::cancelled);
+  service.stop();
+}
+
+TEST_CASE("reconnect at the final narration handoff sends no audio",
+          "[speech][service][narration][reconnect][concurrency]") {
+  sanguinius::test::FakeSpeechRepository repository;
+  sanguinius::test::FakeClock clock;
+  clock.set(std::chrono::sys_seconds{std::chrono::seconds{1}});
+  sanguinius::test::FakeVoiceGateway gateway;
+  gateway.start([](sanguinius::VoiceEvent) {});
+  REQUIRE(gateway.connect({.session_id = "session",
+                           .guild_id = 10,
+                           .channel_id = 40,
+                           .member_user_id = 31,
+                           .generation = 1,
+                           .validate_member_channel = true}) ==
+          sanguinius::VoiceGatewaySubmit::accepted);
+  gateway.emit(sanguinius::VoiceEventKind::ready);
+  sanguinius::test::FakeAudioNormalizer normalizer;
+  sanguinius::test::FakeTtsCache cache;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  auto clip = sanguinius::make_vox_proof_chime();
+  std::atomic<std::size_t> policy_checks{};
+  sanguinius::SpeechService *service_ptr{};
+  sanguinius::SpeechService service{
+      repository,
+      nullptr,
+      normalizer,
+      cache,
+      gateway,
+      clock,
+      ids,
+      diagnostics,
+      {.entrance = clip, .error = clip, .farewell = clip},
+      speech_configuration(false),
+      {},
+      [&policy_checks, &service_ptr] {
+        const auto check = ++policy_checks;
+        if (check == 4)
+          service_ptr->session_reconnecting("session");
+        return false;
+      }};
+  service_ptr = &service;
+  service.start();
+  service.session_ready("session", "10", false, false);
+  const auto normalized =
+      sanguinius::normalize_tts_text("A public event waits through reconnect.");
+  const auto hash = sanguinius::sha256_hex(
+      std::as_bytes(std::span{normalized.text.data(), normalized.text.size()}));
+  REQUIRE(repository
+              .enqueue({.speech_id = uuid(470),
+                        .voice_session_id = "session",
+                        .source_event_id = uuid(471),
+                        .source_kind = "vox_feature_narration",
+                        .text = normalized,
+                        .text_hash = hash,
+                        .provider = "static",
+                        .model = "static-v1",
+                        .voice = "onyx",
+                        .priority = SpeechPriority::event_narration,
+                        .narration_rank = 60,
+                        .earliest_at_ms = 1'000,
+                        .expires_at_ms = 121'000,
+                        .interruptible = true,
+                        .deduplication_key = "speech:reconnect-final-handoff",
+                        .created_at_ms = 1'000})
+              .status == SpeechEnqueueStatus::accepted);
+  service.wake();
+
+  bool cancelled{};
+  for (std::size_t attempt = 0; attempt < 200 && !cancelled; ++attempt) {
+    const auto items = repository.items();
+    cancelled =
+        items.size() == 1 && items.front().state == SpeechState::cancelled;
+    if (!cancelled)
+      std::this_thread::sleep_for(5ms);
+  }
+  REQUIRE(cancelled);
+  CHECK(policy_checks.load() >= 4);
+  CHECK(gateway.send_count() == 0);
+  service.stop();
+}
+
+TEST_CASE(
+    "contextual flavor cannot block direct speech and its entrance expires",
+    "[speech][service][flavor][expiry][concurrency]") {
+  sanguinius::test::FakeSpeechRepository repository;
+  sanguinius::test::FakeClock clock;
+  clock.set(std::chrono::sys_seconds{std::chrono::seconds{1}});
+  sanguinius::test::FakeVoiceGateway gateway;
+  gateway.start([](sanguinius::VoiceEvent) {});
+  REQUIRE(gateway.connect({.session_id = "session",
+                           .guild_id = 10,
+                           .channel_id = 40,
+                           .member_user_id = 31,
+                           .generation = 1,
+                           .validate_member_channel = true}) ==
+          sanguinius::VoiceGatewaySubmit::accepted);
+  gateway.emit(sanguinius::VoiceEventKind::ready);
+  BlockingFlavorTts client;
+  sanguinius::test::FakeAudioNormalizer normalizer;
+  sanguinius::test::FakeTtsCache cache;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  auto clip = sanguinius::make_vox_proof_chime();
+  sanguinius::SpeechService service{
+      repository,
+      &client,
+      normalizer,
+      cache,
+      gateway,
+      clock,
+      ids,
+      diagnostics,
+      {.entrance = clip, .error = clip, .farewell = clip},
+      speech_configuration(true)};
+  service.start();
+  service.begin_session_flavor("session");
+  service.session_ready("session", "10", false, false);
+  clock.set(std::chrono::sys_seconds{std::chrono::seconds{10}});
+  service.prepare_session_flavor("session", "10", "Context entrance waits.",
+                                 "Context farewell waits.");
+  REQUIRE(client.wait_for_entrance(2s));
+  REQUIRE(client.entrance_timeout() <= 6s);
+  REQUIRE(service
+              .say("session", "10", "Direct speech proceeds.",
+                   "speech:direct:during-context", 1'000)
+              .status == SpeechEnqueueStatus::accepted);
+  REQUIRE(gateway.wait_for_sends(1, 2s));
+
+  clock.set(std::chrono::sys_seconds{std::chrono::seconds{20}});
+  client.release();
+  REQUIRE(client.wait_for_calls(3, 2s));
+  CHECK_FALSE(service.take_prepared_entrance("session"));
+  CHECK(gateway.send_count() == 1);
+  service.stop();
+}
+
+TEST_CASE("a prepared contextual farewell survives durable queue admission",
+          "[speech][service][flavor][farewell]") {
+  sanguinius::test::FakeSpeechRepository repository;
+  sanguinius::test::FakeClock clock;
+  clock.set(std::chrono::sys_seconds{std::chrono::seconds{1}});
+  sanguinius::test::FakeVoiceGateway gateway;
+  gateway.start([](sanguinius::VoiceEvent) {});
+  REQUIRE(gateway.connect({.session_id = "session",
+                           .guild_id = 10,
+                           .channel_id = 40,
+                           .member_user_id = 31,
+                           .generation = 1,
+                           .validate_member_channel = true}) ==
+          sanguinius::VoiceGatewaySubmit::accepted);
+  gateway.emit(sanguinius::VoiceEventKind::ready);
+  BlockingFlavorTts client;
+  sanguinius::test::FakeAudioNormalizer normalizer;
+  sanguinius::test::FakeTtsCache cache;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  auto static_clip = sanguinius::make_vox_proof_chime();
+  sanguinius::SpeechService service{
+      repository,
+      &client,
+      normalizer,
+      cache,
+      gateway,
+      clock,
+      ids,
+      diagnostics,
+      {.entrance = static_clip, .error = static_clip, .farewell = static_clip},
+      speech_configuration(true)};
+  service.start();
+  service.begin_session_flavor("session");
+  service.session_ready("session", "10", false, false);
+  service.prepare_session_flavor("session", "10", "Context entrance waits.",
+                                 "Context farewell waits.");
+  REQUIRE(client.wait_for_entrance(2s));
+  client.release();
+  REQUIRE(client.wait_for_calls(2, 2s));
+  bool cached{};
+  for (std::size_t attempt = 0; attempt < 200 && !cached; ++attempt) {
+    cached = cache.keys().size() >= 2;
+    if (!cached)
+      std::this_thread::sleep_for(5ms);
+  }
+  REQUIRE(cached);
+  std::this_thread::sleep_for(5ms);
+
+  REQUIRE(service.session_leaving("session", "10", true));
+  REQUIRE(gateway.wait_for_sends(1, 2s));
+  CHECK(gateway.audio().samples == std::vector<std::int16_t>{0, 0});
+  const auto items = repository.items();
+  REQUIRE(items.size() == 1);
+  CHECK(items.front().source_kind == "static_contextual_farewell");
+  service.stop();
+}
+
+TEST_CASE("mute cancellation cannot be recreated by late session flavor",
+          "[speech][service][flavor][mute][race]") {
+  sanguinius::test::FakeSpeechRepository repository;
+  sanguinius::test::FakeClock clock;
+  clock.set(std::chrono::sys_seconds{std::chrono::seconds{1}});
+  sanguinius::test::FakeVoiceGateway gateway;
+  gateway.start([](sanguinius::VoiceEvent) {});
+  REQUIRE(gateway.connect({.session_id = "session",
+                           .guild_id = 10,
+                           .channel_id = 40,
+                           .member_user_id = 31,
+                           .generation = 1,
+                           .validate_member_channel = true}) ==
+          sanguinius::VoiceGatewaySubmit::accepted);
+  gateway.emit(sanguinius::VoiceEventKind::ready);
+  BlockingFlavorTts client;
+  sanguinius::test::FakeAudioNormalizer normalizer;
+  sanguinius::test::FakeTtsCache cache;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  auto static_clip = sanguinius::make_vox_proof_chime();
+  sanguinius::SpeechService service{
+      repository,
+      &client,
+      normalizer,
+      cache,
+      gateway,
+      clock,
+      ids,
+      diagnostics,
+      {.entrance = static_clip, .error = static_clip, .farewell = static_clip},
+      speech_configuration(true)};
+  service.start();
+  service.begin_session_flavor("session");
+  service.session_ready("session", "10", false, true);
+  REQUIRE(gateway.wait_for_sends(1, 2s));
+
+  service.set_muted("session", true);
+  service.set_muted("session", false);
+  service.prepare_session_flavor("session", "10", "Context entrance waits.",
+                                 "Context farewell waits.");
+  CHECK(client.calls() == 0);
+  CHECK_FALSE(service.take_prepared_entrance("session"));
+
+  REQUIRE(service.session_leaving("session", "10", true));
+  REQUIRE(gateway.wait_for_sends(2, 2s));
+  CHECK(gateway.audio().samples == static_clip.samples);
+  CHECK(client.calls() == 0);
+  service.stop();
+}
+
+TEST_CASE("late session flavor does not spend a consumed entrance attempt",
+          "[speech][service][flavor][entrance][race]") {
+  sanguinius::test::FakeSpeechRepository repository;
+  sanguinius::test::FakeClock clock;
+  clock.set(std::chrono::sys_seconds{std::chrono::seconds{1}});
+  sanguinius::test::FakeVoiceGateway gateway;
+  gateway.start([](sanguinius::VoiceEvent) {});
+  REQUIRE(gateway.connect({.session_id = "session",
+                           .guild_id = 10,
+                           .channel_id = 40,
+                           .member_user_id = 31,
+                           .generation = 1,
+                           .validate_member_channel = true}) ==
+          sanguinius::VoiceGatewaySubmit::accepted);
+  gateway.emit(sanguinius::VoiceEventKind::ready);
+  BlockingFlavorTts client;
+  sanguinius::test::FakeAudioNormalizer normalizer;
+  sanguinius::test::FakeTtsCache cache;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  auto clip = sanguinius::make_vox_proof_chime();
+  sanguinius::SpeechService service{
+      repository,
+      &client,
+      normalizer,
+      cache,
+      gateway,
+      clock,
+      ids,
+      diagnostics,
+      {.entrance = clip, .error = clip, .farewell = clip},
+      speech_configuration(true)};
+  service.start();
+  service.begin_session_flavor("session");
+  CHECK_FALSE(service.take_prepared_entrance("session"));
+  service.session_ready("session", "10", false, false);
+  service.prepare_session_flavor("session", "10", "Context entrance waits.",
+                                 "Context farewell waits.");
+
+  REQUIRE(client.wait_for_calls(1, 2s));
+  CHECK_FALSE(client.wait_for_entrance(50ms));
+  CHECK(client.calls() == 1);
+  service.stop();
+}
+
+TEST_CASE("quiet at farewell playback replaces contextual audio with static",
+          "[speech][service][flavor][farewell][quiet][race]") {
+  sanguinius::test::FakeSpeechRepository repository;
+  sanguinius::test::FakeClock clock;
+  clock.set(std::chrono::sys_seconds{std::chrono::seconds{1}});
+  sanguinius::test::FakeVoiceGateway gateway;
+  gateway.start([](sanguinius::VoiceEvent) {});
+  REQUIRE(gateway.connect({.session_id = "session",
+                           .guild_id = 10,
+                           .channel_id = 40,
+                           .member_user_id = 31,
+                           .generation = 1,
+                           .validate_member_channel = true}) ==
+          sanguinius::VoiceGatewaySubmit::accepted);
+  gateway.emit(sanguinius::VoiceEventKind::ready);
+  BlockingFlavorTts client;
+  sanguinius::test::FakeAudioNormalizer normalizer;
+  sanguinius::test::FakeTtsCache cache;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  auto static_clip = sanguinius::make_vox_proof_chime();
+  std::atomic<bool> quiet{};
+  sanguinius::SpeechService service{
+      repository,
+      &client,
+      normalizer,
+      cache,
+      gateway,
+      clock,
+      ids,
+      diagnostics,
+      {.entrance = static_clip, .error = static_clip, .farewell = static_clip},
+      speech_configuration(true),
+      {},
+      [&quiet] { return quiet.load(); }};
+  service.start();
+  service.begin_session_flavor("session");
+  service.session_ready("session", "10", false, false);
+  service.prepare_session_flavor("session", "10", "Context entrance waits.",
+                                 "Context farewell waits.");
+  REQUIRE(client.wait_for_entrance(2s));
+  client.release();
+  REQUIRE(client.wait_for_calls(2, 2s));
+  bool cached{};
+  for (std::size_t attempt = 0; attempt < 200 && !cached; ++attempt) {
+    cached = cache.keys().size() >= 2;
+    if (!cached)
+      std::this_thread::sleep_for(5ms);
+  }
+  REQUIRE(cached);
+
+  quiet = true;
+  REQUIRE(service.session_leaving("session", "10", true));
+  REQUIRE(gateway.wait_for_sends(1, 2s));
+  CHECK(gateway.audio().samples == static_clip.samples);
+  const auto items = repository.items();
+  REQUIRE(items.size() == 2);
+  bool contextual_cancelled{};
+  bool static_sent{};
+  for (const auto &item : items) {
+    contextual_cancelled = contextual_cancelled ||
+                           (item.source_kind == "static_contextual_farewell" &&
+                            item.state == SpeechState::cancelled);
+    static_sent = static_sent || item.source_kind == "static_farewell";
+  }
+  CHECK(contextual_cancelled);
+  CHECK(static_sent);
   service.stop();
 }
 

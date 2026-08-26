@@ -42,7 +42,7 @@ public:
           sanguinius::persistence::production_migrations(),
           {"test", "revision"},
           clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 13);
+      REQUIRE(migrator.apply(database.connection()).current_version == 14);
     }
     context =
         std::make_shared<sanguinius::persistence::SqliteRepositoryContext>(
@@ -2260,8 +2260,7 @@ TEST_CASE(
               uuid(7'001) +
               "' AND sink_kind='appearance' AND sink_key='tarot_event'") ==
           public_handoff_id);
-  REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_vox_narration_intent") ==
-          1);
+  REQUIRE(fixture.scalar("SELECT count(*) FROM voice_narration_intent") == 0);
   REQUIRE(
       fixture.scalar("SELECT count(*) FROM appearance_event_observation WHERE "
                      "source_event_id='" +
@@ -2312,8 +2311,7 @@ TEST_CASE(
   static_cast<void>(restarted.scan(62'000, 32, fixture.ids(7'400)));
   REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_appearance_candidate") ==
           1);
-  REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_vox_narration_intent") ==
-          1);
+  REQUIRE(fixture.scalar("SELECT count(*) FROM voice_narration_intent") == 0);
 
   static_cast<void>(fixture.draws->draw(
       {.invocation = fixture.call("draw:integration:opted-out", 3'000, 31),
@@ -2328,12 +2326,11 @@ TEST_CASE(
   static_cast<void>(restarted.scan(63'000, 32, fixture.ids(7'600)));
   REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_appearance_candidate") ==
           1);
-  REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_vox_narration_intent") ==
-          1);
+  REQUIRE(fixture.scalar("SELECT count(*) FROM voice_narration_intent") == 0);
   REQUIRE(fixture.scalar(
               "SELECT count(*) FROM tarot_integration_effect_receipt WHERE "
               "source_event_id='" +
-              uuid(7'501) + "' AND sink_reference='consent_suppressed'") == 2);
+              uuid(7'501) + "' AND sink_reference='consent_suppressed'") == 1);
 
   appearances.activate_mode(sanguinius::AppearanceMode::dry_run, 63'500);
   const auto test_draw = fixture.draws->draw(
@@ -2600,11 +2597,10 @@ TEST_CASE("competing Tarot integration workers produce each effect once",
   REQUIRE(fixture.scalar(
               "SELECT count(*) FROM tarot_integration_effect_receipt WHERE "
               "source_event_id='" +
-              uuid(7'701) + "'") == 2);
+              uuid(7'701) + "'") == 1);
   REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_appearance_candidate") ==
           1);
-  REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_vox_narration_intent") ==
-          1);
+  REQUIRE(fixture.scalar("SELECT count(*) FROM voice_narration_intent") == 0);
 }
 
 TEST_CASE("disabled Chronicle blocks integration-owned relationship and title sinks",
@@ -2703,8 +2699,7 @@ TEST_CASE("disabled Chronicle blocks integration-owned relationship and title si
   REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_chronicle_proposal") == 0);
   REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_appearance_candidate") ==
           1);
-  REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_vox_narration_intent") ==
-          1);
+  REQUIRE(fixture.scalar("SELECT count(*) FROM voice_narration_intent") == 0);
 }
 
 TEST_CASE("Chronicle consent is independent from appearance callback consent",
@@ -2762,14 +2757,13 @@ TEST_CASE("Chronicle consent is independent from appearance callback consent",
   REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_chronicle_proposal") == 1);
   REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_appearance_candidate") ==
           0);
-  REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_vox_narration_intent") ==
-          0);
+  REQUIRE(fixture.scalar("SELECT count(*) FROM voice_narration_intent") == 0);
   REQUIRE(fixture.scalar(
               "SELECT count(*) FROM tarot_integration_effect_receipt WHERE "
               "source_event_id=(SELECT terminal_event_id FROM "
               "tarot_house_wager WHERE wager_id='" +
               play.wager->wager_id +
-              "') AND sink_reference='consent_suppressed'") == 2);
+              "') AND sink_reference='consent_suppressed'") == 1);
   REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_chronicle_proposal WHERE "
                          "source_event_id=(SELECT terminal_event_id FROM "
                          "tarot_house_wager WHERE wager_id='" +
@@ -2935,8 +2929,7 @@ TEST_CASE("House title threshold creates once-only approved-system proposals",
                          "reason_code='tarot.honored'") == 1);
   REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_appearance_candidate") ==
           1);
-  REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_vox_narration_intent") ==
-          1);
+  REQUIRE(fixture.scalar("SELECT count(*) FROM voice_narration_intent") == 0);
   const auto effects =
       fixture.scalar("SELECT count(*) FROM tarot_integration_effect_receipt");
   static_cast<void>(integration.scan(2'001, 32, fixture.ids(8'600)));

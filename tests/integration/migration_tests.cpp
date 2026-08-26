@@ -78,9 +78,18 @@ int deny_v12_transition_table(void *, const int action,
   return SQLITE_OK;
 }
 
+int deny_v14_narration_table(void *, const int action,
+                             const char *object_name, const char *,
+                             const char *, const char *) {
+  if (action == SQLITE_CREATE_TABLE && object_name != nullptr &&
+      std::string_view{object_name} == "voice_narration_intent")
+    return SQLITE_DENY;
+  return SQLITE_OK;
+}
+
 } // namespace
 
-TEST_CASE("production migration moves an empty database to version thirteen",
+TEST_CASE("production migration moves an empty database to version fourteen",
           "[migration]") {
   sanguinius::test::TemporaryDatabase temporary;
   sanguinius::test::FakeClock clock{
@@ -91,12 +100,12 @@ TEST_CASE("production migration moves an empty database to version thirteen",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::uninitialized);
   REQUIRE(before.current_version == 0);
-  REQUIRE(before.target_version == 13);
+  REQUIRE(before.target_version == 14);
 
   const auto applied = migrator.apply(database.connection());
   REQUIRE(applied.state == SchemaState::current);
-  REQUIRE(applied.current_version == 13);
-  REQUIRE(count(database.connection(), "schema_migrations") == 13);
+  REQUIRE(applied.current_version == 14);
+  REQUIRE(count(database.connection(), "schema_migrations") == 14);
   REQUIRE(count(database.connection(), "application_instance") == 0);
   REQUIRE(count(database.connection(), "guild_config") == 0);
   REQUIRE(count(database.connection(), "pending_notice") == 0);
@@ -145,6 +154,9 @@ TEST_CASE("production migration moves an empty database to version thirteen",
   REQUIRE(count(database.connection(), "tts_usage_attempt") == 0);
   REQUIRE(count(database.connection(), "tts_cache_entry") == 0);
   REQUIRE(count(database.connection(), "vox_voice_configuration") == 0);
+  REQUIRE(count(database.connection(), "voice_narration_cursor") == 1);
+  REQUIRE(count(database.connection(), "voice_narration_intent") == 0);
+  REQUIRE(count(database.connection(), "voice_narration_transition") == 0);
   auto relationship_indexes = database.connection().prepare(
       "SELECT count(*) FROM sqlite_schema WHERE type='index' AND name IN ("
       "'relationship_event_subject_time','relationship_event_source',"
@@ -228,12 +240,16 @@ TEST_CASE("production migration moves an empty database to version thirteen",
   REQUIRE(history.column_text(0) == "vox_tts");
   REQUIRE(history.column_text(1).size() == 64);
   REQUIRE(history.column_int64(2) == 123'000);
+  REQUIRE(history.step());
+  REQUIRE(history.column_text(0) == "vox_narration");
+  REQUIRE(history.column_text(1).size() == 64);
+  REQUIRE(history.column_int64(2) == 123'000);
   REQUIRE_FALSE(history.step());
 
   clock.set(std::chrono::sys_seconds{std::chrono::seconds{456}});
   const auto repeated = migrator.apply(database.connection());
   REQUIRE(repeated.state == SchemaState::current);
-  REQUIRE(count(database.connection(), "schema_migrations") == 13);
+  REQUIRE(count(database.connection(), "schema_migrations") == 14);
   auto unchanged = database.connection().prepare(
       "SELECT applied_at_ms FROM schema_migrations");
   REQUIRE(unchanged.step());
@@ -289,17 +305,17 @@ TEST_CASE("production migration upgrades version one atomically",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::pending);
   REQUIRE(before.current_version == 1);
-  REQUIRE(before.pending_count == 12);
+  REQUIRE(before.pending_count == 13);
 
   const auto applied = migrator.apply(database.connection());
   REQUIRE(applied.state == SchemaState::current);
-  REQUIRE(applied.current_version == 13);
+  REQUIRE(applied.current_version == 14);
   REQUIRE(count(database.connection(), "pending_notice") == 0);
   REQUIRE(count(database.connection(), "interaction_token") == 0);
   REQUIRE(count(database.connection(), "notice_reveal_attempt") == 0);
 }
 
-TEST_CASE("Vox TTS migration upgrades every accepted prior schema to version thirteen",
+TEST_CASE("Vox narration migration upgrades every accepted prior schema to version fourteen",
           "[migration][vox][upgrade-matrix]") {
   const auto production = sanguinius::persistence::production_migrations();
   for (std::size_t prior_version = 1; prior_version < production.size();
@@ -317,7 +333,7 @@ TEST_CASE("Vox TTS migration upgrades every accepted prior schema to version thi
       const auto upgraded =
           production_migrator(clock).apply(database.connection());
       REQUIRE(upgraded.state == SchemaState::current);
-      REQUIRE(upgraded.current_version == 13);
+      REQUIRE(upgraded.current_version == 14);
       auto foreign_keys =
           database.connection().prepare("PRAGMA foreign_key_check");
       REQUIRE_FALSE(foreign_keys.step());
@@ -341,8 +357,8 @@ TEST_CASE("production migration upgrades version two through Chronicle",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::pending);
   REQUIRE(before.current_version == 2);
-  REQUIRE(before.pending_count == 11);
-  REQUIRE(migrator.apply(database.connection()).current_version == 13);
+  REQUIRE(before.pending_count == 12);
+  REQUIRE(migrator.apply(database.connection()).current_version == 14);
   REQUIRE(count(database.connection(), "event_journal") == 0);
   REQUIRE(count(database.connection(), "scheduled_job") == 0);
   REQUIRE(count(database.connection(), "outbox_message") == 0);
@@ -364,8 +380,8 @@ TEST_CASE("version four imports existing Chronicle consent once",
       "INSERT INTO user_preference (user_id,updated_at_ms) VALUES ('42',1)");
 
   auto migrator = production_migrator(clock);
-  REQUIRE(migrator.inspect(database.connection()).pending_count == 10);
-  REQUIRE(migrator.apply(database.connection()).current_version == 13);
+  REQUIRE(migrator.inspect(database.connection()).pending_count == 11);
+  REQUIRE(migrator.apply(database.connection()).current_version == 14);
   auto imported = database.connection().prepare(
       "SELECT chronicle_opt_in,memory_callback_opt_in FROM user_preference "
       "WHERE user_id='42'");
@@ -404,8 +420,8 @@ TEST_CASE(
   auto migrator = production_migrator(clock);
   const auto pending = migrator.inspect(database.connection());
   REQUIRE(pending.current_version == 4);
-  REQUIRE(pending.pending_count == 9);
-  REQUIRE(migrator.apply(database.connection()).current_version == 13);
+  REQUIRE(pending.pending_count == 10);
+  REQUIRE(migrator.apply(database.connection()).current_version == 14);
   REQUIRE(count(database.connection(), "relationship_event") == 0);
   REQUIRE(count(database.connection(), "relationship_state") == 0);
   REQUIRE(count(database.connection(), "ai_prompt_attempt") == 0);
@@ -477,7 +493,7 @@ TEST_CASE("version six preserves populated Chronicle children and projections",
       "projection_version,updated_at_ms) VALUES ('31',4,3,2,1,0,4,10,1,10);");
 
   const auto applied = production_migrator(clock).apply(database.connection());
-  REQUIRE(applied.current_version == 13);
+  REQUIRE(applied.current_version == 14);
   REQUIRE(count(database.connection(), "chronicle_entry") == 1);
   REQUIRE(count(database.connection(), "chronicle_participant") == 1);
   REQUIRE(count(database.connection(), "chronicle_tag") == 1);
@@ -553,9 +569,9 @@ TEST_CASE("version nine upgrades an accepted version-six database atomically",
       "INSERT INTO user_preference(user_id,updated_at_ms) VALUES('30',1)");
   const auto before = production_migrator(clock).inspect(database.connection());
   REQUIRE(before.current_version == 6);
-  REQUIRE(before.pending_count == 7);
+  REQUIRE(before.pending_count == 8);
   const auto applied = production_migrator(clock).apply(database.connection());
-  REQUIRE(applied.current_version == 13);
+  REQUIRE(applied.current_version == 14);
   REQUIRE(count(database.connection(), "discord_user") == 1);
   REQUIRE(count(database.connection(), "appearance_candidate") == 0);
   auto guard = database.connection().prepare(
@@ -606,7 +622,7 @@ TEST_CASE("version eight preserves accepted dry-run audit rows",
 
   REQUIRE(
       production_migrator(clock).apply(database.connection()).current_version ==
-      13);
+      14);
   REQUIRE(count(database.connection(), "appearance_candidate") == 1);
   REQUIRE(count(database.connection(), "appearance_decision") == 1);
   REQUIRE(count(database.connection(), "appearance_preview") == 1);
@@ -644,10 +660,10 @@ TEST_CASE(
       "updated_at_ms) VALUES('30',0,1)");
   const auto before = production_migrator(clock).inspect(database.connection());
   REQUIRE(before.current_version == 8);
-  REQUIRE(before.pending_count == 5);
+  REQUIRE(before.pending_count == 6);
   REQUIRE(
       production_migrator(clock).apply(database.connection()).current_version ==
-      13);
+      14);
   REQUIRE(count(database.connection(), "tarot_account") == 0);
   REQUIRE(count(database.connection(), "tarot_transaction") == 0);
   auto preference =
@@ -729,7 +745,7 @@ TEST_CASE(
 
   REQUIRE(
       production_migrator(clock).apply(database.connection()).current_version ==
-      13);
+      14);
   REQUIRE(count(database.connection(), "tarot_transaction") == 1);
   REQUIRE(count(database.connection(), "tarot_posting") == 2);
   REQUIRE(count(database.connection(), "tarot_recovery_claim") == 1);
@@ -889,7 +905,7 @@ TEST_CASE(
   auto database = Database::open_migration(temporary.path(), 25ms);
   REQUIRE(
       production_migrator(clock).apply(database.connection()).current_version ==
-      13);
+      14);
   REQUIRE(count(database.connection(), "tarot_player_event") == 2);
   auto events = database.connection().prepare(
       "SELECT user_id,result,wager_kind,is_test,baseline FROM "
@@ -928,7 +944,12 @@ TEST_CASE(
   REQUIRE(count(database.connection(), "tarot_integration_observation") == 0);
   REQUIRE(count(database.connection(), "tarot_chronicle_proposal") == 0);
   REQUIRE(count(database.connection(), "tarot_appearance_candidate") == 0);
-  REQUIRE(count(database.connection(), "tarot_vox_narration_intent") == 0);
+  auto retired_vox_intents = database.connection().prepare(
+      "SELECT count(*) FROM sqlite_schema WHERE type='table' AND "
+      "name='tarot_vox_narration_intent'");
+  REQUIRE(retired_vox_intents.step());
+  REQUIRE(retired_vox_intents.column_int64(0) == 0);
+  REQUIRE(count(database.connection(), "voice_narration_intent") == 0);
   REQUIRE(count(database.connection(), "relationship_event") == 0);
 }
 
@@ -1011,6 +1032,94 @@ TEST_CASE("an injected version-twelve failure leaves version eleven intact",
   REQUIRE(vox_objects.column_int64(0) == 0);
   auto foreign_keys = database.connection().prepare("PRAGMA foreign_key_check");
   REQUIRE_FALSE(foreign_keys.step());
+}
+
+TEST_CASE("version fourteen terminalizes legacy Vox intents without replay",
+          "[migration][vox][narration][privacy]") {
+  sanguinius::test::TemporaryDatabase temporary;
+  sanguinius::test::FakeClock clock;
+  auto database = Database::open_migration(temporary.path(), 25ms);
+  const auto production = sanguinius::persistence::production_migrations();
+  const Migrator version_thirteen{
+      std::span<const Migration>{production.data(), 13},
+      {"test-version", "test-revision"}, clock};
+  REQUIRE(version_thirteen.apply(database.connection()).current_version == 13);
+  database.connection().execute_script(
+      "INSERT INTO discord_user VALUES('30','Owner','owner',0,1,1,1,1);"
+      "INSERT INTO guild_config(guild_id,primary_channel_id,owner_user_id,"
+      "created_at_ms,updated_at_ms) VALUES('10','20','30',1,1);"
+      "INSERT INTO event_journal(event_id,event_type,aggregate_type,"
+      "aggregate_id,actor_user_id,guild_id,channel_id,source_message_id,"
+      "occurred_at_ms,recorded_at_ms,correlation_id,causation_id,"
+      "idempotency_key,payload_json) VALUES("
+      "'00000000-0000-4000-8000-000000001401',"
+      "'tarot.wager_resolved.v1','tarot_wager',"
+      "'00000000-0000-4000-8000-000000001402','30','10','20',NULL,"
+      "100,100,'legacy-narration',NULL,'legacy-narration','{}');"
+      "INSERT INTO tarot_vox_narration_intent VALUES("
+      "'00000000-0000-4000-8000-000000001403',"
+      "'00000000-0000-4000-8000-000000001401','10','20',"
+      "'Preserved public-safe legacy text.',0,'pending',100,86400100);");
+
+  const auto applied = production_migrator(clock).apply(database.connection());
+  REQUIRE(applied.current_version == 14);
+  auto legacy = database.connection().prepare(
+      "SELECT slot,feature,safe_input,state,terminal_reason,speech_id FROM "
+      "voice_narration_intent WHERE intent_id="
+      "'00000000-0000-4000-8000-000000001403'");
+  REQUIRE(legacy.step());
+  REQUIRE(legacy.column_text(0) == "legacy");
+  REQUIRE(legacy.column_text(1) == "legacy");
+  REQUIRE(legacy.column_text(2) == "Preserved public-safe legacy text.");
+  REQUIRE(legacy.column_text(3) == "suppressed");
+  REQUIRE(legacy.column_text(4) == "pre_m16_not_replayed");
+  REQUIRE(legacy.column_is_null(5));
+  REQUIRE(count(database.connection(), "voice_narration_transition") == 1);
+  auto cursor = database.connection().prepare(
+      "SELECT last_event_rowid FROM voice_narration_cursor WHERE singleton=1");
+  REQUIRE(cursor.step());
+  REQUIRE(cursor.column_int64(0) == 1);
+  auto old_table = database.connection().prepare(
+      "SELECT count(*) FROM sqlite_schema WHERE type='table' AND "
+      "name='tarot_vox_narration_intent'");
+  REQUIRE(old_table.step());
+  REQUIRE(old_table.column_int64(0) == 0);
+}
+
+TEST_CASE("an injected version-fourteen failure leaves version thirteen intact",
+          "[migration][vox][narration][rollback]") {
+  sanguinius::test::TemporaryDatabase temporary;
+  sanguinius::test::FakeClock clock;
+  auto database = Database::open_migration(temporary.path(), 25ms);
+  const auto production = sanguinius::persistence::production_migrations();
+  const Migrator version_thirteen{
+      std::span<const Migration>{production.data(), 13},
+      {"test-version", "test-revision"}, clock};
+  REQUIRE(version_thirteen.apply(database.connection()).current_version == 13);
+
+  REQUIRE(sqlite3_set_authorizer(database.connection().native_handle(),
+                                 deny_v14_narration_table,
+                                 nullptr) == SQLITE_OK);
+  REQUIRE_THROWS_AS(production_migrator(clock).apply(database.connection()),
+                    DatabaseError);
+  REQUIRE(sqlite3_set_authorizer(database.connection().native_handle(), nullptr,
+                                 nullptr) == SQLITE_OK);
+
+  REQUIRE(version_thirteen.inspect(database.connection()).state ==
+          SchemaState::current);
+  REQUIRE(count(database.connection(), "schema_migrations") == 13);
+  auto v14_objects = database.connection().prepare(
+      "SELECT count(*) FROM sqlite_schema WHERE name IN "
+      "('voice_narration_cursor','voice_narration_intent',"
+      "'voice_narration_transition')");
+  REQUIRE(v14_objects.step());
+  REQUIRE(v14_objects.column_int64(0) == 0);
+  auto speech_rank = database.connection().prepare(
+      "SELECT count(*) FROM pragma_table_info('speech_item') WHERE "
+      "name='narration_rank'");
+  REQUIRE(speech_rank.step());
+  REQUIRE(speech_rank.column_int64(0) == 0);
+  REQUIRE(count(database.connection(), "tarot_vox_narration_intent") == 0);
 }
 
 TEST_CASE("a failed wager migration leaves accepted version nine intact",

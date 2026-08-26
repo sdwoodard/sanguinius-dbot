@@ -44,6 +44,7 @@ struct SpeechItem {
   std::string model;
   std::string voice;
   SpeechPriority priority{SpeechPriority::flavor};
+  std::uint8_t narration_rank{};
   SpeechState state{SpeechState::pending};
   std::size_t revision{1};
   std::int64_t earliest_at_ms{};
@@ -72,6 +73,7 @@ struct SpeechEnqueueRequest {
   std::string model{"tts-1"};
   std::string voice{"onyx"};
   SpeechPriority priority{SpeechPriority::interactive};
+  std::uint8_t narration_rank{};
   std::int64_t earliest_at_ms{};
   std::optional<std::int64_t> expires_at_ms;
   bool interruptible{};
@@ -197,7 +199,8 @@ public:
   find(std::string_view speech_id) = 0;
   [[nodiscard]] virtual std::size_t
   cancel_session(std::string_view voice_session_id, std::int64_t now_ms,
-                 std::string_view reason, bool include_interactive) = 0;
+                 std::string_view reason, bool include_interactive,
+                 bool preserve_event_narration = false) = 0;
   [[nodiscard]] virtual std::size_t
   recover(std::int64_t now_ms, std::string_view reason) = 0;
   virtual void ensure_purge_schedule(std::int64_t now_ms,

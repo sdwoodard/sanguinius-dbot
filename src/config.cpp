@@ -430,15 +430,28 @@ Config Config::from_source(const ConfigSource &source) {
   config.features.appearances_mode = appearance_mode(source);
   config.features.vox_enabled =
       optional_boolean(source, "SANGUINIUS_VOX_ENABLED", false);
+  config.features.vox_narration_enabled = optional_boolean(
+      source, "SANGUINIUS_VOX_NARRATION_ENABLED", false);
+  if (config.features.vox_narration_enabled &&
+      !config.features.vox_enabled) {
+    throw std::runtime_error{
+        "SANGUINIUS_VOX_NARRATION_ENABLED=true requires Vox output."};
+  }
   config.features.voice_input_enabled =
       optional_boolean(source, "SANGUINIUS_VOICE_INPUT_ENABLED", false);
   if (config.features.voice_input_enabled) {
     throw std::runtime_error{
-        "SANGUINIUS_VOICE_INPUT_ENABLED=true is unsupported; Milestone 15 "
-        "remains voice output only."};
+        "SANGUINIUS_VOICE_INPUT_ENABLED=true is unsupported; Vox remains "
+        "voice output only."};
   }
 
   config.tts.provider = tts_provider(source);
+  if (config.features.vox_narration_enabled &&
+      config.tts.provider != TtsProvider::openai) {
+    throw std::runtime_error{
+        "SANGUINIUS_VOX_NARRATION_ENABLED=true requires the OpenAI TTS "
+        "provider."};
+  }
   require_exact_tts_value(source, "SANGUINIUS_TTS_MODEL", "tts-1",
                           config.tts.model);
   require_exact_tts_value(source, "SANGUINIUS_TTS_VOICE", "onyx",
@@ -620,6 +633,8 @@ std::string redacted_config_summary(const Config &config,
          << "appearances="
          << appearance_mode_name(config.features.appearances_mode) << '\n'
          << "vox=" << enabled(config.features.vox_enabled) << '\n'
+         << "vox_narration="
+         << enabled(config.features.vox_narration_enabled) << '\n'
          << "tts_provider=" << tts_provider_name(config.tts.provider) << '\n'
          << "tts_model=tts-1\n"
          << "tts_voice=onyx\n"

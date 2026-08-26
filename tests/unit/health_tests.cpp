@@ -105,6 +105,16 @@ TEST_CASE("health snapshot renders build queues and configured modes",
                        .accepting = true},
              .last_failure_category = "transport_closed",
              .speech = std::nullopt}};
+       },
+       .vox_narration = [] {
+         return std::optional<sanguinius::VoxNarrationHealth>{
+             sanguinius::VoxNarrationHealth{
+                 .pending = 2,
+                 .generating = 1,
+                 .queued = 1,
+                 .session_feature_count = 2,
+                 .cursor_rowid = 90,
+                 .journal_head_rowid = 93}};
        }}};
 
   const auto snapshot = service.snapshot(
@@ -145,6 +155,7 @@ TEST_CASE("health snapshot renders build queues and configured modes",
   REQUIRE(contains(rendered, "admin_commands=enabled"));
   REQUIRE(contains(rendered, "test_mode=enabled"));
   REQUIRE(contains(rendered, "appearances=dry_run"));
+  REQUIRE(contains(rendered, "vox_narration_cursor_lag=3"));
   REQUIRE(contains(rendered, "voice_input=disabled"));
 
   const sanguinius::HealthService oversized_metadata{
@@ -162,7 +173,8 @@ TEST_CASE("health snapshot renders build queues and configured modes",
        .tarot = {},
        .wagers = {},
        .house = {},
-       .vox = {}}};
+       .vox = {},
+       .vox_narration = {}}};
   const auto bounded = sanguinius::render_health(oversized_metadata.snapshot(
       {.capacity = 64, .queued = 1, .active = 1, .accepting = true},
       {.capacity = 64, .accepting = true}, true));
@@ -192,7 +204,8 @@ TEST_CASE("health types cannot expose secret configuration", "[health]") {
        .tarot = {},
        .wagers = {},
        .house = {},
-       .vox = {}}};
+       .vox = {},
+       .vox_narration = {}}};
   const auto rendered = sanguinius::render_health(
       service.snapshot({.capacity = 1}, {.capacity = 1}, true));
 

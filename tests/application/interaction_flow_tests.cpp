@@ -91,7 +91,13 @@ admin_options(const std::size_t interaction_capacity = 64) {
   auto options = admin_options();
   options.features.vox_enabled = true;
   options.persistence.schema_version = 13;
-  options.persistence.target_schema_version = 13;
+  options.persistence.target_schema_version = 14;
+  return options;
+}
+
+[[nodiscard]] sanguinius::ApplicationOptions vox_narration_options() {
+  auto options = vox_options();
+  options.features.vox_narration_enabled = true;
   return options;
 }
 
@@ -185,7 +191,7 @@ TEST_CASE("Vox interactions connect play once reconnect and leave",
   sanguinius::test::ApplicationFixture fixture{vox_options()};
   fixture.application->start();
   REQUIRE(fixture.vox->recover_calls() == 1);
-  REQUIRE(fixture.discord->command_catalog().version == 12);
+  REQUIRE(fixture.discord->command_catalog().version == 13);
 
   auto summon = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   fixture.discord->emit(slash(summon, "vox", "summon", 900));
@@ -304,7 +310,7 @@ TEST_CASE("Tarot commands preserve private authority and public standings",
   sanguinius::test::ApplicationFixture fixture{tarot_options()};
   fixture.application->start();
   REQUIRE(fixture.tarot->initialize_calls == 1);
-  REQUIRE(fixture.discord->command_catalog().version == 12);
+  REQUIRE(fixture.discord->command_catalog().version == 13);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 3);
 
   auto balance = std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -493,6 +499,18 @@ TEST_CASE("Vox speech mute voice and simulated failure commands stay private",
   REQUIRE(contains(speech_test->edits()[0].content, "without a provider"));
   REQUIRE(fixture.vox->command_receipt_count() == 3);
 
+  auto stale =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto stale_request = slash(stale, "sang-admin", "speech-test", 914);
+  stale_request.subcommand_group_name = "vox";
+  stale_request.command_options = {
+      {"scenario", std::string{"narration-stale"}}};
+  fixture.discord->emit(std::move(stale_request));
+  REQUIRE(stale->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(stale->edits()[0].content, "narration-stale"));
+  REQUIRE(contains(stale->edits()[0].content, "without a provider"));
+  REQUIRE(fixture.vox->command_receipt_count() == 4);
+
   auto speech_test_replay =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto replay_request =
@@ -504,7 +522,7 @@ TEST_CASE("Vox speech mute voice and simulated failure commands stay private",
   REQUIRE(speech_test_replay->wait_for_edit_count(1, 2s));
   REQUIRE(
       contains(speech_test_replay->edits()[0].content, "without a provider"));
-  REQUIRE(fixture.vox->command_receipt_count() == 3);
+  REQUIRE(fixture.vox->command_receipt_count() == 4);
 
   auto altered_replay =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -516,8 +534,90 @@ TEST_CASE("Vox speech mute voice and simulated failure commands stay private",
   REQUIRE(altered_replay->wait_for_edit_count(1, 2s));
   REQUIRE_FALSE(
       contains(altered_replay->edits()[0].content, "without a provider"));
-  REQUIRE(fixture.vox->command_receipt_count() == 3);
+  REQUIRE(fixture.vox->command_receipt_count() == 4);
 
+  fixture.application->stop();
+}
+
+TEST_CASE("Vox narration owner controls are private and idempotent",
+          "[application][interaction][vox][narration][idempotency]") {
+  sanguinius::test::ApplicationFixture fixture{vox_narration_options()};
+  const std::string event_id{"00000000-0000-4000-8000-000000000950"};
+  fixture.vox_narration->set_candidate(
+      {.intent_id = {},
+       .revision = 0,
+       .source_event_id = event_id,
+       .event_type = "tarot.draw_created.v1",
+       .feature = sanguinius::VoxNarrationFeature::tarot,
+       .guild_id = "10",
+       .channel_id = "20",
+       .safe_input = "Public card: The Angel. Public theme: hope.",
+       .fallback_line = "The Angel turns toward hope.",
+       .rank = 70,
+       .created_at_ms = 0,
+       .expires_at_ms = 120'000,
+       .session_id = {},
+       .counterpart_outbox_id = std::nullopt,
+       .counterpart_required = true,
+       .is_test = true});
+  fixture.vox_narration->set_recent(
+      {{.intent_id = "00000000-0000-4000-8000-000000000951",
+        .event_type = "tarot.draw_created.v1",
+        .feature = "tarot",
+        .state = "suppressed",
+        .reason = "session_budget",
+        .created_at_ms = 1}});
+  fixture.application->start();
+
+  const auto narration_request =
+      [&](const auto &responder, const std::string_view command,
+          const sanguinius::DiscordId id, const std::string &reference) {
+        auto request = slash(responder, "sang-admin", command, id);
+        request.subcommand_group_name = "vox";
+        request.command_options = {{"reference", reference}};
+        fixture.discord->emit(std::move(request));
+      };
+
+  auto preview = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  narration_request(preview, "narration-preview", 920, event_id);
+  REQUIRE(preview->wait_for_edit_count(1, 2s));
+  REQUIRE(preview->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  CHECK(contains(preview->edits()[0].content, "feature tarot, rank 70"));
+  CHECK(fixture.vox_narration->receipt_count() == 1);
+
+  auto replay = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  narration_request(replay, "narration-preview", 920, event_id);
+  REQUIRE(replay->wait_for_edit_count(1, 2s));
+  CHECK(replay->edits()[0].content == preview->edits()[0].content);
+  CHECK(fixture.vox_narration->receipt_count() == 1);
+
+  auto altered = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  narration_request(altered, "narration-preview", 920,
+                    "00000000-0000-4000-8000-000000000999");
+  REQUIRE(altered->wait_for_edit_count(1, 2s));
+  CHECK(contains(altered->edits()[0].content, "could not complete"));
+  CHECK(fixture.vox_narration->receipt_count() == 1);
+
+  auto enqueue = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  narration_request(enqueue, "narration-enqueue", 921, event_id);
+  REQUIRE(enqueue->wait_for_edit_count(1, 2s));
+  CHECK(contains(enqueue->edits()[0].content, "all freshness"));
+  CHECK(fixture.vox_narration->receipt_count() == 2);
+  CHECK(fixture.vox_narration->enqueue_count() == 1);
+  REQUIRE(fixture.vox_narration->last_enqueue_reference());
+  CHECK(*fixture.vox_narration->last_enqueue_reference() == event_id);
+
+  auto recent = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto recent_request = slash(recent, "sang-admin", "narration-recent", 922);
+  recent_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(recent_request));
+  REQUIRE(recent->wait_for_edit_count(1, 2s));
+  CHECK(contains(recent->edits()[0].content, "tarot/suppressed"));
+  CHECK(contains(recent->edits()[0].content, "session_budget"));
+  CHECK_FALSE(
+      contains(recent->edits()[0].content, "The Angel turns toward hope"));
+  CHECK(fixture.discord->public_messages().empty());
   fixture.application->stop();
 }
 
@@ -723,7 +823,7 @@ TEST_CASE(
     "[application][interaction][chronicle]") {
   sanguinius::test::ApplicationFixture fixture{chronicle_options()};
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 12);
+  REQUIRE(fixture.discord->command_catalog().version == 13);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 4);
 
   auto remember =
@@ -1344,7 +1444,7 @@ TEST_CASE(
   sanguinius::test::ApplicationFixture fixture{options};
   fixture.clock->set(std::chrono::sys_seconds{std::chrono::seconds{1'000}});
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 12);
+  REQUIRE(fixture.discord->command_catalog().version == 13);
 
   auto quiet = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto quiet_request = slash(quiet, "sanguinius", "tonight", 520);

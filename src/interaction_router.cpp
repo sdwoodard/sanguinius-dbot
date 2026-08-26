@@ -59,6 +59,15 @@ slash_operation(const IncomingInteraction &interaction) {
     if (interaction.subcommand_group_name == "vox" &&
         interaction.subcommand_name == "speech-test")
       return InteractionOperation::vox_speech_test;
+    if (interaction.subcommand_group_name == "vox" &&
+        interaction.subcommand_name == "narration-preview")
+      return InteractionOperation::vox_narration_preview;
+    if (interaction.subcommand_group_name == "vox" &&
+        interaction.subcommand_name == "narration-enqueue")
+      return InteractionOperation::vox_narration_enqueue;
+    if (interaction.subcommand_group_name == "vox" &&
+        interaction.subcommand_name == "narration-recent")
+      return InteractionOperation::vox_narration_recent;
     if (interaction.subcommand_group_name == "tarot") {
       if (interaction.subcommand_name == "adjust")
         return InteractionOperation::tarot_adjust;
@@ -579,7 +588,10 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::vox_mute ||
       *operation == InteractionOperation::vox_voice ||
       *operation == InteractionOperation::vox_test_disconnect ||
-      *operation == InteractionOperation::vox_speech_test;
+      *operation == InteractionOperation::vox_speech_test ||
+      *operation == InteractionOperation::vox_narration_preview ||
+      *operation == InteractionOperation::vox_narration_enqueue ||
+      *operation == InteractionOperation::vox_narration_recent;
   if (vox_operation && !state_->features.vox_enabled) {
     reply_ephemeral(interaction, "Vox is currently unavailable.");
     return;
@@ -609,10 +621,14 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::tarot_integration_retry ||
       *operation == InteractionOperation::wager_test_role ||
       *operation == InteractionOperation::wager_test_deadline ||
-      *operation == InteractionOperation::wager_test_cleanup;
+      *operation == InteractionOperation::wager_test_cleanup ||
+      *operation == InteractionOperation::vox_narration_preview ||
+      *operation == InteractionOperation::vox_narration_enqueue ||
+      *operation == InteractionOperation::vox_narration_recent;
   const bool vox_test_operation =
       *operation == InteractionOperation::vox_test_disconnect ||
-      *operation == InteractionOperation::vox_speech_test;
+      *operation == InteractionOperation::vox_speech_test ||
+      *operation == InteractionOperation::vox_narration_enqueue;
   const bool appearance_safety_operation =
       *operation == InteractionOperation::appearance_disable ||
       *operation == InteractionOperation::appearance_enable;

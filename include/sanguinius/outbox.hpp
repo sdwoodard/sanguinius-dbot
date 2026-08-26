@@ -44,7 +44,8 @@ public:
                 ServerScopeConfiguration scope, std::string instance_id,
                 std::size_t queue_capacity = 32,
                 std::chrono::milliseconds receipt_wait_timeout =
-                    std::chrono::seconds{90});
+                    std::chrono::seconds{90},
+                std::function<void()> completion_observer = {});
   ~OutboxService();
 
   OutboxService(const OutboxService &) = delete;
@@ -79,6 +80,7 @@ private:
   OutboxHandlerRegistry handlers_;
   BoundedExecutor workers_;
   std::chrono::milliseconds receipt_wait_timeout_;
+  std::function<void()> completion_observer_;
   mutable std::mutex poll_mutex_;
   std::condition_variable poll_wakeup_;
   std::jthread poller_;

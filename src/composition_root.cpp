@@ -22,6 +22,7 @@
 #include "sanguinius/persistence/sqlite_tarot_repository.hpp"
 #include "sanguinius/persistence/sqlite_wager_repository.hpp"
 #include "sanguinius/persistence/sqlite_vox_repository.hpp"
+#include "sanguinius/persistence/sqlite_vox_narration_repository.hpp"
 #include "sanguinius/persistent_id.hpp"
 #include "sanguinius/random.hpp"
 #include "sanguinius/static_speech_assets.hpp"
@@ -195,6 +196,9 @@ std::unique_ptr<Application> make_application(const Config &config) {
       repository_context);
   auto speech = std::make_unique<persistence::SqliteSpeechRepository>(
       repository_context);
+  auto vox_narration =
+      std::make_unique<persistence::SqliteVoxNarrationRepository>(
+          repository_context, config.tts.usage_policy);
   std::optional<TarotDeckCatalog> deck_catalog;
   std::optional<TarotHouseCatalog> house_catalog;
   if (config.features.tarot_enabled) {
@@ -310,6 +314,7 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .tarot_integration = std::move(tarot_integration),
           .vox = std::move(vox),
           .speech = std::move(speech),
+          .vox_narration = std::move(vox_narration),
           .random = std::move(random),
           .appearance_policy = config.appearance_policy,
           .ai_client = std::move(ai_client),

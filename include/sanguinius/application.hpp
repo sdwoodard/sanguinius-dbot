@@ -25,6 +25,7 @@
 #include "sanguinius/tarot_integration.hpp"
 #include "sanguinius/wagers.hpp"
 #include "sanguinius/vox.hpp"
+#include "sanguinius/vox_narration.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -85,6 +86,7 @@ struct ApplicationDependencies {
   std::unique_ptr<TarotIntegrationRepository> tarot_integration;
   std::unique_ptr<VoxRepository> vox;
   std::unique_ptr<SpeechRepository> speech;
+  std::unique_ptr<VoxNarrationRepository> vox_narration;
   std::unique_ptr<Random> random;
   std::optional<AppearancePolicy> appearance_policy;
   std::unique_ptr<AiClient> ai_client;

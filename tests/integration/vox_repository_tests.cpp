@@ -41,7 +41,7 @@ struct VoxFixture {
         sanguinius::persistence::production_migrations(),
         {"test-version", "test-revision"},
         clock};
-    REQUIRE(migrator.apply(database.connection()).current_version == 13);
+    REQUIRE(migrator.apply(database.connection()).current_version == 14);
     context =
         std::make_shared<sanguinius::persistence::SqliteRepositoryContext>(
             std::move(database));
@@ -173,6 +173,16 @@ TEST_CASE("Vox repository atomically starts one session and replays receipts",
   REQUIRE(count(*fixture.context, "voice_interaction_receipt") == 1);
   REQUIRE(count(*fixture.context, "event_journal") == 1);
   REQUIRE(count(*fixture.context, "scheduled_job") == 1);
+  auto narration_floor = fixture.context->connection().prepare(
+      "SELECT narration_event_rowid_floor,(SELECT max(rowid) FROM "
+      "event_journal) FROM voice_session WHERE session_id=?");
+  narration_floor.bind(1, started.session->session_id);
+  REQUIRE(narration_floor.step());
+  REQUIRE(narration_floor.column_int64(0) == narration_floor.column_int64(1));
+  REQUIRE_THROWS(fixture.context->connection().execute(
+      "UPDATE voice_session SET narration_event_rowid_floor=0 WHERE "
+      "session_id='" +
+      started.session->session_id + "'"));
 
   const auto stale =
       fixture.repository->transition({.session_id = started.session->session_id,

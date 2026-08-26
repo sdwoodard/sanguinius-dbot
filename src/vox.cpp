@@ -252,14 +252,20 @@ public:
        PersistentIdGenerator &ids, Diagnostics &diagnostics,
        ServerScopeConfiguration scope, ControlConfiguration controls,
        std::string instance_id, Wake wake_scheduler, Wake wake_outbox,
-       const std::size_t queue_capacity, SpeechService *speech)
+       const std::size_t queue_capacity, SpeechService *speech,
+       const bool contextual_narration_enabled,
+       std::function<bool()> automatic_quiet,
+       PrepareSessionFlavor prepare_session_flavor)
       : repository_{repository}, gateway_{gateway}, clock_{clock}, ids_{ids},
         diagnostics_{diagnostics}, scope_{std::move(scope)},
         controls_{controls}, instance_id_{std::move(instance_id)},
         wake_scheduler_{std::move(wake_scheduler)},
         wake_outbox_{std::move(wake_outbox)}, worker_{queue_capacity, 1},
         callback_responder_{queue_capacity, 1},
-        resolution_capacity_{queue_capacity}, speech_{speech} {
+        resolution_capacity_{queue_capacity}, speech_{speech},
+        contextual_narration_enabled_{contextual_narration_enabled},
+        automatic_quiet_{std::move(automatic_quiet)},
+        prepare_session_flavor_{std::move(prepare_session_flavor)} {
     if (instance_id_.empty() || !wake_scheduler_ || !wake_outbox_)
       throw std::invalid_argument{"Vox service dependencies are incomplete."};
   }
@@ -498,10 +504,14 @@ public:
                 if (result.wake_scheduler)
                   wake_scheduler_();
                 if (result.code == VoxResultCode::accepted && result.session) {
+                  const bool allow_contextual =
+                      contextual_narration_enabled_ &&
+                      !automatic_speech_suppressed();
                   const auto farewell_queued =
                       speech_ &&
                       speech_->session_leaving(result.session->session_id,
-                                               result.session->guild_id.str());
+                                               result.session->guild_id.str(),
+                                               allow_contextual);
                   if (!farewell_queued)
                     teardown_transport(result.session->session_id, false);
                   result.session = fail_queued_fixture(*result.session,
@@ -802,7 +812,8 @@ public:
                 };
                 const bool valid_scenario = scenario == "queue" ||
                                             scenario == "provider-failure" ||
-                                            scenario == "budget-limit";
+                                            scenario == "budget-limit" ||
+                                            scenario == "narration-stale";
                 if (!in_scope(context) ||
                     context.actor_user_id != scope_.owner_user_id ||
                     !controls_.admin_commands_enabled || !controls_.test_mode ||
@@ -1132,6 +1143,13 @@ private:
     };
     auto result = repository_.start(request);
     if (result.code == VoxResultCode::accepted && result.session) {
+      if (contextual_narration_enabled_ && speech_ &&
+          prepare_session_flavor_ && !automatic_speech_suppressed()) {
+        speech_->begin_session_flavor(result.session->session_id);
+        prepare_session_flavor_(result.session->session_id,
+                                result.session->guild_id.str(),
+                                result.session->summoner_user_id.str());
+      }
       const auto wake_scheduler = result.wake_scheduler;
       const auto submit =
           gateway_.connect({.session_id = result.session->session_id,
@@ -1146,8 +1164,11 @@ private:
       result = repository_.finalize_summon(context, result.session->session_id,
                                            result.session->revision,
                                            gateway_accepted, ids_.next_id());
-      if (!gateway_accepted && result.session)
+      if (!gateway_accepted && result.session) {
+        if (speech_)
+          speech_->discard_session_flavor(result.session->session_id);
         gateway_.release_binding(result.session->session_id);
+      }
       result.wake_scheduler = result.wake_scheduler || wake_scheduler;
     }
     if (result.wake_scheduler)
@@ -1229,9 +1250,18 @@ private:
              .now_ms = current_time,
              .failure_category = std::nullopt});
         if (queued.code == VoxResultCode::accepted && queued.session) {
+          auto entrance = speech_ && contextual_narration_enabled_ &&
+                                  !automatic_speech_suppressed()
+                              ? speech_->take_prepared_entrance(
+                                    queued.session->session_id)
+                              : std::nullopt;
+          if (speech_ && !entrance)
+            static_cast<void>(
+                speech_->take_prepared_entrance(queued.session->session_id));
           if (gateway_.send_pcm(queued.session->session_id,
-                                speech_ ? speech_->entrance_clip()
-                                        : make_vox_proof_chime(),
+                                entrance ? *entrance
+                                : speech_ ? speech_->entrance_clip()
+                                          : make_vox_proof_chime(),
                                 marker) != VoiceGatewaySubmit::accepted) {
             pending_fixture_failure_ =
                 PendingFixtureFailure{.session_id = queued.session->session_id,
@@ -1492,6 +1522,17 @@ private:
     last_failure_category_ = std::string{category};
   }
 
+  [[nodiscard]] bool automatic_speech_suppressed() noexcept {
+    if (!automatic_quiet_)
+      return false;
+    try {
+      return automatic_quiet_();
+    } catch (...) {
+      record_failure("narration_quiet_check_failed");
+      return true;
+    }
+  }
+
   void update_occupancy(const VoxSession &session,
                         const std::size_t human_count,
                         const std::string_view correlation_id) {
@@ -1659,6 +1700,9 @@ private:
   std::string rejoin_dispatched_session_;
   std::optional<PendingFixtureFailure> pending_fixture_failure_;
   SpeechService *speech_{};
+  bool contextual_narration_enabled_{};
+  std::function<bool()> automatic_quiet_;
+  PrepareSessionFlavor prepare_session_flavor_;
 };
 
 VoxService::VoxService(VoxRepository &repository, VoiceGateway &gateway,
@@ -1666,11 +1710,16 @@ VoxService::VoxService(VoxRepository &repository, VoiceGateway &gateway,
                        Diagnostics &diagnostics, ServerScopeConfiguration scope,
                        ControlConfiguration controls, std::string instance_id,
                        Wake wake_scheduler, Wake wake_outbox,
-                       const std::size_t queue_capacity, SpeechService *speech)
+                       const std::size_t queue_capacity, SpeechService *speech,
+                       const bool contextual_narration_enabled,
+                       std::function<bool()> automatic_quiet,
+                       PrepareSessionFlavor prepare_session_flavor)
     : impl_{std::make_unique<Impl>(
           repository, gateway, clock, ids, diagnostics, std::move(scope),
           controls, std::move(instance_id), std::move(wake_scheduler),
-          std::move(wake_outbox), queue_capacity, speech)} {}
+          std::move(wake_outbox), queue_capacity, speech,
+          contextual_narration_enabled, std::move(automatic_quiet),
+          std::move(prepare_session_flavor))} {}
 
 VoxService::~VoxService() { stop(); }
 void VoxService::start() { impl_->start(); }

@@ -41,8 +41,8 @@ void bind_optional(SqliteStatement &statement, const std::size_t index,
              : std::optional<std::string>{query.column_text(column)};
 }
 
-[[nodiscard]] std::optional<std::int64_t> optional_integer(
-    SqliteStatement &query, const int column) {
+[[nodiscard]] std::optional<std::int64_t>
+optional_integer(SqliteStatement &query, const int column) {
   return query.column_is_null(column)
              ? std::nullopt
              : std::optional<std::int64_t>{query.column_int64(column)};
@@ -97,26 +97,28 @@ void bind_optional(SqliteStatement &statement, const std::size_t index,
           .model = query.column_text(8),
           .voice = query.column_text(9),
           .priority = priority_from(query.column_int64(10)),
-          .state = state_from(query.column_text(11)),
-          .revision = static_cast<std::size_t>(query.column_int64(12)),
-          .earliest_at_ms = query.column_int64(13),
-          .expires_at_ms = optional_integer(query, 14),
-          .interruptible = query.column_int64(15) != 0,
-          .deduplication_key = query.column_text(16),
-          .provider_request_id = optional_text(query, 17),
-          .cache_key = optional_text(query, 18),
-          .cache_checksum = optional_text(query, 19),
-          .marker = optional_text(query, 20),
-          .duration_ms = optional_integer(query, 21),
-          .attempt_count = static_cast<std::size_t>(query.column_int64(22)),
-          .created_at_ms = query.column_int64(23),
-          .terminal_at_ms = optional_integer(query, 24),
-          .last_error_code = optional_text(query, 25)};
+          .narration_rank = static_cast<std::uint8_t>(query.column_int64(11)),
+          .state = state_from(query.column_text(12)),
+          .revision = static_cast<std::size_t>(query.column_int64(13)),
+          .earliest_at_ms = query.column_int64(14),
+          .expires_at_ms = optional_integer(query, 15),
+          .interruptible = query.column_int64(16) != 0,
+          .deduplication_key = query.column_text(17),
+          .provider_request_id = optional_text(query, 18),
+          .cache_key = optional_text(query, 19),
+          .cache_checksum = optional_text(query, 20),
+          .marker = optional_text(query, 21),
+          .duration_ms = optional_integer(query, 22),
+          .attempt_count = static_cast<std::size_t>(query.column_int64(23)),
+          .created_at_ms = query.column_int64(24),
+          .terminal_at_ms = optional_integer(query, 25),
+          .last_error_code = optional_text(query, 26)};
 }
 
 constexpr std::string_view item_columns{
     "speech_id,voice_session_id,source_event_id,source_kind,text,text_hash,"
-    "scalar_count,provider,model,voice_id,priority,state,state_version,"
+    "scalar_count,provider,model,voice_id,priority,narration_rank,state,state_"
+    "version,"
     "earliest_at_ms,expires_at_ms,interruptible,deduplication_key,"
     "provider_request_id,cache_key,cache_checksum,marker,duration_ms,"
     "attempt_count,created_at_ms,terminal_at_ms,last_error_code"};
@@ -138,20 +140,20 @@ load_item(SqliteConnection &connection, const std::string_view speech_id) {
 [[nodiscard]] bool active_session(SqliteConnection &connection,
                                   const std::string_view session_id,
                                   const std::string_view source_kind) {
-  auto query = connection.prepare(
-      "SELECT state FROM voice_session WHERE session_id=?");
+  auto query =
+      connection.prepare("SELECT state FROM voice_session WHERE session_id=?");
   query.bind(1, session_id);
   if (!query.step())
     return false;
   const auto state = query.column_text(0);
   return state == "ready" || state == "muted" ||
-         (state == "leaving" && source_kind == "static_farewell");
+         (state == "leaving" && source_kind.ends_with("farewell"));
 }
 
 void validate_enqueue(const SpeechEnqueueRequest &request) {
   const auto normalized = normalize_tts_text(request.text.text);
-  const auto bytes = std::as_bytes(
-      std::span{normalized.text.data(), normalized.text.size()});
+  const auto bytes =
+      std::as_bytes(std::span{normalized.text.data(), normalized.text.size()});
   if (request.speech_id.empty() || request.voice_session_id.empty() ||
       request.source_kind.empty() || request.source_kind.size() > 64 ||
       request.text.text.empty() || request.text.scalar_count == 0 ||
@@ -165,7 +167,10 @@ void validate_enqueue(const SpeechEnqueueRequest &request) {
          request.voice == "onyx")) ||
       request.deduplication_key.empty() ||
       request.deduplication_key.size() > 160 || request.earliest_at_ms < 0 ||
-      request.created_at_ms < 0 || request.earliest_at_ms < request.created_at_ms ||
+      (request.priority == SpeechPriority::event_narration) !=
+          (request.narration_rank > 0) ||
+      request.narration_rank > 100 || request.created_at_ms < 0 ||
+      request.earliest_at_ms < request.created_at_ms ||
       (request.expires_at_ms &&
        *request.expires_at_ms <= request.earliest_at_ms))
     throw std::invalid_argument{"Speech enqueue request is invalid."};
@@ -204,9 +209,12 @@ void insert_transition(SqliteConnection &connection,
       "COALESCE(SUM(CASE WHEN submitted_at_ms>=? THEN estimated_micro_usd "
       "ELSE 0 END),0),"
       "COALESCE(SUM(CASE WHEN submitted_at_ms>? THEN 1 ELSE 0 END),0),"
-      "COALESCE(SUM(CASE WHEN submitted_at_ms>? AND state='succeeded' THEN 1 ELSE 0 END),0),"
-      "COALESCE(SUM(CASE WHEN submitted_at_ms>? AND state='failed' THEN 1 ELSE 0 END),0),"
-      "COALESCE(SUM(CASE WHEN submitted_at_ms>? AND state IN ('unknown','submitted') THEN 1 ELSE 0 END),0) "
+      "COALESCE(SUM(CASE WHEN submitted_at_ms>? AND state='succeeded' THEN 1 "
+      "ELSE 0 END),0),"
+      "COALESCE(SUM(CASE WHEN submitted_at_ms>? AND state='failed' THEN 1 ELSE "
+      "0 END),0),"
+      "COALESCE(SUM(CASE WHEN submitted_at_ms>? AND state IN "
+      "('unknown','submitted') THEN 1 ELSE 0 END),0) "
       "FROM tts_usage_attempt");
   const auto day_start = std::max<std::int64_t>(0, now_ms - rolling_day_ms);
   query.bind(1, day_start);
@@ -218,16 +226,13 @@ void insert_transition(SqliteConnection &connection,
   if (!query.step())
     throw DatabaseError{DatabaseErrorCategory::schema, SQLITE_SCHEMA,
                         SQLITE_SCHEMA, "Unable to summarize TTS usage."};
-  return {.rolling_day_micro_usd = query.column_int64(0),
-          .calendar_month_micro_usd = query.column_int64(1),
-          .rolling_day_attempts =
-              static_cast<std::size_t>(query.column_int64(2)),
-          .rolling_day_succeeded =
-              static_cast<std::size_t>(query.column_int64(3)),
-          .rolling_day_failed =
-              static_cast<std::size_t>(query.column_int64(4)),
-          .rolling_day_unknown =
-              static_cast<std::size_t>(query.column_int64(5))};
+  return {
+      .rolling_day_micro_usd = query.column_int64(0),
+      .calendar_month_micro_usd = query.column_int64(1),
+      .rolling_day_attempts = static_cast<std::size_t>(query.column_int64(2)),
+      .rolling_day_succeeded = static_cast<std::size_t>(query.column_int64(3)),
+      .rolling_day_failed = static_cast<std::size_t>(query.column_int64(4)),
+      .rolling_day_unknown = static_cast<std::size_t>(query.column_int64(5))};
 }
 
 [[nodiscard]] bool add_exceeds(const std::int64_t current,
@@ -252,9 +257,9 @@ SqliteSpeechRepository::enqueue(const SpeechEnqueueRequest &request) {
   auto &connection = context_->connection();
   Transaction transaction{connection, TransactionMode::immediate};
   {
-    auto replay = connection.prepare(
-        "SELECT " + std::string{item_columns} +
-        " FROM speech_item WHERE deduplication_key=?");
+    auto replay =
+        connection.prepare("SELECT " + std::string{item_columns} +
+                           " FROM speech_item WHERE deduplication_key=?");
     replay.bind(1, request.deduplication_key);
     if (replay.step()) {
       auto item = item_from(replay);
@@ -271,11 +276,12 @@ SqliteSpeechRepository::enqueue(const SpeechEnqueueRequest &request) {
             .item = std::nullopt,
             .evicted_speech_id = std::nullopt};
   }
-  const auto terminalize = [&connection, &request](const SpeechItem &item,
-                                                   const SpeechState target,
-                                                   const std::string_view reason) {
+  const auto terminalize = [&connection, &request](
+                               const SpeechItem &item, const SpeechState target,
+                               const std::string_view reason) {
     auto update = connection.prepare(
-        "UPDATE speech_item SET state=?,state_version=state_version+1,text=NULL,"
+        "UPDATE speech_item SET "
+        "state=?,state_version=state_version+1,text=NULL,"
         "terminal_at_ms=?,last_error_code=? WHERE speech_id=? AND "
         "state_version=?");
     update.bind(1, std::string{speech_state_name(target)});
@@ -288,9 +294,12 @@ SqliteSpeechRepository::enqueue(const SpeechEnqueueRequest &request) {
     update.execute();
     auto audit = connection.prepare(
         "INSERT INTO speech_item_transition(transition_id,speech_id,from_state,"
-        "to_state,from_version,to_version,reason,idempotency_key,occurred_at_ms) "
-        "VALUES(lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||"
-        "substr(lower(hex(randomblob(2))),2)||'-a'||substr(lower(hex(randomblob(2))),2)||'-'||"
+        "to_state,from_version,to_version,reason,idempotency_key,occurred_at_"
+        "ms) "
+        "VALUES(lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'"
+        "||"
+        "substr(lower(hex(randomblob(2))),2)||'-a'||substr(lower(hex("
+        "randomblob(2))),2)||'-'||"
         "lower(hex(randomblob(6))),?,?,?,?,?,?,?,?)");
     audit.bind(1, item.speech_id);
     audit.bind(2, std::string{speech_state_name(item.state)});
@@ -298,8 +307,8 @@ SqliteSpeechRepository::enqueue(const SpeechEnqueueRequest &request) {
     audit.bind(4, static_cast<std::int64_t>(item.revision));
     audit.bind(5, static_cast<std::int64_t>(item.revision + 1));
     audit.bind(6, std::string{reason});
-    audit.bind(7, "speech:" + std::string{reason} + ":" + item.speech_id +
-                      ":" + std::to_string(item.revision));
+    audit.bind(7, "speech:" + std::string{reason} + ":" + item.speech_id + ":" +
+                      std::to_string(item.revision));
     audit.bind(8, occurred_at_ms);
     audit.execute();
   };
@@ -354,9 +363,12 @@ SqliteSpeechRepository::enqueue(const SpeechEnqueueRequest &request) {
   }
   auto insert = connection.prepare(
       "INSERT INTO speech_item(speech_id,voice_session_id,source_event_id,"
-      "source_kind,text,text_hash,scalar_count,provider,model,voice_id,priority,"
-      "state,state_version,earliest_at_ms,expires_at_ms,interruptible,"
-      "deduplication_key,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending',"
+      "source_kind,text,text_hash,scalar_count,provider,model,voice_id,"
+      "priority,"
+      "narration_rank,state,state_version,earliest_at_ms,expires_at_ms,"
+      "interruptible,"
+      "deduplication_key,created_at_ms) "
+      "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'pending',"
       "1,?,?,?,?,?)");
   insert.bind(1, request.speech_id);
   insert.bind(2, request.voice_session_id);
@@ -369,11 +381,12 @@ SqliteSpeechRepository::enqueue(const SpeechEnqueueRequest &request) {
   insert.bind(9, request.model);
   insert.bind(10, request.voice);
   insert.bind(11, static_cast<std::int64_t>(request.priority));
-  insert.bind(12, request.earliest_at_ms);
-  bind_optional(insert, 13, request.expires_at_ms);
-  insert.bind(14, request.interruptible ? 1 : 0);
-  insert.bind(15, request.deduplication_key);
-  insert.bind(16, request.created_at_ms);
+  insert.bind(12, static_cast<std::int64_t>(request.narration_rank));
+  insert.bind(13, request.earliest_at_ms);
+  bind_optional(insert, 14, request.expires_at_ms);
+  insert.bind(15, request.interruptible ? 1 : 0);
+  insert.bind(16, request.deduplication_key);
+  insert.bind(17, request.created_at_ms);
   insert.execute();
   auto item = load_item(connection, request.speech_id);
   transaction.commit();
@@ -400,7 +413,8 @@ std::optional<SpeechItem> SqliteSpeechRepository::claim_next(
       items.push_back(item_from(expired));
     for (const auto &item : items) {
       auto update_expired = connection.prepare(
-          "UPDATE speech_item SET state='expired',state_version=state_version+1,"
+          "UPDATE speech_item SET "
+          "state='expired',state_version=state_version+1,"
           "text=NULL,terminal_at_ms=?,last_error_code='queue_expired' WHERE "
           "speech_id=? AND state_version=?");
       update_expired.bind(1, now_ms);
@@ -408,10 +422,14 @@ std::optional<SpeechItem> SqliteSpeechRepository::claim_next(
       update_expired.bind(3, static_cast<std::int64_t>(item.revision));
       update_expired.execute();
       auto audit = connection.prepare(
-          "INSERT INTO speech_item_transition(transition_id,speech_id,from_state,"
-          "to_state,from_version,to_version,reason,idempotency_key,occurred_at_ms) "
-          "VALUES(lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||"
-          "substr(lower(hex(randomblob(2))),2)||'-a'||substr(lower(hex(randomblob(2))),2)||'-'||"
+          "INSERT INTO "
+          "speech_item_transition(transition_id,speech_id,from_state,"
+          "to_state,from_version,to_version,reason,idempotency_key,occurred_at_"
+          "ms) "
+          "VALUES(lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-"
+          "4'||"
+          "substr(lower(hex(randomblob(2))),2)||'-a'||substr(lower(hex("
+          "randomblob(2))),2)||'-'||"
           "lower(hex(randomblob(6))),?,'pending','expired',?,?,"
           "'queue_expired',?,?)");
       audit.bind(1, item.speech_id);
@@ -427,7 +445,8 @@ std::optional<SpeechItem> SqliteSpeechRepository::claim_next(
       "SELECT " + std::string{item_columns} +
       " FROM speech_item WHERE voice_session_id=? AND state='pending' AND "
       "earliest_at_ms<=? AND (expires_at_ms IS NULL OR expires_at_ms>?) "
-      "ORDER BY priority DESC,earliest_at_ms,created_at_ms,speech_id LIMIT 1");
+      "ORDER BY priority DESC,narration_rank DESC,earliest_at_ms,created_at_ms,"
+      "speech_id LIMIT 1");
   query.bind(1, voice_session_id);
   query.bind(2, now_ms);
   query.bind(3, now_ms);
@@ -451,7 +470,8 @@ std::optional<SpeechItem> SqliteSpeechRepository::claim_next(
       .duration_ms = std::nullopt,
       .error_code = std::nullopt};
   auto update = connection.prepare(
-      "UPDATE speech_item SET state='synthesizing',state_version=state_version+1 "
+      "UPDATE speech_item SET "
+      "state='synthesizing',state_version=state_version+1 "
       "WHERE speech_id=? AND state='pending' AND state_version=?");
   update.bind(1, previous.speech_id);
   update.bind(2, static_cast<std::int64_t>(previous.revision));
@@ -505,18 +525,23 @@ SqliteSpeechRepository::transition(const SpeechTransitionRequest &request) {
   const auto terminal_at = terminal(request.target)
                                ? std::optional{effective_request.occurred_at_ms}
                                : std::nullopt;
+  const auto clear_text =
+      terminal(request.target) ||
+      (request.target == SpeechState::ready &&
+       previous->priority != SpeechPriority::event_narration);
   auto update = connection.prepare(
       "UPDATE speech_item SET state=?,state_version=state_version+1,"
-      "text=CASE WHEN ? THEN NULL ELSE text END,provider_request_id=COALESCE(?,provider_request_id),"
-      "cache_key=COALESCE(?,cache_key),cache_checksum=COALESCE(?,cache_checksum),"
+      "text=CASE WHEN ? THEN NULL ELSE text "
+      "END,provider_request_id=COALESCE(?,provider_request_id),"
+      "cache_key=COALESCE(?,cache_key),cache_checksum=COALESCE(?,cache_"
+      "checksum),"
       "marker=COALESCE(?,marker),duration_ms=COALESCE(?,duration_ms),"
-      "attempt_count=(SELECT COUNT(*) FROM tts_usage_attempt WHERE speech_id=?),"
-      "terminal_at_ms=?,last_error_code=? WHERE speech_id=? AND state_version=?");
+      "attempt_count=(SELECT COUNT(*) FROM tts_usage_attempt WHERE "
+      "speech_id=?),"
+      "terminal_at_ms=?,last_error_code=? WHERE speech_id=? AND "
+      "state_version=?");
   update.bind(1, std::string{speech_state_name(request.target)});
-  update.bind(2, request.target == SpeechState::ready ||
-                         terminal(request.target)
-                     ? 1
-                     : 0);
+  update.bind(2, clear_text ? 1 : 0);
   bind_optional(update, 3, request.provider_request_id);
   bind_optional(update, 4, request.cache_key);
   bind_optional(update, 5, request.cache_checksum);
@@ -543,7 +568,8 @@ SqliteSpeechRepository::find(const std::string_view speech_id) {
 
 std::size_t SqliteSpeechRepository::cancel_session(
     const std::string_view voice_session_id, const std::int64_t now_ms,
-    const std::string_view reason, const bool include_interactive) {
+    const std::string_view reason, const bool include_interactive,
+    const bool preserve_event_narration) {
   if (voice_session_id.empty() || now_ms < 0 || reason.empty() ||
       reason.size() > 64)
     throw std::invalid_argument{"Speech cancellation request is invalid."};
@@ -559,10 +585,46 @@ std::size_t SqliteSpeechRepository::cancel_session(
   std::vector<SpeechItem> items;
   while (query.step())
     items.push_back(item_from(query));
+  std::size_t changed{};
   for (const auto &item : items) {
     const auto occurred_at_ms = std::max(now_ms, item.created_at_ms);
+    if (preserve_event_narration &&
+        item.priority == SpeechPriority::event_narration &&
+        item.state != SpeechState::playing) {
+      if (item.state == SpeechState::pending)
+        continue;
+      auto defer = connection.prepare(
+          "UPDATE speech_item SET state='pending',"
+          "state_version=state_version+1 WHERE speech_id=? AND "
+          "state_version=?");
+      defer.bind(1, item.speech_id);
+      defer.bind(2, static_cast<std::int64_t>(item.revision));
+      defer.execute();
+      if (connection.changes() != 1)
+        continue;
+      auto audit = connection.prepare(
+          "INSERT INTO speech_item_transition(transition_id,speech_id,"
+          "from_state,to_state,from_version,to_version,reason,"
+          "idempotency_key,occurred_at_ms) VALUES("
+          "lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||"
+          "substr(lower(hex(randomblob(2))),2)||'-a'||"
+          "substr(lower(hex(randomblob(2))),2)||'-'||"
+          "lower(hex(randomblob(6))),?,?,'pending',?,?,"
+          "'reconnect_deferred',?,?)");
+      audit.bind(1, item.speech_id);
+      audit.bind(2, std::string{speech_state_name(item.state)});
+      audit.bind(3, static_cast<std::int64_t>(item.revision));
+      audit.bind(4, static_cast<std::int64_t>(item.revision + 1));
+      audit.bind(5, "speech:reconnect-deferred:" + item.speech_id + ":" +
+                        std::to_string(item.revision));
+      audit.bind(6, occurred_at_ms);
+      audit.execute();
+      ++changed;
+      continue;
+    }
     auto update = connection.prepare(
-        "UPDATE speech_item SET state='cancelled',state_version=state_version+1,"
+        "UPDATE speech_item SET "
+        "state='cancelled',state_version=state_version+1,"
         "text=NULL,terminal_at_ms=?,last_error_code=? WHERE speech_id=?");
     update.bind(1, occurred_at_ms);
     update.bind(2, std::string{reason});
@@ -570,9 +632,12 @@ std::size_t SqliteSpeechRepository::cancel_session(
     update.execute();
     auto insert = connection.prepare(
         "INSERT INTO speech_item_transition(transition_id,speech_id,from_state,"
-        "to_state,from_version,to_version,reason,idempotency_key,occurred_at_ms) "
-        "VALUES(lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||"
-        "substr(lower(hex(randomblob(2))),2)||'-a'||substr(lower(hex(randomblob(2))),2)||'-'||"
+        "to_state,from_version,to_version,reason,idempotency_key,occurred_at_"
+        "ms) "
+        "VALUES(lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'"
+        "||"
+        "substr(lower(hex(randomblob(2))),2)||'-a'||substr(lower(hex("
+        "randomblob(2))),2)||'-'||"
         "lower(hex(randomblob(6))),? ,?,'cancelled',?,?,?, ?,?)");
     insert.bind(1, item.speech_id);
     insert.bind(2, std::string{speech_state_name(item.state)});
@@ -583,9 +648,10 @@ std::size_t SqliteSpeechRepository::cancel_session(
                        std::to_string(item.revision));
     insert.bind(7, occurred_at_ms);
     insert.execute();
+    ++changed;
   }
   transaction.commit();
-  return items.size();
+  return changed;
 }
 
 std::size_t SqliteSpeechRepository::recover(const std::int64_t now_ms,
@@ -623,7 +689,8 @@ void SqliteSpeechRepository::ensure_purge_schedule(const std::int64_t now_ms,
     const auto state = existing.column_text(2);
     if (state == "dead" || state == "cancelled" || state == "completed") {
       auto rearm = connection.prepare(
-          "UPDATE scheduled_job SET state='pending',attempt_count=0,due_at_ms=?,"
+          "UPDATE scheduled_job SET "
+          "state='pending',attempt_count=0,due_at_ms=?,"
           "lease_owner=NULL,lease_token=NULL,lease_until_ms=NULL,"
           "last_error_code=NULL,completed_at_ms=NULL,terminal_at_ms=NULL,"
           "updated_at_ms=max(?,updated_at_ms) WHERE job_id=?");
@@ -645,13 +712,12 @@ void SqliteSpeechRepository::ensure_purge_schedule(const std::int64_t now_ms,
       .idempotency_key = "job:vox:tts-purge-hourly",
       .created_at_ms = now_ms,
   };
-  static_cast<void>(detail::insert_job_uncommitted(
-      connection, job, "{\"payload_version\":1}"));
+  static_cast<void>(detail::insert_job_uncommitted(connection, job,
+                                                   "{\"payload_version\":1}"));
   transaction.commit();
 }
 
-std::size_t
-SqliteSpeechRepository::purge_retained(const std::int64_t now_ms) {
+std::size_t SqliteSpeechRepository::purge_retained(const std::int64_t now_ms) {
   if (now_ms < 0)
     throw std::invalid_argument{"TTS retention time is invalid."};
   constexpr std::int64_t speech_retention_ms = 30LL * 24 * 60 * 60 * 1'000;
@@ -659,7 +725,8 @@ SqliteSpeechRepository::purge_retained(const std::int64_t now_ms) {
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::months{13})
           .count();
-  const auto speech_before = std::max<std::int64_t>(0, now_ms - speech_retention_ms);
+  const auto speech_before =
+      std::max<std::int64_t>(0, now_ms - speech_retention_ms);
   const auto usage_before = std::max<std::int64_t>(0, now_ms - usage_retention);
   const std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
@@ -671,7 +738,10 @@ SqliteSpeechRepository::purge_retained(const std::int64_t now_ms) {
   const auto removed_usage = static_cast<std::size_t>(connection.changes());
   auto speech = connection.prepare(
       "DELETE FROM speech_item WHERE terminal_at_ms IS NOT NULL AND "
-      "terminal_at_ms<?");
+      "terminal_at_ms<? AND NOT EXISTS(SELECT 1 FROM "
+      "voice_narration_intent narration WHERE "
+      "narration.speech_id=speech_item.speech_id AND narration.state IN "
+      "('pending','generating','prepared','queued'))");
   speech.bind(1, speech_before);
   speech.execute();
   const auto removed_speech = static_cast<std::size_t>(connection.changes());
@@ -683,7 +753,8 @@ TtsUsageReservationResult SqliteSpeechRepository::reserve_usage(
     const TtsUsageReservationRequest &request) {
   if (request.attempt_id.empty() || request.speech_id.empty() ||
       request.attempt_number < 1 || request.attempt_number > 2 ||
-      request.scalar_count < 1 || request.scalar_count > maximum_tts_scalar_count ||
+      request.scalar_count < 1 ||
+      request.scalar_count > maximum_tts_scalar_count ||
       request.estimated_micro_usd !=
           estimated_tts_cost_micro_usd(request.scalar_count) ||
       request.now_ms < 0 || request.calendar_month_start_ms < 0 ||
@@ -708,11 +779,9 @@ TtsUsageReservationResult SqliteSpeechRepository::reserve_usage(
                              request.calendar_month_start_ms);
   const bool allowed =
       usage.rolling_day_attempts < request.policy.rolling_day_attempts &&
-      !add_exceeds(usage.rolling_day_micro_usd,
-                   request.estimated_micro_usd,
+      !add_exceeds(usage.rolling_day_micro_usd, request.estimated_micro_usd,
                    request.policy.rolling_day_micro_usd) &&
-      !add_exceeds(usage.calendar_month_micro_usd,
-                   request.estimated_micro_usd,
+      !add_exceeds(usage.calendar_month_micro_usd, request.estimated_micro_usd,
                    request.policy.calendar_month_micro_usd);
   if (!allowed) {
     transaction.commit();
@@ -784,12 +853,14 @@ SqliteSpeechRepository::complete_usage(const TtsUsageCompletion &completion) {
   return SpeechMutationStatus::stale;
 }
 
-std::optional<TtsCacheMetadata> SqliteSpeechRepository::cache_metadata(
-    const std::string_view cache_key, const std::int64_t accessed_at_ms) {
+std::optional<TtsCacheMetadata>
+SqliteSpeechRepository::cache_metadata(const std::string_view cache_key,
+                                       const std::int64_t accessed_at_ms) {
   const std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
   auto query = connection.prepare(
-      "SELECT cache_key,checksum,byte_count,frame_count,provider,model,voice_id,"
+      "SELECT "
+      "cache_key,checksum,byte_count,frame_count,provider,model,voice_id,"
       "created_at_ms,last_access_at_ms FROM tts_cache_entry WHERE cache_key=?");
   query.bind(1, cache_key);
   if (!query.step())
@@ -861,7 +932,8 @@ std::string
 SqliteSpeechRepository::selected_voice(const std::string_view guild_id) {
   const std::scoped_lock lock{context_->mutex()};
   auto ensure = context_->connection().prepare(
-      "INSERT OR IGNORE INTO vox_voice_configuration(guild_id,voice_id,revision,"
+      "INSERT OR IGNORE INTO "
+      "vox_voice_configuration(guild_id,voice_id,revision,"
       "updated_at_ms) SELECT guild_id,'onyx',1,created_at_ms FROM guild_config "
       "WHERE guild_id=?");
   ensure.bind(1, guild_id);
@@ -885,7 +957,8 @@ SpeechMutationStatus SqliteSpeechRepository::select_voice(
   auto &connection = context_->connection();
   auto update = connection.prepare(
       "UPDATE vox_voice_configuration SET voice_id=?,revision=revision+1,"
-      "updated_by_user_id=?,updated_at_ms=max(updated_at_ms,?) WHERE guild_id=? "
+      "updated_by_user_id=?,updated_at_ms=max(updated_at_ms,?) WHERE "
+      "guild_id=? "
       "AND voice_id<>?");
   update.bind(1, voice);
   update.bind(2, actor_user_id);
@@ -904,8 +977,9 @@ SpeechMutationStatus SqliteSpeechRepository::select_voice(
                                        : SpeechMutationStatus::invalid_state;
 }
 
-SpeechRepositoryHealth SqliteSpeechRepository::health(
-    const std::int64_t now_ms, const std::int64_t calendar_month_start_ms) {
+SpeechRepositoryHealth
+SqliteSpeechRepository::health(const std::int64_t now_ms,
+                               const std::int64_t calendar_month_start_ms) {
   const std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
   auto queue = connection.prepare(

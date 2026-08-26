@@ -18,6 +18,7 @@
 #include "sanguinius/tarot_integration.hpp"
 #include "sanguinius/wagers.hpp"
 #include "sanguinius/vox.hpp"
+#include "sanguinius/vox_narration.hpp"
 #include "sanguinius/work_queue.hpp"
 
 #include <cstddef>
@@ -120,6 +121,9 @@ enum class InteractionOperation {
   vox_voice,
   vox_test_disconnect,
   vox_speech_test,
+  vox_narration_preview,
+  vox_narration_enqueue,
+  vox_narration_recent,
 };
 
 struct RoutedInteraction {
@@ -143,7 +147,8 @@ public:
       TarotDrawService *tarot_draws = nullptr,
       TarotHouseService *tarot_house = nullptr,
       TarotIntegrationService *tarot_integration = nullptr,
-      VoxService *vox = nullptr);
+      VoxService *vox = nullptr,
+      VoxNarrationService *vox_narration = nullptr);
   ~InteractionHandler();
 
   InteractionHandler(const InteractionHandler &) = delete;
@@ -177,6 +182,7 @@ private:
   TarotHouseService *tarot_house_{};
   TarotIntegrationService *tarot_integration_{};
   VoxService *vox_{};
+  VoxNarrationService *vox_narration_{};
   HealthService &health_service_;
   Diagnostics &diagnostics_;
   FeatureConfiguration features_;

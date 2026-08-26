@@ -1530,7 +1530,9 @@ SqliteWagerRepository::preview(const WagerPreviewRequest &request) {
 namespace {
 
 void enqueue_card_edit(SqliteConnection &connection, const WagerIdFactory &ids,
-                       const WagerInvocation &call, const WagerRecord &wager) {
+                       const WagerInvocation &call, const WagerRecord &wager,
+                       const std::optional<std::string>
+                           causation_event_id = std::nullopt) {
   auto source =
       connection.prepare("SELECT create_outbox_id FROM tarot_wager_public_card "
                          "WHERE wager_id = ?");
@@ -1569,7 +1571,7 @@ void enqueue_card_edit(SqliteConnection &connection, const WagerIdFactory &ids,
           PublicEditOutboxPayload{.replacement = std::move(replacement),
                                   .source_outbox_id = source.column_text(0),
                                   .wager_revision = wager.revision},
-          call.correlation_id, std::nullopt)));
+          call.correlation_id, causation_event_id)));
   auto link = connection.prepare(
       "INSERT INTO tarot_wager_card_revision "
       "(wager_id, wager_revision, outbox_id) VALUES (?, ?, ?)");
@@ -1630,7 +1632,8 @@ rejected_action(SqliteConnection &connection, const WagerActionRequest &request,
              request.invocation.now_ms);
   cancel_job(connection, wager.wager_id, "offer_expiry",
              request.invocation.now_ms);
-  enqueue_card_edit(connection, request.next_id, request.invocation, wager);
+  enqueue_card_edit(connection, request.next_id, request.invocation, wager,
+                    event_id);
   insert_receipt(connection, request.invocation, wager.wager_id, "action", fp,
                  WagerMutationStatus::applied);
   return {.status = WagerMutationStatus::applied,
@@ -1767,7 +1770,8 @@ rejected_action(SqliteConnection &connection, const WagerActionRequest &request,
                  wager.target_user_id, WagerRole::target, grace,
                  response_controls, "Add private evidence",
                  wager_evidence_prefix);
-  enqueue_card_edit(connection, request.next_id, request.invocation, wager);
+  enqueue_card_edit(connection, request.next_id, request.invocation, wager,
+                    event_id);
   insert_receipt(connection, request.invocation, wager.wager_id, "action", fp,
                  WagerMutationStatus::applied);
   return {.status = WagerMutationStatus::applied,
@@ -1909,7 +1913,7 @@ settle_wager(SqliteConnection &connection, const WagerIdFactory &ids,
   cancel_job(connection, wager.wager_id, "outcome_due", call.now_ms);
   cancel_job(connection, wager.wager_id, "grace", call.now_ms);
   cancel_resolution_reminders(connection, wager.wager_id, call.now_ms);
-  enqueue_card_edit(connection, ids, call, wager);
+  enqueue_card_edit(connection, ids, call, wager, event_id);
   insert_receipt(connection, call, wager.wager_id, receipt_operation,
                  receipt_fingerprint, WagerMutationStatus::applied);
   return {.status = WagerMutationStatus::applied,

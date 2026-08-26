@@ -235,6 +235,8 @@ class VoxService {
 public:
   using Completion = std::function<void(VoxCommandResult)>;
   using Wake = std::function<void()>;
+  using PrepareSessionFlavor =
+      std::function<void(std::string, std::string, std::string)>;
 
   VoxService(VoxRepository &repository, VoiceGateway &gateway,
              const Clock &clock, PersistentIdGenerator &ids,
@@ -242,7 +244,10 @@ public:
              ControlConfiguration controls, std::string instance_id,
              Wake wake_scheduler, Wake wake_outbox,
              std::size_t queue_capacity = vox_worker_capacity,
-             SpeechService *speech = nullptr);
+             SpeechService *speech = nullptr,
+             bool contextual_narration_enabled = false,
+             std::function<bool()> automatic_quiet = {},
+             PrepareSessionFlavor prepare_session_flavor = {});
   ~VoxService();
 
   VoxService(const VoxService &) = delete;

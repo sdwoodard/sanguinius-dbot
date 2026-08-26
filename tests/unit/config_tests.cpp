@@ -148,6 +148,7 @@ TEST_CASE("typed configuration loads safe defaults and full snowflakes",
   REQUIRE(config.wager_policy.resolution_grace_hours == 48);
   REQUIRE(config.features.appearances_mode == sanguinius::AppearanceMode::off);
   REQUIRE_FALSE(config.features.vox_enabled);
+  REQUIRE_FALSE(config.features.vox_narration_enabled);
   REQUIRE_FALSE(config.features.voice_input_enabled);
   REQUIRE(source.read_paths ==
           std::vector<std::filesystem::path>{
@@ -271,6 +272,8 @@ TEST_CASE("typed configuration parses strict controls features and duration",
   source.values["SANGUINIUS_TAROT_ENABLED"] = "false";
   source.values["SANGUINIUS_APPEARANCES_MODE"] = "dry_run";
   source.values["SANGUINIUS_VOX_ENABLED"] = "true";
+  source.values["SANGUINIUS_VOX_NARRATION_ENABLED"] = "true";
+  source.values["SANGUINIUS_TTS_PROVIDER"] = "openai";
   source.values["SANGUINIUS_VOICE_INPUT_ENABLED"] = "false";
   source.values["SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS"] = "300";
   source.values["SANGUINIUS_DATABASE_FILE"] = "DATABASE_PATH_SENTINEL";
@@ -292,6 +295,7 @@ TEST_CASE("typed configuration parses strict controls features and duration",
   REQUIRE(config.features.appearances_mode ==
           sanguinius::AppearanceMode::dry_run);
   REQUIRE(config.features.vox_enabled);
+  REQUIRE(config.features.vox_narration_enabled);
   REQUIRE_FALSE(config.features.voice_input_enabled);
   REQUIRE(config.discord.request_timeout == std::chrono::seconds{300});
   REQUIRE(config.paths.database_file == "DATABASE_PATH_SENTINEL");
@@ -348,6 +352,7 @@ TEST_CASE("configuration rejects noncanonical booleans and durations",
       "SANGUINIUS_CHRONICLE_ENABLED",
       "SANGUINIUS_TAROT_ENABLED",
       "SANGUINIUS_VOX_ENABLED",
+      "SANGUINIUS_VOX_NARRATION_ENABLED",
       "SANGUINIUS_VOICE_INPUT_ENABLED",
   };
   for (const auto variable : boolean_variables) {
@@ -382,6 +387,24 @@ TEST_CASE("configuration rejects noncanonical booleans and durations",
     REQUIRE(contains(error, variable));
     REQUIRE(contains(error, "must not be empty"));
   }
+}
+
+TEST_CASE("Vox narration requires voice output", "[config][vox][narration]") {
+  FakeConfigSource source;
+  source.values["SANGUINIUS_VOX_NARRATION_ENABLED"] = "true";
+  const auto error = config_error(source);
+  REQUIRE(contains(error, "SANGUINIUS_VOX_NARRATION_ENABLED"));
+  REQUIRE(contains(error, "requires Vox output"));
+}
+
+TEST_CASE("Vox narration requires generated TTS",
+          "[config][vox][narration][tts]") {
+  FakeConfigSource source;
+  source.values["SANGUINIUS_VOX_ENABLED"] = "true";
+  source.values["SANGUINIUS_VOX_NARRATION_ENABLED"] = "true";
+  const auto error = config_error(source);
+  REQUIRE(contains(error, "SANGUINIUS_VOX_NARRATION_ENABLED"));
+  REQUIRE(contains(error, "OpenAI TTS provider"));
 }
 
 TEST_CASE("configuration rejects voice input until receive is implemented",

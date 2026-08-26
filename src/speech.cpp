@@ -45,11 +45,13 @@ bool speech_transition_allowed(const SpeechState from,
     return to == SpeechState::synthesizing || to == SpeechState::cancelled ||
            to == SpeechState::expired;
   case SpeechState::synthesizing:
-    return to == SpeechState::ready || to == SpeechState::failed ||
+    return to == SpeechState::pending || to == SpeechState::ready ||
+           to == SpeechState::failed ||
            to == SpeechState::cancelled || to == SpeechState::expired;
   case SpeechState::ready:
-    return to == SpeechState::playing || to == SpeechState::cancelled ||
-           to == SpeechState::expired || to == SpeechState::failed;
+    return to == SpeechState::pending || to == SpeechState::playing ||
+           to == SpeechState::cancelled || to == SpeechState::expired ||
+           to == SpeechState::failed;
   case SpeechState::playing:
     return to == SpeechState::played || to == SpeechState::failed ||
            to == SpeechState::cancelled;

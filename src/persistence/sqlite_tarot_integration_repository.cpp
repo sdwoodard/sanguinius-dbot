@@ -165,39 +165,6 @@ void create_appearance(
          candidate_id, now_ms);
 }
 
-void create_vox_intent(SqliteConnection &connection,
-                       const Observation &observation,
-                       const std::vector<std::string> &participants,
-                       const std::string_view guild,
-                       const std::string_view channel,
-                       const std::string_view text, const std::int64_t now_ms,
-                       const std::function<std::string()> &ids) {
-  if (effect_exists(connection, observation.event_id, "vox_intent", "public"))
-    return;
-  if (!all_callback_consented(connection, participants)) {
-    effect(connection, observation.event_id, "vox_intent", "public",
-           std::optional<std::string_view>{"consent_suppressed"}, now_ms);
-    return;
-  }
-  const auto intent_id = next_id(ids);
-  auto insert = connection.prepare(
-      "INSERT INTO "
-      "tarot_vox_narration_intent(intent_id,source_event_id,guild_id,"
-      "channel_id,public_safe_text,is_test,state,created_at_ms,expires_at_ms) "
-      "VALUES(?,?,?,?,?,?,'pending',?,?)");
-  insert.bind(1, intent_id);
-  insert.bind(2, observation.event_id);
-  insert.bind(3, guild);
-  insert.bind(4, channel);
-  insert.bind(5, text);
-  insert.bind(6, observation.is_test ? 1LL : 0LL);
-  insert.bind(7, now_ms);
-  insert.bind(8, now_ms + 86'400'000);
-  insert.execute();
-  effect(connection, observation.event_id, "vox_intent", "public", intent_id,
-         now_ms);
-}
-
 void create_chronicle(SqliteConnection &connection,
                       const Observation &observation,
                       const std::vector<std::string> &participants,
@@ -684,8 +651,6 @@ void process_draw(SqliteConnection &connection, const Observation &observation,
   create_appearance(connection, observation, {actor}, guild, channel,
                     "A public Emperor's Tarot draw revealed " + card + ".",
                     now_ms, ids);
-  create_vox_intent(connection, observation, {actor}, guild, channel,
-                    "The Emperor's Tarot reveals " + card + ".", now_ms, ids);
 }
 
 void require_prior_player_observations_complete(
@@ -759,8 +724,6 @@ void process_house(SqliteConnection &connection, const Observation &observation,
                          ", settled as a " + result + ".";
     create_appearance(connection, observation, {actor}, guild, channel, summary,
                       now_ms, ids);
-    create_vox_intent(connection, observation, {actor}, guild, channel, summary,
-                      now_ms, ids);
     if (template_slug == "last-standard")
       create_chronicle(connection, observation, {actor}, actor,
                        "The Last Standard", summary, chronicle_enabled, now_ms,
@@ -825,10 +788,6 @@ void process_peer(SqliteConnection &connection, const Observation &observation,
     create_appearance(connection, observation, {creator, target},
                       query.column_text(2), query.column_text(3),
                       "A public peer Fate wager reached settlement.", now_ms,
-                      ids);
-    create_vox_intent(connection, observation, {creator, target},
-                      query.column_text(2), query.column_text(3),
-                      "A public wager has reached its appointed end.", now_ms,
                       ids);
     if (disputed)
       create_chronicle(connection, observation, {creator, target}, creator,

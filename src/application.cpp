@@ -78,6 +78,7 @@ public:
             std::move(dependencies.tarot_integration)},
         vox_repository_{std::move(dependencies.vox)},
         speech_repository_{std::move(dependencies.speech)},
+        vox_narration_repository_{std::move(dependencies.vox_narration)},
         random_{std::move(dependencies.random)},
         appearance_policy_{std::move(dependencies.appearance_policy)},
         ai_client_{std::move(dependencies.ai_client)},
@@ -99,6 +100,11 @@ public:
       throw std::invalid_argument{
           "Vox persistence and the voice gateway are required when enabled."};
     }
+    if (options_.features.vox_narration_enabled &&
+        (!options_.features.vox_enabled || !vox_narration_repository_)) {
+      throw std::invalid_argument{
+          "Vox narration requires Vox output and narration persistence."};
+    }
 
     scope_policy_ = std::make_unique<ServerScopePolicy>(options_.server_scope);
     notice_service_ = std::make_unique<PendingNoticeService>(
@@ -106,7 +112,10 @@ public:
     outbox_ = std::make_unique<OutboxService>(
         *durable_work_, *clock_, *persistent_id_generator_, *diagnostics_,
         *discord_, *discord_, options_.server_scope, options_.instance_id, 32,
-        options_.durable_delivery_receipt_wait);
+        options_.durable_delivery_receipt_wait, [this] {
+          if (vox_narration_service_)
+            vox_narration_service_->wake();
+        });
     if (options_.features.chronicle_enabled &&
         (!chronicle_repository_ || !chronicle_session_repository_)) {
       throw std::invalid_argument{
@@ -307,6 +316,12 @@ public:
                          {}});
                   }
                 });
+          },
+          [this] {
+            return !options_.features.vox_narration_enabled ||
+                   (vox_narration_repository_ &&
+                    vox_narration_repository_->automatic_speech_suppressed(
+                        unix_milliseconds(*clock_)));
           });
       vox_service_ = std::make_unique<VoxService>(
           *vox_repository_, *voice_gateway_, *clock_,
@@ -317,8 +332,36 @@ public:
               scheduler_->wake();
           },
           [this] { outbox_->wake(); }, vox_worker_capacity,
-          speech_service_.get());
+          speech_service_.get(), options_.features.vox_narration_enabled,
+          [this] {
+            return vox_narration_repository_ &&
+                   vox_narration_repository_->automatic_speech_suppressed(
+                       unix_milliseconds(*clock_));
+          },
+          [this](std::string session_id, std::string guild_id,
+                 std::string summoner_user_id) {
+            if (vox_narration_service_)
+              vox_narration_service_->prepare_session_flavor(
+                  std::move(session_id), std::move(guild_id),
+                  std::move(summoner_user_id));
+          });
     }
+    if (vox_narration_repository_)
+      vox_narration_service_ = std::make_unique<VoxNarrationService>(
+          *vox_narration_repository_, *clock_, *persistent_id_generator_,
+          *diagnostics_, *ai_client_, *ai_work_, options_.instance_id,
+          options_.features.vox_narration_enabled, options_.controls.test_mode,
+          [this] {
+            if (speech_service_)
+              speech_service_->wake();
+          },
+          [this](std::string session_id, std::string guild_id,
+                 std::string entrance, std::string farewell) {
+            if (speech_service_)
+              speech_service_->prepare_session_flavor(
+                  std::move(session_id), std::move(guild_id),
+                  std::move(entrance), std::move(farewell));
+          });
     const auto add_vox_handler = [this](const std::string_view job_type) {
       scheduler_->add_handler(
           std::string{job_type}, [this](const ClaimedScheduledJob &job) {
@@ -574,6 +617,11 @@ public:
               return vox_service_ ? std::optional{vox_service_->health()}
                                   : std::nullopt;
             },
+            .vox_narration = [this]() -> std::optional<VoxNarrationHealth> {
+              return vox_narration_service_
+                         ? std::optional{vox_narration_service_->health()}
+                         : std::nullopt;
+            },
         });
     owner_admin_ = std::make_unique<OwnerAdminService>(
         options_.controls, *scope_policy_, *health_service_);
@@ -672,7 +720,8 @@ public:
         options_.interaction_queue_capacity, relationship_service_.get(),
         appearance_service_.get(), tarot_service_.get(), wager_service_.get(),
         tarot_draw_service_.get(), tarot_house_service_.get(),
-        tarot_integration_service_.get(), vox_service_.get());
+        tarot_integration_service_.get(), vox_service_.get(),
+        vox_narration_service_.get());
     interaction_router_ = std::make_unique<InteractionRouter>(
         *scope_policy_, options_.controls, options_.features,
         *interaction_handler_, *diagnostics_);
@@ -752,6 +801,10 @@ public:
       if (speech_service_) {
         speech_service_->start();
         speech_started_ = true;
+      }
+      if (vox_narration_service_) {
+        vox_narration_service_->start();
+        vox_narration_started_ = true;
       }
       if (vox_service_) {
         vox_service_->start();
@@ -834,6 +887,10 @@ private:
       scheduler_->stop();
       scheduler_started_ = false;
     }
+    if (vox_narration_started_) {
+      vox_narration_service_->stop();
+      vox_narration_started_ = false;
+    }
     if (vox_started_) {
       vox_service_->stop();
       vox_started_ = false;
@@ -905,6 +962,7 @@ private:
   std::unique_ptr<TarotIntegrationRepository> tarot_integration_repository_;
   std::unique_ptr<VoxRepository> vox_repository_;
   std::unique_ptr<SpeechRepository> speech_repository_;
+  std::unique_ptr<VoxNarrationRepository> vox_narration_repository_;
   std::unique_ptr<Random> random_;
   std::optional<AppearancePolicy> appearance_policy_;
   std::unique_ptr<AiClient> ai_client_;
@@ -932,6 +990,7 @@ private:
   std::unique_ptr<TarotIntegrationService> tarot_integration_service_;
   std::unique_ptr<VoxService> vox_service_;
   std::unique_ptr<SpeechService> speech_service_;
+  std::unique_ptr<VoxNarrationService> vox_narration_service_;
   std::unique_ptr<SchedulerService> scheduler_;
   std::unique_ptr<DurableWorkControlService> durable_controls_;
   std::unique_ptr<InteractionHandler> interaction_handler_;
@@ -945,6 +1004,7 @@ private:
   bool scheduler_started_{false};
   bool vox_started_{false};
   bool speech_started_{false};
+  bool vox_narration_started_{false};
   bool instance_started_{false};
   bool instance_finished_{false};
 };

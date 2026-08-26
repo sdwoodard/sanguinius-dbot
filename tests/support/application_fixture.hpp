@@ -20,6 +20,7 @@
 #include "support/fake_tarot_repository.hpp"
 #include "support/fake_wager_repository.hpp"
 #include "support/fake_vox.hpp"
+#include "support/fake_vox_narration.hpp"
 
 #include <memory>
 #include <utility>
@@ -88,6 +89,10 @@ public:
         std::make_unique<FakeTarotIntegrationRepository>();
     auto owned_vox = std::make_unique<FakeVoxRepository>();
     auto owned_speech = std::make_unique<FakeSpeechRepository>();
+    auto owned_vox_narration =
+        options.features.vox_narration_enabled
+            ? std::make_unique<FakeVoxNarrationRepository>()
+            : nullptr;
     auto owned_random =
         std::make_unique<FakeRandom>(std::vector<std::uint64_t>(128, 0));
     auto owned_ai = std::make_unique<FakeAiClient>();
@@ -115,6 +120,7 @@ public:
     tarot_house = owned_tarot_house.get();
     tarot_integration = owned_tarot_integration.get();
     vox = owned_vox.get();
+    vox_narration = owned_vox_narration.get();
     ai = owned_ai.get();
     discord = owned_discord.get();
     voice_gateway = owned_voice_gateway.get();
@@ -143,6 +149,7 @@ public:
             .tarot_integration = std::move(owned_tarot_integration),
             .vox = std::move(owned_vox),
             .speech = std::move(owned_speech),
+            .vox_narration = std::move(owned_vox_narration),
             .random = std::move(owned_random),
             .appearance_policy = test_appearance_policy(),
             .ai_client = std::move(owned_ai),
@@ -183,6 +190,7 @@ public:
   FakeTarotHouseRepository *tarot_house{};
   FakeTarotIntegrationRepository *tarot_integration{};
   FakeVoxRepository *vox{};
+  FakeVoxNarrationRepository *vox_narration{};
   FakeAiClient *ai{};
   FakeDiscord *discord{};
   FakeVoiceGateway *voice_gateway{};

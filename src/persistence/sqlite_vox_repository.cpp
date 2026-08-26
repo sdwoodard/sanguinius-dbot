@@ -845,9 +845,10 @@ VoxCommandResult SqliteVoxRepository::start(const VoxStartRequest &request) {
       "voice_channel_id,summoner_user_id,deployment_instance_id,state,"
       "state_version,connection_generation,reconnect_count,fixture_state,"
       "fixture_marker,fixture_queued_at_ms,fixture_played_at_ms,empty_since_ms,"
-      "timeout_job_id,started_at_ms,last_active_at_ms,ended_at_ms,end_reason,"
+      "timeout_job_id,narration_event_rowid_floor,started_at_ms,last_active_at_ms,ended_at_ms,end_reason,"
       "last_failure_category) VALUES(?,?,?,?,?,?,'connecting',1,1,0,'pending',"
-      "NULL,NULL,NULL,NULL,?,?,?,NULL,NULL,NULL)");
+      "NULL,NULL,NULL,NULL,?,(SELECT COALESCE(max(rowid),0) FROM event_journal),"
+      "?,?,NULL,NULL,NULL)");
   insert.bind(1, session.session_id);
   insert.bind(2, session.guild_id.str());
   insert.bind(3, session.text_channel_id.str());

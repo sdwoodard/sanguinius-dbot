@@ -36,6 +36,7 @@ public:
         .model = request.model,
         .voice = request.voice,
         .priority = request.priority,
+        .narration_rank = request.narration_rank,
         .state = SpeechState::pending,
         .revision = 1,
         .earliest_at_ms = request.earliest_at_ms,
@@ -69,11 +70,18 @@ public:
           item.state != SpeechState::pending || item.earliest_at_ms > now_ms ||
           (item.expires_at_ms && *item.expires_at_ms <= now_ms))
         continue;
-      if (!selected || item.priority > selected->priority ||
+      const auto preferred =
+          !selected || item.priority > selected->priority ||
           (item.priority == selected->priority &&
-           (item.earliest_at_ms < selected->earliest_at_ms ||
-            (item.earliest_at_ms == selected->earliest_at_ms &&
-             item.created_at_ms < selected->created_at_ms))))
+           item.narration_rank > selected->narration_rank) ||
+          (item.priority == selected->priority &&
+           item.narration_rank == selected->narration_rank &&
+           item.earliest_at_ms < selected->earliest_at_ms) ||
+          (item.priority == selected->priority &&
+           item.narration_rank == selected->narration_rank &&
+           item.earliest_at_ms == selected->earliest_at_ms &&
+           item.created_at_ms < selected->created_at_ms);
+      if (preferred)
         selected = &item;
     }
     if (!selected)
@@ -101,7 +109,9 @@ public:
       return SpeechMutationStatus::invalid_state;
     item.state = request.target;
     ++item.revision;
-    if (request.target == SpeechState::ready || terminal(request.target))
+    if (terminal(request.target) ||
+        (request.target == SpeechState::ready &&
+         item.priority != SpeechPriority::event_narration))
       item.text.reset();
     if (request.provider_request_id)
       item.provider_request_id = request.provider_request_id;
@@ -129,7 +139,8 @@ public:
 
   std::size_t cancel_session(std::string_view voice_session_id,
                              std::int64_t now_ms, std::string_view reason,
-                             bool include_interactive) override {
+                             bool include_interactive,
+                             bool preserve_event_narration = false) override {
     const std::scoped_lock lock{mutex_};
     std::size_t count{};
     for (auto &[id, item] : items_) {
@@ -138,6 +149,15 @@ public:
           (!include_interactive &&
            item.priority == SpeechPriority::interactive))
         continue;
+      if (preserve_event_narration &&
+          item.priority == SpeechPriority::event_narration &&
+          item.state != SpeechState::playing) {
+        if (item.state != SpeechState::pending) {
+          item.state = SpeechState::pending;
+          ++item.revision;
+        }
+        continue;
+      }
       item.state = SpeechState::cancelled;
       ++item.revision;
       item.text.reset();

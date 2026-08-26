@@ -62,7 +62,8 @@ public:
                 PersistentIdGenerator &ids, Diagnostics &diagnostics,
                 StaticSpeechAssets assets,
                 SpeechServiceConfiguration configuration = {},
-                SpeechTextFallback text_fallback = {});
+                SpeechTextFallback text_fallback = {},
+                std::function<bool()> automatic_narration_suppressed = {});
   ~SpeechService();
 
   SpeechService(const SpeechService &) = delete;
@@ -78,9 +79,18 @@ public:
                      bool enqueue_entrance = true);
   void session_reconnecting(std::string_view session_id);
   [[nodiscard]] bool session_leaving(std::string_view session_id,
-                                     std::string_view guild_id) noexcept;
+                                     std::string_view guild_id,
+                                     bool allow_contextual = true) noexcept;
   void session_closed(std::string_view session_id) noexcept;
   void set_muted(std::string_view session_id, bool muted);
+  void wake() noexcept;
+  void begin_session_flavor(std::string session_id);
+  void prepare_session_flavor(std::string session_id, std::string guild_id,
+                              std::string entrance_line,
+                              std::string farewell_line);
+  void discard_session_flavor(std::string_view session_id) noexcept;
+  [[nodiscard]] std::optional<PcmAudio>
+  take_prepared_entrance(std::string_view session_id) noexcept;
   [[nodiscard]] bool track_marker(std::string_view session_id,
                                   std::string marker);
   [[nodiscard]] std::string selected_voice(std::string_view guild_id);

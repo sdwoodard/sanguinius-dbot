@@ -20,6 +20,7 @@ struct FeatureConfiguration {
   bool tarot_enabled{false};
   AppearanceMode appearances_mode{AppearanceMode::off};
   bool vox_enabled{false};
+  bool vox_narration_enabled{false};
   bool voice_input_enabled{false};
 };
 

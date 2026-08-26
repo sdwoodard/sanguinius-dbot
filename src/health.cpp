@@ -96,6 +96,8 @@ HealthSnapshot HealthService::snapshot(const QueueSnapshot message_queue,
       .wagers = runtime_.wagers ? runtime_.wagers() : std::nullopt,
       .house = runtime_.house ? runtime_.house() : std::nullopt,
       .vox = runtime_.vox ? runtime_.vox() : std::nullopt,
+      .vox_narration = runtime_.vox_narration ? runtime_.vox_narration()
+                                               : std::nullopt,
       .scope_matched = scope_matched,
   };
 }
@@ -277,6 +279,18 @@ std::string render_health(const HealthSnapshot &snapshot) {
                << safe_build_metadata(*speech.last_failure_category) << '\n';
     }
   }
+  if (snapshot.vox_narration) {
+    const auto &narration = *snapshot.vox_narration;
+    output << "vox_narration_pending=" << narration.pending << '\n'
+           << "vox_narration_generating=" << narration.generating << '\n'
+           << "vox_narration_queued=" << narration.queued << '\n'
+           << "vox_narration_session_features="
+           << narration.session_feature_count << '\n'
+           << "vox_narration_cursor_lag="
+           << std::max<std::int64_t>(
+                  0, narration.journal_head_rowid - narration.cursor_rowid)
+           << '\n';
+  }
   output << "admin_commands="
          << enabled(snapshot.controls.admin_commands_enabled) << '\n'
          << "test_mode=" << enabled(snapshot.controls.test_mode) << '\n'
@@ -285,6 +299,8 @@ std::string render_health(const HealthSnapshot &snapshot) {
          << "appearances="
          << appearance_mode_name(snapshot.features.appearances_mode) << '\n'
          << "vox=" << enabled(snapshot.features.vox_enabled) << '\n'
+         << "vox_narration="
+         << enabled(snapshot.features.vox_narration_enabled) << '\n'
          << "voice_input=" << enabled(snapshot.features.voice_input_enabled)
          << '\n';
   return bounded_health_message(output.str());

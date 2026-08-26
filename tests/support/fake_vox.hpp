@@ -541,6 +541,11 @@ public:
     return marker_;
   }
 
+  [[nodiscard]] PcmAudio audio() const {
+    const std::scoped_lock lock{mutex_};
+    return audio_;
+  }
+
   void set_send_result(const VoiceGatewaySubmit result) {
     const std::scoped_lock lock{mutex_};
     send_result_ = result;

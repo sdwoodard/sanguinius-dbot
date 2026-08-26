@@ -107,12 +107,14 @@ OutboxService::OutboxService(
     const DiscordStatusProvider &discord_status,
     const ServerScopeConfiguration scope, std::string instance_id,
     const std::size_t queue_capacity,
-    const std::chrono::milliseconds receipt_wait_timeout)
+    const std::chrono::milliseconds receipt_wait_timeout,
+    std::function<void()> completion_observer)
     : repository_{repository}, clock_{clock}, ids_{ids},
       diagnostics_{diagnostics}, delivery_{delivery},
       discord_status_{discord_status}, scope_{scope},
       instance_id_{std::move(instance_id)}, workers_{queue_capacity, 2},
-      receipt_wait_timeout_{receipt_wait_timeout} {
+      receipt_wait_timeout_{receipt_wait_timeout},
+      completion_observer_{std::move(completion_observer)} {
   if (instance_id_.empty() || !scope_.guild_id.is_set() ||
       !scope_.primary_channel_id.is_set() ||
       receipt_wait_timeout_.count() <= 0 ||
@@ -508,6 +510,8 @@ void OutboxService::handle_public_edit(const ClaimedOutboxMessage &outbox,
   if (result == DeliveryResult::success) {
     static_cast<void>(repository_.complete_public_outbox(
         outbox, *provider_message, now_ms(clock_)));
+    if (completion_observer_)
+      completion_observer_();
     return;
   }
   const auto completion_time = now_ms(clock_);
@@ -535,6 +539,8 @@ void OutboxService::handle_receipt(ClaimedOutboxMessage outbox,
         receipt.provider_message_id.has_value()) {
       static_cast<void>(repository_.complete_public_outbox(
           outbox, *receipt.provider_message_id, current));
+      if (completion_observer_)
+        completion_observer_();
       return;
     }
     const auto outcome = receipt.result == DeliveryResult::success

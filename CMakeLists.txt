@@ -114,6 +114,7 @@ sanguinius_embed_migrations(
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0011_tarot_house_integration.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0012_vox_foundation.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0013_vox_tts.sql"
+    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0014_vox_narration.sql"
 )
 
 function(sanguinius_enable_warnings target)
@@ -176,6 +177,7 @@ add_library(sanguinius_core STATIC
     src/tts.cpp
     src/wagers.cpp
     src/vox.cpp
+    src/vox_narration.cpp
     src/work_queue.cpp
 )
 
@@ -215,6 +217,7 @@ add_library(sanguinius_persistence STATIC
     src/persistence/sqlite_tarot_integration_repository.cpp
     src/persistence/sqlite_wager_repository.cpp
     src/persistence/sqlite_vox_repository.cpp
+    src/persistence/sqlite_vox_narration_repository.cpp
     src/persistence/transaction.cpp
 )
 
@@ -303,6 +306,7 @@ if(BUILD_TESTING)
         tests/unit/tts_tests.cpp
         tests/unit/wager_tests.cpp
         tests/unit/vox_tests.cpp
+        tests/unit/vox_narration_tests.cpp
         tests/unit/work_queue_tests.cpp
     )
     add_sanguinius_test(sanguinius_application_tests
@@ -327,6 +331,7 @@ if(BUILD_TESTING)
         tests/integration/tarot_house_repository_tests.cpp
         tests/integration/wager_repository_tests.cpp
         tests/integration/vox_repository_tests.cpp
+        tests/integration/vox_narration_repository_tests.cpp
         tests/unit/persistent_id_tests.cpp
     )
     target_compile_features(sanguinius_persistence_tests PRIVATE cxx_std_20)
@@ -395,6 +400,7 @@ if(BUILD_TESTING)
         --unset=SANGUINIUS_TAROT_ENABLED
         --unset=SANGUINIUS_APPEARANCES_MODE
         --unset=SANGUINIUS_VOX_ENABLED
+        --unset=SANGUINIUS_VOX_NARRATION_ENABLED
         --unset=SANGUINIUS_VOICE_INPUT_ENABLED
         --unset=SANGUINIUS_TTS_PROVIDER
         --unset=SANGUINIUS_TTS_MODEL

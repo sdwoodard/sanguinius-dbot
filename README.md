@@ -5,7 +5,8 @@ It supports guild-scoped slash commands, sealed notices, an optional Living
 Chronicle, a persistent original Emperor's Tarot and Fate economy, and
 persistent unsolicited appearances with off, dry-run, and conservatively
 budgeted live modes, plus feature-flagged output-only Discord voice sessions
-with owner-requested, budgeted TTS and approved static fallbacks. It
+with owner-requested, budgeted TTS, approved static fallbacks, and optional
+post-commit Chronicle, Tarot, and appearance narration. It
 preserves two public prefix commands, answers messages that begin with a bot
 mention through the OpenAI Responses API, and writes every visible guild
 message-create event to an append-only text log. Typed configuration fixes the
@@ -18,7 +19,7 @@ bot's feature boundary to one guild, one primary text channel, and one owner.
 | `!help` | List the supported commands. |
 | `!repo` | Link to this source repository. |
 
-The configured guild receives command catalog version 12. Chronicle, Tarot,
+The configured guild receives command catalog version 13. Chronicle, Tarot,
 and Vox
 commands are registered only when their corresponding feature flag is enabled;
 owner commands remain separately gated:
@@ -30,7 +31,7 @@ owner commands remain separately gated:
 | `/sanguinius privacy` | Ephemeral identity/preference, voice-input, no-DM, and raw-voice-retention summary. |
 | `/sanguinius appearance-callbacks <on\|off>` | Ephemerally opts the invoking member into or out of public appearance callbacks. This remains available while appearance evaluation is `off`. |
 | `/sanguinius appearance-feedback response:<more\|less\|not_relevant> [reference]` | Privately records sentiment for an exact delivered appearance. Without a reference, it selects the latest eligible delivery. |
-| `/sanguinius quiet for duration:2h` | Starts or extends server-wide appearance quiet for two hours. |
+| `/sanguinius quiet for duration:2h` | Starts or extends server-wide appearance and automatic Vox-narration quiet for two hours. |
 | `/sanguinius quiet tonight` | Starts or extends server-wide quiet until 10:00 AM on the following `America/New_York` calendar day. |
 | `/sanguinius quiet until time:HH:MM` | Starts or extends server-wide quiet to the next valid local occurrence within 24 hours. |
 | `/sanguinius quiet off` | Ends quiet early only for its latest setter or the owner. |
@@ -63,12 +64,15 @@ owner commands remain separately gated:
 | `/tarot evidence reference:<uuid> evidence:<text>` | Appends immutable private participant evidence. |
 | `/tarot judgment reference:<uuid> result:<creator\|target\|void> reason:<text>` | Allows the designated judge before dispute or the owner after dispute to enter a bounded reasoned result. |
 | `/tarot disputes [reference]` | Shows only disputes visible to a participant or the owner. |
-| `/vox summon` | Ephemerally resolves the invoker's current ordinary voice channel, persists one output-only session, connects with required DAVE/E2EE, and plays the approved static entrance once. |
+| `/vox summon` | Ephemerally resolves the invoker's current ordinary voice channel, persists one output-only session, connects with required DAVE/E2EE, and plays one safely prepared contextual entrance when ready in time or the approved static entrance otherwise. |
 | `/vox status` | Publicly reports only the active state, voice-channel mention, elapsed seconds, reconnect count, static-proof state, selected voice, mute state, bounded queue depth, and speech-service availability. |
 | `/vox say text:<line>` | Owner-only ephemeral admission of a normalized, budgeted generated line while Vox is ready or muted. Distinct interactions remain distinct queue items; cache reuse consumes no provider budget. |
 | `/vox mute duration:<15m\|1h\|4h\|session\|off>` | Owner or active summoner control that preserves the connection, durably expires timed mute, blocks automatic/flavor speech, and still permits direct owner speech. |
 | `/vox voice [voice:onyx]` | Any in-scope member may inspect the selected voice ephemerally; only the owner may change it to the configured allowlist. |
-| `/sang-admin vox speech-test scenario:<queue\|provider-failure\|budget-limit>` | Owner-only, admin/test-mode deterministic queue and fallback acceptance scenarios. Simulated failures never call the live provider. |
+| `/sang-admin vox speech-test scenario:<queue\|provider-failure\|budget-limit\|narration-stale>` | Owner-only, admin/test-mode deterministic queue, fallback, and stale-restart acceptance scenarios. Simulated failures never call the live provider. |
+| `/sang-admin vox narration-preview reference:<event UUID>` | Owner-only ephemeral inspection of one fresh, public-safe narration projection. It performs no TTS and consumes no session budget. |
+| `/sang-admin vox narration-enqueue reference:<event UUID>` | Owner-only, test-mode-gated durable observation of an explicitly test-tagged fresh event; every ordinary visibility, counterpart, mute, quiet, budget, expiry, and deduplication gate still applies. |
+| `/sang-admin vox narration-recent` | Owner-only last-ten sanitized narration states and reasons, without generated line content. |
 | `/vox leave` | Ephemerally dismisses the active session for its summoner or the configured owner. |
 | `/sang-admin health` | Ephemeral owner-only health; registered only when admin commands are enabled. |
 | `/sang-admin work-recent` | Ephemeral owner-only inspection of the ten most recent redacted event/job/outbox summaries. |
@@ -424,6 +428,7 @@ Optional settings are:
 | `SANGUINIUS_TAROT_INTEGRATION_ENABLED` | `true` | Enable idempotent post-settlement integration observations and derived effects. |
 | `SANGUINIUS_APPEARANCES_MODE` | `off` | Appearance engine mode: `off`, inspection-only `dry_run`, or conservatively budgeted `live`. |
 | `SANGUINIUS_VOX_ENABLED` | `false` | Register output-only Vox commands/callbacks and the Guild Voice States intent. Disabled startup still closes stale persisted sessions. |
+| `SANGUINIUS_VOX_NARRATION_ENABLED` | `false` | Enable post-commit Chronicle, Tarot, appearance, and contextual boundary narration. Requires Vox output. Disabled observations are durably suppressed rather than backlogged; direct `/vox say` and approved static controls remain available. |
 | `SANGUINIUS_VOICE_INPUT_ENABLED` | `false` | Reserved privacy gate. Setting this to `true` is rejected because receive/transcription is not implemented. |
 | `SANGUINIUS_TTS_PROVIDER` | `disabled` | `disabled` or the fixed OpenAI speech adapter. Disabled keeps approved static/text fallback available. |
 | `SANGUINIUS_TTS_MODEL` / `SANGUINIUS_TTS_VOICE` | `tts-1` / `onyx` | Exact allowed production pair; other values fail configuration. |
@@ -619,6 +624,23 @@ speech metadata remains for 30 days. It is forward-only: rollback preserves
 schema-v13 diagnostics/cache for inspection, restores the verified schema-v12
 backup, and activates the accepted M14 artifact and catalog v11. Never reverse
 schema 13 in place.
+
+Migration `0014_vox_narration` adds a migration-head journal cursor, durable
+feature intents and append-only transition audit, immutable 0–100 narration
+rank on speech items, and catalog-v13 owner controls. A bounded scanner observes
+only committed Chronicle, Tarot, and appearance events; it creates at most one
+intent and speech item per source event/slot, waits for confirmed public text,
+and admits at most two feature lines per Vox session with at most one per
+feature. Session open/close uses fixed public state cards. Sealed/recovery
+wagers, balances, notices, memories, summaries/excerpts, transcripts, evidence,
+ledger identifiers, and relationship dimensions never enter narration prompts
+or speech rows. Server quiet suppresses all automatic narration; direct speech
+and approved static control clips remain independent. Legacy Tarot Vox intents
+are migrated to terminal `pre_m16_not_replayed` audit, and the old table is
+removed. It is forward-only: preserve schema-v14 diagnostics, restore the
+checksum-verified schema-v13 backup, activate accepted commit `8a5f7cf`, and
+restore catalog v12 rather than reversing schema 14 in place.
+
 The readable SQL for each ordered migration is
 embedded independently with its SHA-256
 checksum. Applied history must be ordered, contiguous, and byte-for-byte

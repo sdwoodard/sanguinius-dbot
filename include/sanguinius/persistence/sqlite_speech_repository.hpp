@@ -24,7 +24,8 @@ public:
   find(std::string_view speech_id) override;
   [[nodiscard]] std::size_t
   cancel_session(std::string_view voice_session_id, std::int64_t now_ms,
-                 std::string_view reason, bool include_interactive) override;
+                 std::string_view reason, bool include_interactive,
+                 bool preserve_event_narration = false) override;
   [[nodiscard]] std::size_t recover(std::int64_t now_ms,
                                     std::string_view reason) override;
   void ensure_purge_schedule(std::int64_t now_ms,
