@@ -26,6 +26,7 @@
 #include "sanguinius/wagers.hpp"
 #include "sanguinius/vox.hpp"
 #include "sanguinius/vox_narration.hpp"
+#include "sanguinius/voice_input.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -61,6 +62,7 @@ struct ApplicationOptions {
   std::chrono::milliseconds durable_delivery_receipt_wait{
       std::chrono::seconds{90}};
   SpeechServiceConfiguration speech;
+  VoiceListeningConfiguration voice_input;
   StaticSpeechAssets static_speech_assets;
 };
 
@@ -87,11 +89,14 @@ struct ApplicationDependencies {
   std::unique_ptr<VoxRepository> vox;
   std::unique_ptr<SpeechRepository> speech;
   std::unique_ptr<VoxNarrationRepository> vox_narration;
+  std::unique_ptr<VoiceListeningRepository> voice_listening;
   std::unique_ptr<Random> random;
   std::optional<AppearancePolicy> appearance_policy;
   std::unique_ptr<AiClient> ai_client;
   std::unique_ptr<DiscordRuntime> discord;
   std::unique_ptr<VoiceGateway> voice_gateway;
+  std::unique_ptr<VoiceInputAdapter> voice_input_adapter;
+  std::unique_ptr<TranscriptionClient> transcription;
   std::unique_ptr<TextToSpeechClient> text_to_speech;
   std::unique_ptr<AudioNormalizer> audio_normalizer;
   std::unique_ptr<TtsCache> tts_cache;

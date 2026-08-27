@@ -32,13 +32,18 @@ public:
 
   void defer(const ResponseVisibility visibility,
              DeliveryCallback callback = {}) override {
+    DeliveryResult result;
+    bool hold_completion;
     {
       const std::scoped_lock lock{mutex_};
       deferrals_.push_back(visibility);
+      result = defer_result_;
+      hold_completion = hold_defer_completions_;
+      if (callback && hold_completion)
+        pending_defer_completions_.push_back(std::move(callback));
     }
-    if (callback) {
-      callback(defer_result_);
-    }
+    if (callback && !hold_completion)
+      callback(result);
   }
 
   void edit_original(const InteractionMessage &message,
@@ -74,18 +79,40 @@ public:
 
   void show_modal(const ModalPayload &modal,
                   DeliveryCallback callback = {}) override {
+    DeliveryResult result;
     {
       const std::scoped_lock lock{mutex_};
       modals_.push_back(modal);
+      result = modal_result_;
     }
     if (callback) {
-      callback(DeliveryResult::success);
+      callback(result);
     }
+  }
+
+  void set_modal_result(const DeliveryResult result) {
+    const std::scoped_lock lock{mutex_};
+    modal_result_ = result;
   }
 
   void set_defer_result(const DeliveryResult result) {
     const std::scoped_lock lock{mutex_};
     defer_result_ = result;
+  }
+  void hold_defer_completions(const bool hold = true) {
+    const std::scoped_lock lock{mutex_};
+    hold_defer_completions_ = hold;
+  }
+  void complete_defer_completions() {
+    std::vector<DeliveryCallback> callbacks;
+    DeliveryResult result;
+    {
+      const std::scoped_lock lock{mutex_};
+      callbacks.swap(pending_defer_completions_);
+      result = defer_result_;
+    }
+    for (auto &callback : callbacks)
+      callback(result);
   }
   void set_edit_result(const DeliveryResult result) {
     const std::scoped_lock lock{mutex_};
@@ -148,7 +175,10 @@ private:
   DeliveryResult reply_result_{DeliveryResult::success};
   DeliveryResult defer_result_{DeliveryResult::success};
   DeliveryResult edit_result_{DeliveryResult::success};
+  DeliveryResult modal_result_{DeliveryResult::success};
   bool hold_edit_completions_{};
+  bool hold_defer_completions_{};
+  std::vector<DeliveryCallback> pending_defer_completions_;
   std::vector<DeliveryCallback> pending_edit_completions_;
 };
 

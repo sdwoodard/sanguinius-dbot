@@ -39,6 +39,7 @@ static_assert(DPP_VERSION_SHORT >= 100107);
 void sanguinius_voice_api_probe(dpp::discord_client& shard,
                                 dpp::discord_voice_client& voice) {
   shard.connect_voice(dpp::snowflake{1}, dpp::snowflake{2}, false, true, true);
+  shard.queue_message(R"({"op":4,"d":{}})", true);
   static_cast<void>(voice.is_end_to_end_encrypted());
   std::uint16_t samples[2]{};
   voice.send_audio_raw(samples, sizeof(samples));
@@ -54,6 +55,19 @@ if(NOT SANGUINIUS_DPP_VOICE_API_AVAILABLE)
         "and link. Rebuild D++ with BUILD_VOICE_SUPPORT=ON and integrated "
         "DAVE/MLS support.")
 endif()
+
+# Voice receive is an experimental, optional D++ surface. A build without the
+# callback remains fully usable for text and voice output and reports
+# unsupported_build at runtime.
+check_cxx_source_compiles([[
+#include <dpp/dpp.h>
+void sanguinius_voice_receive_probe(dpp::cluster& cluster) {
+  cluster.on_voice_receive_combined([](const dpp::voice_receive_t& event) {
+    static_cast<void>(event.audio_data.size());
+  });
+}
+int main() { return 0; }
+]] SANGUINIUS_DPP_VOICE_RECEIVE_AVAILABLE)
 if(DEFINED ENV{LSAN_OPTIONS})
     set(sanguinius_saved_lsan_options "$ENV{LSAN_OPTIONS}")
     set(sanguinius_had_lsan_options TRUE)
@@ -115,6 +129,7 @@ sanguinius_embed_migrations(
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0012_vox_foundation.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0013_vox_tts.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0014_vox_narration.sql"
+    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0015_voice_input.sql"
 )
 
 function(sanguinius_enable_warnings target)
@@ -175,9 +190,11 @@ add_library(sanguinius_core STATIC
     src/tarot_house.cpp
     src/tarot_integration.cpp
     src/tts.cpp
+    src/transcription.cpp
     src/wagers.cpp
     src/vox.cpp
     src/vox_narration.cpp
+    src/voice_input.cpp
     src/work_queue.cpp
 )
 
@@ -218,6 +235,7 @@ add_library(sanguinius_persistence STATIC
     src/persistence/sqlite_wager_repository.cpp
     src/persistence/sqlite_vox_repository.cpp
     src/persistence/sqlite_vox_narration_repository.cpp
+    src/persistence/sqlite_voice_input_repository.cpp
     src/persistence/transaction.cpp
 )
 
@@ -240,15 +258,27 @@ add_library(sanguinius_runtime STATIC
     src/dpp_command_registry.cpp
     src/dpp_discord_adapter.cpp
     src/dpp_voice_gateway.cpp
+    src/dpp_voice_input_adapter.cpp
     src/ffmpeg_audio_normalizer.cpp
     src/openai_client.cpp
     src/openai_tts_client.cpp
+    src/openai_transcription_client.cpp
     src/process_signals.cpp
     src/tts_cache.cpp
 )
 
 target_compile_features(sanguinius_runtime PUBLIC cxx_std_20)
 target_include_directories(sanguinius_runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+if(SANGUINIUS_DPP_VOICE_RECEIVE_AVAILABLE)
+    target_compile_definitions(sanguinius_runtime PRIVATE
+        SANGUINIUS_HAVE_DPP_VOICE_RECEIVE=1)
+else()
+    target_compile_definitions(sanguinius_runtime PRIVATE
+        SANGUINIUS_HAVE_DPP_VOICE_RECEIVE=0)
+    message(STATUS
+        "D++ combined voice receive callback is unavailable; voice input will "
+        "build as an unsupported stub")
+endif()
 sanguinius_enable_warnings(sanguinius_runtime)
 target_link_libraries(sanguinius_runtime
     PUBLIC
@@ -307,6 +337,7 @@ if(BUILD_TESTING)
         tests/unit/wager_tests.cpp
         tests/unit/vox_tests.cpp
         tests/unit/vox_narration_tests.cpp
+        tests/unit/voice_input_tests.cpp
         tests/unit/work_queue_tests.cpp
     )
     add_sanguinius_test(sanguinius_application_tests
@@ -332,6 +363,7 @@ if(BUILD_TESTING)
         tests/integration/wager_repository_tests.cpp
         tests/integration/vox_repository_tests.cpp
         tests/integration/vox_narration_repository_tests.cpp
+        tests/integration/voice_input_repository_tests.cpp
         tests/unit/persistent_id_tests.cpp
     )
     target_compile_features(sanguinius_persistence_tests PRIVATE cxx_std_20)
@@ -350,6 +382,7 @@ if(BUILD_TESTING)
     add_executable(sanguinius_runtime_tests
         tests/runtime/dpp_command_registration_tests.cpp
         tests/runtime/tts_runtime_tests.cpp
+        tests/runtime/transcription_runtime_tests.cpp
     )
     target_compile_features(sanguinius_runtime_tests PRIVATE cxx_std_20)
     target_include_directories(sanguinius_runtime_tests PRIVATE
@@ -402,6 +435,13 @@ if(BUILD_TESTING)
         --unset=SANGUINIUS_VOX_ENABLED
         --unset=SANGUINIUS_VOX_NARRATION_ENABLED
         --unset=SANGUINIUS_VOICE_INPUT_ENABLED
+        --unset=SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED
+        --unset=SANGUINIUS_TRANSCRIPTION_PROVIDER
+        --unset=SANGUINIUS_TRANSCRIPTION_MODEL
+        --unset=SANGUINIUS_TRANSCRIPTION_REQUEST_TIMEOUT_MS
+        --unset=SANGUINIUS_VOICE_INPUT_ROLLING_DAY_WINDOWS
+        --unset=SANGUINIUS_VOICE_INPUT_ROLLING_DAY_MICRO_USD
+        --unset=SANGUINIUS_VOICE_INPUT_MONTHLY_MICRO_USD
         --unset=SANGUINIUS_TTS_PROVIDER
         --unset=SANGUINIUS_TTS_MODEL
         --unset=SANGUINIUS_TTS_VOICE

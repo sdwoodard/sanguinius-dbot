@@ -138,6 +138,8 @@ struct ChronicleEntry {
   DiscordSnowflake source_guild_id;
   DiscordSnowflake source_channel_id;
   std::optional<DiscordSnowflake> source_message_id;
+  std::string source_kind{"discord_message"};
+  std::optional<std::string> source_voice_window_id;
   std::string source_text;
   bool source_text_truncated{};
   std::int64_t occurred_at_ms{};
@@ -199,6 +201,8 @@ struct CreateProposalRequest {
   ChronicleVisibility visibility{ChronicleVisibility::shared};
   bool owner_test{};
   std::optional<std::string> appearance_decision_id;
+  std::string source_kind{"discord_message"};
+  std::optional<std::string> source_voice_window_id;
   std::string correlation_id;
   std::string idempotency_key;
   std::int64_t now_ms{};
@@ -460,6 +464,10 @@ public:
 
   [[nodiscard]] ProposalResult
   canonize_message(const IncomingInteraction &interaction);
+  [[nodiscard]] ProposalResult
+  propose_voice_transcript(const IncomingInteraction &interaction,
+                           std::string_view voice_window_id,
+                           std::string title, std::string body);
   [[nodiscard]] ChronicleMutationResult
   edit_proposal(const IncomingInteraction &interaction);
   [[nodiscard]] ChronicleMutationResult

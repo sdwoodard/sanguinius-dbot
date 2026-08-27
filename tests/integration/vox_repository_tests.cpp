@@ -41,7 +41,7 @@ struct VoxFixture {
         sanguinius::persistence::production_migrations(),
         {"test-version", "test-revision"},
         clock};
-    REQUIRE(migrator.apply(database.connection()).current_version == 14);
+    REQUIRE(migrator.apply(database.connection()).current_version == 15);
     context =
         std::make_shared<sanguinius::persistence::SqliteRepositoryContext>(
             std::move(database));

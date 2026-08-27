@@ -144,6 +144,35 @@ TEST_CASE("priority work overtakes queued ordinary work", "[queue][priority]") {
   executor.stop();
 }
 
+TEST_CASE("superseding priority work displaces a saturated pending task",
+          "[queue][priority][superseding]") {
+  StopAwareGate gate;
+  std::atomic<int> displaced_runs{0};
+  std::atomic<int> displaced_cancellations{0};
+  auto completion = std::make_shared<std::promise<void>>();
+  auto completed = completion->get_future();
+  sanguinius::BoundedExecutor executor{1, 1};
+  executor.start();
+
+  REQUIRE(executor.try_submit([&gate](const std::stop_token stop_token) {
+    gate.wait(stop_token);
+  }) == sanguinius::SubmitResult::accepted);
+  REQUIRE(gate.wait_until_entered());
+  REQUIRE(executor.try_submit(
+              [&displaced_runs](std::stop_token) { ++displaced_runs; },
+              [&displaced_cancellations] { ++displaced_cancellations; }) ==
+          sanguinius::SubmitResult::accepted);
+  REQUIRE(executor.try_submit_front_superseding([completion](std::stop_token) {
+    completion->set_value();
+  }) == sanguinius::SubmitResult::accepted);
+  REQUIRE(displaced_cancellations.load() == 1);
+
+  gate.release();
+  REQUIRE(completed.wait_for(2s) == std::future_status::ready);
+  REQUIRE(displaced_runs.load() == 0);
+  executor.stop();
+}
+
 TEST_CASE("bounded executor contains task exceptions", "[queue]") {
   auto completion = std::make_shared<std::promise<void>>();
   auto completed = completion->get_future();

@@ -10,6 +10,7 @@
 #include "sanguinius/wagers.hpp"
 #include "sanguinius/vox.hpp"
 #include "sanguinius/vox_narration.hpp"
+#include "sanguinius/voice_input.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -49,6 +50,7 @@ struct HealthSnapshot {
   std::optional<HouseEconomyReport> house;
   std::optional<VoxHealth> vox;
   std::optional<VoxNarrationHealth> vox_narration;
+  std::optional<VoiceListeningHealth> voice_input;
   bool scope_matched{};
 };
 
@@ -64,6 +66,7 @@ struct HealthRuntimeProviders {
   std::function<std::optional<HouseEconomyReport>()> house;
   std::function<std::optional<VoxHealth>()> vox;
   std::function<std::optional<VoxNarrationHealth>()> vox_narration;
+  std::function<std::optional<VoiceListeningHealth>()> voice_input;
 };
 
 class HealthService {

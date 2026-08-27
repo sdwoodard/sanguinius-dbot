@@ -83,6 +83,7 @@ public:
                                      bool allow_contextual = true) noexcept;
   void session_closed(std::string_view session_id) noexcept;
   void set_muted(std::string_view session_id, bool muted);
+  void set_voice_input_listening(bool listening) noexcept;
   void wake() noexcept;
   void begin_session_flavor(std::string session_id);
   void prepare_session_flavor(std::string session_id, std::string guild_id,

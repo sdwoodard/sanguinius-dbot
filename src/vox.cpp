@@ -930,6 +930,10 @@ public:
                 speech_ ? std::optional{speech_->health()} : std::nullopt};
   }
 
+  std::optional<VoxSession> active_session() const {
+    return repository_.active();
+  }
+
 private:
   class CompletionState final {
   public:
@@ -1763,6 +1767,9 @@ SubmitResult VoxService::speech_test(VoxCommandContext context,
 }
 SubmitResult VoxService::handle_timeout(const ClaimedScheduledJob &job) {
   return impl_->handle_timeout(job);
+}
+std::optional<VoxSession> VoxService::active_session() const {
+  return impl_->active_session();
 }
 VoxHealth VoxService::health() const { return impl_->health(); }
 

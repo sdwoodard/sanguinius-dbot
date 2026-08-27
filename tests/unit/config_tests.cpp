@@ -407,13 +407,32 @@ TEST_CASE("Vox narration requires generated TTS",
   REQUIRE(contains(error, "OpenAI TTS provider"));
 }
 
-TEST_CASE("configuration rejects voice input until receive is implemented",
-          "[config][vox][privacy]") {
+TEST_CASE("voice input configuration is explicit and disabled by default",
+          "[config][vox][privacy][transcription]") {
   FakeConfigSource source;
   source.values["SANGUINIUS_VOICE_INPUT_ENABLED"] = "true";
   const auto error = config_error(source);
   REQUIRE(contains(error, "SANGUINIUS_VOICE_INPUT_ENABLED"));
-  REQUIRE(contains(error, "voice output only"));
+  REQUIRE(contains(error, "requires Vox output"));
+
+  source.values["SANGUINIUS_VOX_ENABLED"] = "true";
+  source.values["SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED"] = "true";
+  source.values["SANGUINIUS_TRANSCRIPTION_PROVIDER"] = "openai";
+  source.values["SANGUINIUS_TRANSCRIPTION_MODEL"] = "gpt-transcribe";
+  source.values["SANGUINIUS_TRANSCRIPTION_REQUEST_TIMEOUT_MS"] = "1";
+  const auto configured = sanguinius::Config::from_source(source);
+  REQUIRE(configured.voice_input.enabled);
+  REQUIRE(configured.voice_input.guild_consent_attested);
+  REQUIRE(configured.voice_input.provider_enabled);
+  REQUIRE(configured.voice_input.model == "gpt-transcribe");
+  REQUIRE(configured.voice_input.request_timeout ==
+          std::chrono::milliseconds{1});
+  REQUIRE(configured.transcription_provider ==
+          sanguinius::TranscriptionProvider::openai);
+
+  source.values["SANGUINIUS_TRANSCRIPTION_MODEL"] = "unsupported-model";
+  REQUIRE(sanguinius::Config::from_source(source).voice_input.model ==
+          "unsupported-model");
 }
 
 TEST_CASE("TTS configuration is fixed-contract and permits only lower limits",

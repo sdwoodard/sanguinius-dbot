@@ -38,6 +38,13 @@ public:
                                         Cancellation cancellation = {});
   [[nodiscard]] SubmitResult try_submit_front(Task task,
                                               Cancellation cancellation = {});
+  /**
+   * Admit priority work even when the queue is full by cancelling and
+   * replacing its least-urgent pending item. Use only when the new task
+   * semantically supersedes the displaced work.
+   */
+  [[nodiscard]] SubmitResult
+  try_submit_front_superseding(Task task, Cancellation cancellation = {});
   [[nodiscard]] QueueSnapshot snapshot() const;
   void stop() noexcept;
 

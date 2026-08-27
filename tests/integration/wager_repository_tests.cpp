@@ -71,7 +71,7 @@ public:
       auto database = Database::open_migration(temporary.path());
       const Migrator migrator{
           persistence::production_migrations(), {"test", "revision"}, clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 14);
+      REQUIRE(migrator.apply(database.connection()).current_version == 15);
     }
     open_runtime();
     SqliteCoreIdentityRepository identities{context};

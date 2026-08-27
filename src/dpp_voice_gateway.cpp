@@ -5,6 +5,7 @@
 #include "sanguinius/tts.hpp"
 
 #include <dpp/dpp.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -167,6 +168,21 @@ bool dpp_voice_gateway_detail::matches_voice_session(
     const std::string_view observed_session_id) noexcept {
   return !expected_session_id.empty() &&
          expected_session_id == observed_session_id;
+}
+
+std::string dpp_voice_gateway_detail::voice_state_update_payload(
+    const DiscordSnowflake guild_id, const DiscordSnowflake channel_id,
+    const bool self_deaf) {
+  if (!guild_id.is_set() || !channel_id.is_set())
+    throw std::invalid_argument{"Voice-state update IDs are required."};
+  return nlohmann::json{
+      {"op", 4},
+      {"d",
+       {{"guild_id", guild_id.str()},
+        {"channel_id", channel_id.str()},
+        {"self_mute", false},
+        {"self_deaf", self_deaf}}}}
+      .dump();
 }
 
 bool dpp_voice_gateway_detail::matches_voice_client(
@@ -384,6 +400,31 @@ public:
       return VoiceGatewaySubmit::unavailable;
     try {
       shard->disconnect_voice(dpp::snowflake{binding->guild_id.value()});
+      return VoiceGatewaySubmit::accepted;
+    } catch (...) {
+      return VoiceGatewaySubmit::unavailable;
+    }
+  }
+
+  VoiceGatewaySubmit set_receive_enabled(const std::string_view session_id,
+                                         const bool enabled) {
+    const auto binding = get_binding(session_id);
+    if (!binding || !binding->connected || !binding->ready ||
+        !binding->dave_active || binding->bot_moved)
+      return VoiceGatewaySubmit::unavailable;
+    auto *guild = dpp::find_guild(dpp::snowflake{binding->guild_id.value()});
+    if (guild == nullptr)
+      return VoiceGatewaySubmit::unavailable;
+    auto *shard = bot_.get_shard(guild->shard_id);
+    if (shard == nullptr)
+      return VoiceGatewaySubmit::unavailable;
+    try {
+      if (bot_.ws_mode != dpp::ws_json)
+        return VoiceGatewaySubmit::unavailable;
+      shard->queue_message(
+          dpp_voice_gateway_detail::voice_state_update_payload(
+              binding->guild_id, binding->channel_id, !enabled),
+          true);
       return VoiceGatewaySubmit::accepted;
     } catch (...) {
       return VoiceGatewaySubmit::unavailable;
@@ -733,6 +774,11 @@ VoiceGatewaySubmit DppVoiceGateway::send_pcm(const std::string_view session_id,
                                              const PcmAudio &audio,
                                              const std::string_view marker) {
   return impl_->send_pcm(session_id, audio, marker);
+}
+
+VoiceGatewaySubmit DppVoiceGateway::set_receive_enabled(
+    const std::string_view session_id, const bool enabled) {
+  return impl_->set_receive_enabled(session_id, enabled);
 }
 
 VoiceGatewaySnapshot

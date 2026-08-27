@@ -23,7 +23,11 @@ static_assert((text_intents & dpp::i_direct_messages) == 0U);
 class DppClusterHost::Impl {
 public:
   Impl(std::string token, const bool voice_enabled)
-      : intents_{intents_for(voice_enabled)}, bot_{std::move(token), intents_} {}
+      : intents_{intents_for(voice_enabled)}, bot_{std::move(token), intents_} {
+    // Voice input sends an explicit Gateway VOICE_STATE_UPDATE so a same-channel
+    // self-deaf change cannot be swallowed by D++'s connect_voice no-op.
+    bot_.set_websocket_protocol(dpp::ws_json);
+  }
 
   const std::uint32_t intents_;
   dpp::cluster bot_;

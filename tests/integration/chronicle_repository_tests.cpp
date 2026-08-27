@@ -59,7 +59,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 14);
+      REQUIRE(migrator.apply(database.connection()).current_version == 15);
     }
     context = std::make_shared<SqliteRepositoryContext>(
         Database::open_runtime(temporary.path(), 25ms));
@@ -104,6 +104,7 @@ public:
         .body = "A concise Chronicle body.",
         .owner_test = false,
         .appearance_decision_id = std::nullopt,
+        .source_voice_window_id = std::nullopt,
         .correlation_id = "correlation",
         .idempotency_key = "chronicle:proposal:40",
         .now_ms = 100,

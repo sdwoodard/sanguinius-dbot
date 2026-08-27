@@ -70,7 +70,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 14);
+      REQUIRE(migrator.apply(database.connection()).current_version == 15);
     }
     context = std::make_shared<SqliteRepositoryContext>(
         Database::open_runtime(temporary.path(), 25ms));
@@ -2211,6 +2211,7 @@ TEST_CASE("appearance reservations cannot adopt existing unrelated outbox rows",
                    .body = "Unrelated bot output.",
                    .owner_test = true,
                    .appearance_decision_id = decision_id,
+                   .source_voice_window_id = std::nullopt,
                    .correlation_id = "reverse-reservation",
                    .idempotency_key = "reverse-reservation-proposal",
                    .now_ms = 1'003,
@@ -3282,6 +3283,7 @@ TEST_CASE("live feedback is private replay safe and quiet is independent",
         .body = model.text,
         .owner_test = true,
         .appearance_decision_id = uuid(3'109),
+        .source_voice_window_id = std::nullopt,
         .correlation_id = "appearance-chronicle",
         .idempotency_key = "appearance-chronicle:" + std::to_string(base),
         .now_ms = 3'100,
@@ -4107,6 +4109,7 @@ TEST_CASE(
       .body = model.text,
       .owner_test = false,
       .appearance_decision_id = decision_id,
+      .source_voice_window_id = std::nullopt,
       .correlation_id = "appearance-chronicle-approval",
       .idempotency_key = "appearance-chronicle-approval:create",
       .now_ms = 100'040,

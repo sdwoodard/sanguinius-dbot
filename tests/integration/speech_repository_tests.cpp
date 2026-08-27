@@ -51,7 +51,7 @@ struct SpeechFixture {
         sanguinius::persistence::production_migrations(),
         {"test", "revision"},
         clock};
-    REQUIRE(migrator.apply(database.connection()).current_version == 14);
+    REQUIRE(migrator.apply(database.connection()).current_version == 15);
     context =
         std::make_shared<sanguinius::persistence::SqliteRepositoryContext>(
             std::move(database));
@@ -643,6 +643,41 @@ TEST_CASE("speech startup reconciles cache files and metadata both ways",
   REQUIRE(health.cache_entries == 0);
   REQUIRE(health.cache_bytes == 0);
   REQUIRE(cache.keys().empty());
+  service.stop();
+}
+
+TEST_CASE("voice input listening gate excludes speech without changing mute",
+          "[speech][service][voice-input][privacy]") {
+  SpeechFixture fixture;
+  sanguinius::test::FakeVoiceGateway gateway;
+  sanguinius::test::FakeAudioNormalizer normalizer;
+  sanguinius::test::FakeTtsCache cache;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  auto clip = sanguinius::make_vox_proof_chime();
+  sanguinius::SpeechService service{
+      *fixture.speech,
+      nullptr,
+      normalizer,
+      cache,
+      gateway,
+      fixture.clock,
+      ids,
+      diagnostics,
+      {.entrance = clip, .error = clip, .farewell = clip},
+      speech_configuration(false)};
+  service.start();
+  service.set_voice_input_listening(true);
+  REQUIRE(service
+              .say(fixture.session_id, "10", "This must remain text only.",
+                   "speech:voice-input:blocked", 300)
+              .status == SpeechEnqueueStatus::invalid_session);
+  REQUIRE(service.health().repository.queued == 0);
+  service.set_voice_input_listening(false);
+  REQUIRE(service
+              .say(fixture.session_id, "10", "Speech resumes after self-deaf.",
+                   "speech:voice-input:released", 301)
+              .status == SpeechEnqueueStatus::accepted);
   service.stop();
 }
 

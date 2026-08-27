@@ -21,6 +21,7 @@
 #include "support/fake_wager_repository.hpp"
 #include "support/fake_vox.hpp"
 #include "support/fake_vox_narration.hpp"
+#include "support/fake_voice_input.hpp"
 
 #include <memory>
 #include <utility>
@@ -54,6 +55,7 @@ public:
           .interaction_queue_capacity = 64,
           .durable_delivery_receipt_wait = std::chrono::milliseconds{100},
           .speech = {},
+          .voice_input = {},
           .static_speech_assets =
               {.entrance = make_vox_proof_chime(),
                .error = make_vox_proof_chime(),
@@ -93,6 +95,12 @@ public:
         options.features.vox_narration_enabled
             ? std::make_unique<FakeVoxNarrationRepository>()
             : nullptr;
+    auto owned_voice_listening =
+        std::make_unique<FakeVoiceListeningRepository>();
+    auto owned_voice_input =
+        options.features.vox_enabled
+            ? std::make_unique<FakeVoiceInputAdapter>()
+            : nullptr;
     auto owned_random =
         std::make_unique<FakeRandom>(std::vector<std::uint64_t>(128, 0));
     auto owned_ai = std::make_unique<FakeAiClient>();
@@ -121,6 +129,8 @@ public:
     tarot_integration = owned_tarot_integration.get();
     vox = owned_vox.get();
     vox_narration = owned_vox_narration.get();
+    voice_listening = owned_voice_listening.get();
+    voice_input = owned_voice_input.get();
     ai = owned_ai.get();
     discord = owned_discord.get();
     voice_gateway = owned_voice_gateway.get();
@@ -150,11 +160,14 @@ public:
             .vox = std::move(owned_vox),
             .speech = std::move(owned_speech),
             .vox_narration = std::move(owned_vox_narration),
+            .voice_listening = std::move(owned_voice_listening),
             .random = std::move(owned_random),
             .appearance_policy = test_appearance_policy(),
             .ai_client = std::move(owned_ai),
             .discord = std::move(owned_discord),
             .voice_gateway = std::move(owned_voice_gateway),
+            .voice_input_adapter = std::move(owned_voice_input),
+            .transcription = nullptr,
             .text_to_speech = nullptr,
             .audio_normalizer = std::move(owned_audio_normalizer),
             .tts_cache = std::move(owned_tts_cache),
@@ -191,6 +204,8 @@ public:
   FakeTarotIntegrationRepository *tarot_integration{};
   FakeVoxRepository *vox{};
   FakeVoxNarrationRepository *vox_narration{};
+  FakeVoiceListeningRepository *voice_listening{};
+  FakeVoiceInputAdapter *voice_input{};
   FakeAiClient *ai{};
   FakeDiscord *discord{};
   FakeVoiceGateway *voice_gateway{};

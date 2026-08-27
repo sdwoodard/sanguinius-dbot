@@ -40,6 +40,7 @@ using namespace std::chrono_literals;
       .interaction_queue_capacity = 64,
       .durable_delivery_receipt_wait = std::chrono::milliseconds{100},
       .speech = {},
+      .voice_input = {},
       .static_speech_assets = {},
   };
 }
@@ -155,6 +156,7 @@ TEST_CASE("full application queue replies only to actionable input",
       .ai_queue_capacity = 64,
       .ai_worker_count = 1,
       .speech = {},
+      .voice_input = {},
       .static_speech_assets = {},
   }};
   fixture.log->block();
@@ -213,6 +215,7 @@ TEST_CASE("full AI queue preserves mention overload response",
       .ai_queue_capacity = 1,
       .ai_worker_count = 1,
       .speech = {},
+      .voice_input = {},
       .static_speech_assets = {},
   }};
   fixture.ai->block();
@@ -261,6 +264,7 @@ TEST_CASE(
       .ai_queue_capacity = 64,
       .ai_worker_count = 1,
       .speech = {},
+      .voice_input = {},
       .static_speech_assets = {},
   }};
   fixture.ai->block();

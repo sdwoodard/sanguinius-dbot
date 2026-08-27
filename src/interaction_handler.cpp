@@ -1,6 +1,8 @@
 #include "sanguinius/interaction_handler.hpp"
 
+#include <atomic>
 #include <chrono>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -8,6 +10,29 @@
 
 namespace sanguinius {
 namespace {
+
+struct DeliveryNotifier {
+  explicit DeliveryNotifier(DeliveryCallback value)
+      : callback{std::move(value)} {}
+
+  void notify(const DeliveryResult result) noexcept {
+    try {
+      std::call_once(once, [this, result] {
+        auto current = std::move(callback);
+        if (current) {
+          try {
+            current(result);
+          } catch (...) {
+          }
+        }
+      });
+    } catch (...) {
+    }
+  }
+
+  DeliveryCallback callback;
+  std::once_flag once;
+};
 
 [[nodiscard]] std::optional<std::string> cache_value(const std::string &value) {
   if (value.empty() || value.size() > 128) {
@@ -55,8 +80,9 @@ status_message(const FeatureConfiguration &features,
          << enabled(preferences.appearance_callback_opt_in)
          << "\nServer-wide appearance controls: " << appearance_status
          << "\nVoice input globally: " << enabled(features.voice_input_enabled)
-         << "\nYour voice-input opt-in: "
-         << enabled(preferences.voice_input_opt_in)
+         << "\nVoice-input consent rule: guild-wide prior consent must be "
+            "attested by the owner; the legacy personal preference is not a "
+            "capture gate"
          << "\nUnopened sealed notices: " << pending_notices << "\n"
          << tarot_status
          << "\nDiscord DMs are never used. Raw received voice audio is never "
@@ -65,6 +91,92 @@ status_message(const FeatureConfiguration &features,
 }
 
 } // namespace
+
+namespace interaction_handler_detail {
+
+SequencedInteractionEditor::SequencedInteractionEditor(Sender sender)
+    : sender_{std::move(sender)} {
+  if (!sender_)
+    throw std::invalid_argument{
+        "A sequenced interaction editor requires a sender."};
+}
+
+void SequencedInteractionEditor::submit(InteractionMessage message,
+                                        DeliveryCallback callback,
+                                        const bool terminal) noexcept {
+  std::optional<PendingEdit> dispatch_now;
+  DeliveryCallback rejected;
+  {
+    const std::scoped_lock lock{mutex_};
+    PendingEdit pending{std::move(message), std::move(callback)};
+    if (terminal) {
+      terminal_seen_ = true;
+      if (in_flight_) {
+        if (pending_terminal_)
+          rejected = std::move(pending_terminal_->callback);
+        pending_terminal_ = std::move(pending);
+      } else {
+        in_flight_ = true;
+        dispatch_now = std::move(pending);
+      }
+    } else if (in_flight_ || terminal_seen_) {
+      rejected = std::move(pending.callback);
+    } else {
+      in_flight_ = true;
+      dispatch_now = std::move(pending);
+    }
+  }
+  if (rejected) {
+    try {
+      rejected(DeliveryResult::permanent_failure);
+    } catch (...) {
+    }
+  }
+  if (dispatch_now)
+    dispatch(std::move(*dispatch_now));
+}
+
+void SequencedInteractionEditor::dispatch(PendingEdit pending) noexcept {
+  const auto self = shared_from_this();
+  const auto once = std::make_shared<std::once_flag>();
+  auto completion = [self, once, callback = std::move(pending.callback)](
+                        const DeliveryResult result) mutable noexcept {
+    try {
+      std::call_once(*once, [&] {
+        if (callback) {
+          try {
+            callback(result);
+          } catch (...) {
+          }
+        }
+        self->complete();
+      });
+    } catch (...) {
+    }
+  };
+  try {
+    sender_(std::move(pending.message), completion);
+  } catch (...) {
+    completion(DeliveryResult::unknown_outcome);
+  }
+}
+
+void SequencedInteractionEditor::complete() noexcept {
+  std::optional<PendingEdit> next;
+  {
+    const std::scoped_lock lock{mutex_};
+    if (pending_terminal_) {
+      next = std::move(pending_terminal_);
+      pending_terminal_.reset();
+    } else {
+      in_flight_ = false;
+    }
+  }
+  if (next)
+    dispatch(std::move(*next));
+}
+
+} // namespace interaction_handler_detail
 
 InteractionHandler::InteractionHandler(
     CoreIdentityRepository &identities, PendingNoticeService &notices,
@@ -78,18 +190,20 @@ InteractionHandler::InteractionHandler(
     TarotService *tarot, TarotWagerService *wagers,
     TarotDrawService *tarot_draws, TarotHouseService *tarot_house,
     TarotIntegrationService *tarot_integration, VoxService *vox,
-    VoxNarrationService *vox_narration)
+    VoxNarrationService *vox_narration, VoiceListeningService *voice_listening)
     : identities_{identities}, notices_{notices}, clock_{clock},
       durable_controls_{durable_controls}, chronicle_{chronicle},
       chronicle_sessions_{chronicle_sessions}, relationships_{relationships},
       appearances_{appearances}, tarot_{tarot}, wagers_{wagers},
       tarot_draws_{tarot_draws}, tarot_house_{tarot_house},
       tarot_integration_{tarot_integration}, vox_{vox},
-      vox_narration_{vox_narration}, health_service_{health_service},
-      diagnostics_{diagnostics}, features_{features},
-      message_queue_{std::move(message_queue)}, ai_queue_{std::move(ai_queue)},
-      callbacks_{std::make_shared<CallbackFence>()},
-      worker_{queue_capacity, 1} {
+      vox_narration_{vox_narration}, voice_listening_{voice_listening},
+      health_service_{health_service}, diagnostics_{diagnostics},
+      features_{features}, message_queue_{std::move(message_queue)},
+      ai_queue_{std::move(ai_queue)},
+      callbacks_{std::make_shared<CallbackFence>()}, worker_{queue_capacity, 1},
+      privacy_worker_{queue_capacity, 1},
+      kill_switch_worker_{queue_capacity, 1} {
   if (!message_queue_ || !ai_queue_) {
     throw std::invalid_argument{"Interaction queue observers are required."};
   }
@@ -97,11 +211,28 @@ InteractionHandler::InteractionHandler(
 
 InteractionHandler::~InteractionHandler() { stop(); }
 
-void InteractionHandler::start() { worker_.start(); }
+void InteractionHandler::start() {
+  kill_switch_worker_.start();
+  privacy_worker_.start();
+  worker_.start();
+}
+
+void InteractionHandler::drain() noexcept {
+  // VoiceListeningService independently persists preempted emergency disables.
+  // These queues therefore only finish command processing and response
+  // delivery while their dependencies remain alive.
+  kill_switch_worker_.stop();
+  privacy_worker_.stop();
+  worker_.stop();
+}
+
+void InteractionHandler::close_delivery() noexcept {
+  callbacks_->close_and_wait();
+}
 
 void InteractionHandler::stop() noexcept {
-  worker_.stop();
-  callbacks_->close_and_wait();
+  drain();
+  close_delivery();
 }
 
 SubmitResult InteractionHandler::enqueue(RoutedInteraction interaction) {
@@ -146,8 +277,140 @@ SubmitResult InteractionHandler::enqueue(RoutedInteraction interaction) {
   return result;
 }
 
+SubmitResult
+InteractionHandler::enqueue_privacy_control(RoutedInteraction interaction) {
+  auto responder = interaction.interaction.responder;
+  auto correlation_id = interaction.interaction.correlation_id;
+  const auto disable =
+      interaction.operation == InteractionOperation::vox_listening_disable;
+  const auto kill_switch_control =
+      disable ||
+      interaction.operation == InteractionOperation::vox_listening_enable;
+  auto request = std::make_shared<RoutedInteraction>(std::move(interaction));
+  const auto execute = [this, request] { process_privacy_control(*request); };
+  const auto superseded = [responder] {
+    if (responder) {
+      responder->edit_original(text_message(
+          "This voice privacy control was superseded by a newer emergency "
+          "disable."));
+    }
+  };
+  SubmitResult result{SubmitResult::stopping};
+  if (disable) {
+    result = kill_switch_worker_.try_submit_front_superseding(
+        [execute](std::stop_token) { execute(); }, superseded);
+  } else if (kill_switch_control) {
+    result = kill_switch_worker_.try_submit(
+        [execute](const std::stop_token token) {
+          if (!token.stop_requested())
+            execute();
+        },
+        superseded);
+  } else {
+    result = privacy_worker_.try_submit_front(
+        [execute](const std::stop_token token) {
+          if (!token.stop_requested())
+            execute();
+        });
+  }
+  if (result == SubmitResult::full) {
+    diagnostics_.emit(
+        {DiagnosticSeverity::warning, "interaction.privacy_queue_full",
+         "A voice privacy control arrived while the dedicated privacy queue "
+         "was full; previously accepted privacy controls remain prioritized.",
+         correlation_id});
+    if (responder) {
+      responder->edit_original(
+          text_message("A voice privacy control is already being processed."));
+    }
+  }
+  return result;
+}
+
+void InteractionHandler::process_privacy_control(
+    const RoutedInteraction &request) noexcept {
+  try {
+    process(request);
+  } catch (const std::exception &error) {
+    diagnostics_.emit({DiagnosticSeverity::error, "interaction.privacy_control",
+                       error.what(), request.interaction.correlation_id});
+    edit(request.interaction,
+         text_message("I could not complete that voice privacy control. "
+                      "Please try again immediately."),
+         "interaction.response");
+  } catch (...) {
+    diagnostics_.emit({DiagnosticSeverity::error, "interaction.privacy_control",
+                       "Unknown voice privacy-control failure.",
+                       request.interaction.correlation_id});
+    edit(request.interaction,
+         text_message("I could not complete that voice privacy control. "
+                      "Please try again immediately."),
+         "interaction.response");
+  }
+}
+
+void InteractionHandler::preempt_voice_privacy_control(
+    RoutedInteraction &request) noexcept {
+  if (!voice_listening_ ||
+      (request.operation != InteractionOperation::vox_listen_stop &&
+       request.operation != InteractionOperation::vox_listening_disable &&
+       request.operation != InteractionOperation::vox_listening_enable))
+    return;
+  try {
+    if (request.operation == InteractionOperation::vox_listening_enable) {
+      request.voice_disable_generation = voice_listening_->disable_generation();
+      return;
+    }
+    const auto window =
+        request.operation == InteractionOperation::vox_listen_stop
+            ? parse_voice_control(request.interaction.custom_id,
+                                  voice_listening_stop_prefix)
+            : std::nullopt;
+    request.voice_disable_generation = voice_listening_->preempt_privacy_abort(
+        request.interaction.user_id,
+        request.operation == InteractionOperation::vox_listening_disable,
+        window);
+  } catch (...) {
+  }
+}
+
 QueueSnapshot InteractionHandler::queue_snapshot() const {
   return worker_.snapshot();
+}
+
+QueueSnapshot InteractionHandler::privacy_queue_snapshot() const {
+  return privacy_worker_.snapshot();
+}
+
+bool InteractionHandler::show_voice_transcript_modal(
+    const IncomingInteraction &interaction) const {
+  if (!voice_listening_ || !interaction.responder)
+    return false;
+  const auto modal = voice_listening_->transcript_modal(interaction);
+  if (!modal)
+    return false;
+  auto receipt_context = interaction;
+  receipt_context.responder.reset();
+  try {
+    interaction.responder->show_modal(*modal, [this, callbacks = callbacks_,
+                                               receipt_context =
+                                                   std::move(receipt_context)](
+                                                  const DeliveryResult result) {
+      try {
+        static_cast<void>(callbacks->invoke([this, &receipt_context, result] {
+          if (voice_listening_)
+            voice_listening_->transcript_modal_delivery(receipt_context,
+                                                        result);
+        }));
+      } catch (...) {
+      }
+    });
+  } catch (...) {
+    voice_listening_->transcript_modal_delivery(
+        interaction, DeliveryResult::unknown_outcome);
+    return false;
+  }
+  return true;
 }
 
 void InteractionHandler::process(const RoutedInteraction &request) {
@@ -949,6 +1212,94 @@ void InteractionHandler::process(const RoutedInteraction &request) {
          "interaction.vox_narration_recent");
     return;
   }
+  case InteractionOperation::vox_transcript_propose:
+    if (!voice_listening_)
+      throw std::runtime_error{"Voice listening service is unavailable."};
+    edit(request.interaction,
+         voice_listening_->propose_transcript(request.interaction),
+         "interaction.voice_transcript_propose");
+    return;
+  case InteractionOperation::vox_listen_start:
+  case InteractionOperation::vox_listen_stop:
+  case InteractionOperation::vox_listening_disable:
+  case InteractionOperation::vox_listening_enable: {
+    if (!voice_listening_) {
+      edit(request.interaction,
+           text_message("Voice listening is unavailable in this build."),
+           "interaction.voice_listening_unavailable");
+      return;
+    }
+    const auto interaction = request.interaction;
+    const auto callback_fence = callbacks_;
+    const auto editor = std::make_shared<
+        interaction_handler_detail::SequencedInteractionEditor>(
+        [this, interaction, callback_fence](InteractionMessage result,
+                                            DeliveryCallback receipt) {
+          const auto pending_receipt =
+              std::make_shared<DeliveryNotifier>(std::move(receipt));
+          try {
+            const auto invoked = callback_fence->invoke(
+                [this, interaction, result = std::move(result),
+                 pending_receipt]() mutable {
+                  edit(interaction, std::move(result),
+                       "interaction.voice_listening",
+                       [pending_receipt](const DeliveryResult delivery) {
+                         pending_receipt->notify(delivery);
+                       });
+                });
+            if (!invoked)
+              pending_receipt->notify(DeliveryResult::permanent_failure);
+          } catch (...) {
+            pending_receipt->notify(DeliveryResult::unknown_outcome);
+          }
+        });
+    const auto completion_started = std::make_shared<std::atomic_bool>();
+    auto confirmed_completion = [editor,
+                                 completion_started](InteractionMessage result,
+                                                     DeliveryCallback receipt) {
+      editor->submit(std::move(result), std::move(receipt),
+                     completion_started->exchange(true));
+    };
+    SubmitResult submitted{SubmitResult::stopping};
+    if (request.operation == InteractionOperation::vox_listen_start) {
+      const auto option =
+          std::ranges::find(request.interaction.command_options, "duration",
+                            &InteractionOption::name);
+      const auto *duration = option == request.interaction.command_options.end()
+                                 ? nullptr
+                                 : std::get_if<std::string>(&option->value);
+      if (duration == nullptr ||
+          (*duration != "5" && *duration != "10" && *duration != "15"))
+        throw std::invalid_argument{
+            "A 5, 10, or 15 second duration is required."};
+      submitted = voice_listening_->listen_start(
+          request.interaction, static_cast<std::size_t>(std::stoul(*duration)),
+          std::move(confirmed_completion));
+    } else {
+      auto completion = [confirmed_completion =
+                             std::move(confirmed_completion)](
+                            InteractionMessage result) mutable {
+        confirmed_completion(std::move(result), {});
+      };
+      if (request.operation == InteractionOperation::vox_listen_stop) {
+        const auto window = parse_voice_control(request.interaction.custom_id,
+                                                voice_listening_stop_prefix);
+        submitted = voice_listening_->listen_stop(
+            request.interaction, std::move(completion), window);
+      } else {
+        submitted = voice_listening_->set_kill_switch(
+            request.interaction,
+            request.operation == InteractionOperation::vox_listening_disable,
+            std::move(completion), request.voice_disable_generation);
+      }
+    }
+    if (submitted != SubmitResult::accepted) {
+      edit(request.interaction,
+           text_message("Voice listening is busy or shutting down. Try again."),
+           "interaction.voice_listening_queue");
+    }
+    return;
+  }
   case InteractionOperation::vox_summon:
   case InteractionOperation::vox_status:
   case InteractionOperation::vox_leave:
@@ -1064,8 +1415,12 @@ void InteractionHandler::ensure_user(const IncomingInteraction &interaction) {
 
 void InteractionHandler::edit(
     const IncomingInteraction &interaction, InteractionMessage message,
-    const std::string_view diagnostic_category) const noexcept {
+    const std::string_view diagnostic_category,
+    DeliveryCallback delivery_callback) const noexcept {
+  std::shared_ptr<DeliveryNotifier> pending_delivery;
   try {
+    pending_delivery =
+        std::make_shared<DeliveryNotifier>(std::move(delivery_callback));
     if (!interaction.responder) {
       throw std::runtime_error{"Interaction responder is missing."};
     }
@@ -1073,8 +1428,9 @@ void InteractionHandler::edit(
     const auto category = std::string{diagnostic_category};
     const auto callbacks = callbacks_;
     interaction.responder->edit_original(
-        message, [this, callbacks, correlation_id,
-                  category](const DeliveryResult result) {
+        message, [this, callbacks, correlation_id, category,
+                  pending_delivery](const DeliveryResult result) {
+          pending_delivery->notify(result);
           try {
             static_cast<void>(callbacks->invoke([this, correlation_id, category,
                                                  result] {
@@ -1089,10 +1445,26 @@ void InteractionHandler::edit(
           }
         });
   } catch (const std::exception &error) {
+    if (pending_delivery)
+      pending_delivery->notify(DeliveryResult::permanent_failure);
+    else if (delivery_callback) {
+      try {
+        delivery_callback(DeliveryResult::permanent_failure);
+      } catch (...) {
+      }
+    }
     diagnostics_.emit({DiagnosticSeverity::error,
                        std::string{diagnostic_category}, error.what(),
                        interaction.correlation_id});
   } catch (...) {
+    if (pending_delivery)
+      pending_delivery->notify(DeliveryResult::unknown_outcome);
+    else if (delivery_callback) {
+      try {
+        delivery_callback(DeliveryResult::unknown_outcome);
+      } catch (...) {
+      }
+    }
     diagnostics_.emit(
         {DiagnosticSeverity::error, std::string{diagnostic_category},
          "Unknown interaction response failure.", interaction.correlation_id});

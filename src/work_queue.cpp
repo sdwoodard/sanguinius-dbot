@@ -46,14 +46,19 @@ public:
   }
 
   [[nodiscard]] SubmitResult try_submit(Task task, Cancellation cancellation,
-                                        const bool priority) {
+                                        const bool priority,
+                                        const bool superseding = false) {
+    Cancellation displaced;
     {
       const std::scoped_lock lock{mutex_};
       if (!accepting_) {
         return SubmitResult::stopping;
       }
       if (tasks_.size() >= capacity_) {
-        return SubmitResult::full;
+        if (!superseding)
+          return SubmitResult::full;
+        displaced = std::move(tasks_.back().cancellation);
+        tasks_.pop_back();
       }
       PendingTask pending{.task = std::move(task),
                           .cancellation = std::move(cancellation)};
@@ -61,6 +66,12 @@ public:
         tasks_.push_front(std::move(pending));
       else
         tasks_.push_back(std::move(pending));
+    }
+    if (displaced) {
+      try {
+        displaced();
+      } catch (...) {
+      }
     }
     ready_.notify_one();
     return SubmitResult::accepted;
@@ -157,6 +168,13 @@ SubmitResult BoundedExecutor::try_submit(Task task, Cancellation cancellation) {
 SubmitResult BoundedExecutor::try_submit_front(Task task,
                                                Cancellation cancellation) {
   return impl_->try_submit(std::move(task), std::move(cancellation), true);
+}
+
+SubmitResult
+BoundedExecutor::try_submit_front_superseding(Task task,
+                                              Cancellation cancellation) {
+  return impl_->try_submit(std::move(task), std::move(cancellation), true,
+                           true);
 }
 
 QueueSnapshot BoundedExecutor::snapshot() const { return impl_->snapshot(); }

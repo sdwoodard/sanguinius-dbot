@@ -4,11 +4,13 @@
 #include "sanguinius/dpp_discord_adapter.hpp"
 #include "sanguinius/dpp_cluster_host.hpp"
 #include "sanguinius/dpp_voice_gateway.hpp"
+#include "sanguinius/dpp_voice_input_adapter.hpp"
 #include "sanguinius/ffmpeg_audio_normalizer.hpp"
 #include "sanguinius/id_generator.hpp"
 #include "sanguinius/message_logger.hpp"
 #include "sanguinius/openai_client.hpp"
 #include "sanguinius/openai_tts_client.hpp"
+#include "sanguinius/openai_transcription_client.hpp"
 #include "sanguinius/persistence/database.hpp"
 #include "sanguinius/persistence/migrator.hpp"
 #include "sanguinius/persistence/sqlite_appearance_repository.hpp"
@@ -23,6 +25,7 @@
 #include "sanguinius/persistence/sqlite_wager_repository.hpp"
 #include "sanguinius/persistence/sqlite_vox_repository.hpp"
 #include "sanguinius/persistence/sqlite_vox_narration_repository.hpp"
+#include "sanguinius/persistence/sqlite_voice_input_repository.hpp"
 #include "sanguinius/persistent_id.hpp"
 #include "sanguinius/random.hpp"
 #include "sanguinius/static_speech_assets.hpp"
@@ -199,6 +202,9 @@ std::unique_ptr<Application> make_application(const Config &config) {
   auto vox_narration =
       std::make_unique<persistence::SqliteVoxNarrationRepository>(
           repository_context, config.tts.usage_policy);
+  auto voice_listening =
+      std::make_unique<persistence::SqliteVoiceListeningRepository>(
+          repository_context);
   std::optional<TarotDeckCatalog> deck_catalog;
   std::optional<TarotHouseCatalog> house_catalog;
   if (config.features.tarot_enabled) {
@@ -221,12 +227,26 @@ std::unique_ptr<Application> make_application(const Config &config) {
       cluster_host, config.discord.request_timeout,
       config.discord.server_scope.guild_id, *diagnostics);
   std::unique_ptr<VoiceGateway> voice_gateway;
+  std::unique_ptr<VoiceInputAdapter> voice_input_adapter;
+  std::unique_ptr<TranscriptionClient> transcription;
   std::unique_ptr<TextToSpeechClient> text_to_speech;
   std::unique_ptr<AudioNormalizer> audio_normalizer;
   std::unique_ptr<TtsCache> tts_cache;
-  if (config.features.vox_enabled)
+  if (config.features.vox_enabled) {
     voice_gateway =
         std::make_unique<DppVoiceGateway>(cluster_host, *diagnostics);
+    voice_input_adapter = std::make_unique<DppVoiceInputAdapter>(
+        cluster_host, *voice_gateway, *diagnostics,
+        config.features.voice_input_enabled);
+  }
+  if (config.transcription_provider == TranscriptionProvider::openai &&
+      config.voice_input.model == transcription_model) {
+    transcription = std::make_unique<OpenAiTranscriptionClient>(
+        config.ai.api_key, nullptr,
+        OpenAiTranscriptionClientConfiguration{
+            .model = std::string{transcription_model},
+            .total_timeout = config.voice_input.request_timeout});
+  }
   if (config.features.vox_enabled) {
     if (config.tts.provider == TtsProvider::openai) {
       text_to_speech = std::make_unique<OpenAiTtsClient>(
@@ -290,6 +310,7 @@ std::unique_ptr<Application> make_application(const Config &config) {
                   .maximum_text_scalars = config.tts.maximum_text_scalars,
                   .queue_capacity = 64,
               },
+          .voice_input = config.voice_input,
           .static_speech_assets = std::move(static_speech_assets),
       },
       ApplicationDependencies{
@@ -315,11 +336,14 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .vox = std::move(vox),
           .speech = std::move(speech),
           .vox_narration = std::move(vox_narration),
+          .voice_listening = std::move(voice_listening),
           .random = std::move(random),
           .appearance_policy = config.appearance_policy,
           .ai_client = std::move(ai_client),
           .discord = std::move(discord),
           .voice_gateway = std::move(voice_gateway),
+          .voice_input_adapter = std::move(voice_input_adapter),
+          .transcription = std::move(transcription),
           .text_to_speech = std::move(text_to_speech),
           .audio_normalizer = std::move(audio_normalizer),
           .tts_cache = std::move(tts_cache),

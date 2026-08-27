@@ -79,11 +79,14 @@ public:
         vox_repository_{std::move(dependencies.vox)},
         speech_repository_{std::move(dependencies.speech)},
         vox_narration_repository_{std::move(dependencies.vox_narration)},
+        voice_listening_repository_{std::move(dependencies.voice_listening)},
         random_{std::move(dependencies.random)},
         appearance_policy_{std::move(dependencies.appearance_policy)},
         ai_client_{std::move(dependencies.ai_client)},
         discord_{std::move(dependencies.discord)},
         voice_gateway_{std::move(dependencies.voice_gateway)},
+        voice_input_adapter_{std::move(dependencies.voice_input_adapter)},
+        transcription_{std::move(dependencies.transcription)},
         text_to_speech_{std::move(dependencies.text_to_speech)},
         audio_normalizer_{std::move(dependencies.audio_normalizer)},
         tts_cache_{std::move(dependencies.tts_cache)} {
@@ -104,6 +107,12 @@ public:
         (!options_.features.vox_enabled || !vox_narration_repository_)) {
       throw std::invalid_argument{
           "Vox narration requires Vox output and narration persistence."};
+    }
+    if (options_.features.voice_input_enabled &&
+        (!options_.features.vox_enabled || !voice_listening_repository_ ||
+         !voice_input_adapter_)) {
+      throw std::invalid_argument{
+          "Voice-input persistence and adapter are required when enabled."};
     }
 
     scope_policy_ = std::make_unique<ServerScopePolicy>(options_.server_scope);
@@ -362,6 +371,42 @@ public:
                   std::move(session_id), std::move(guild_id),
                   std::move(entrance), std::move(farewell));
           });
+    if (voice_listening_repository_ && voice_input_adapter_) {
+      voice_listening_service_ = std::make_unique<VoiceListeningService>(
+          *voice_listening_repository_, *voice_input_adapter_,
+          transcription_.get(), *discord_, *clock_, *persistent_id_generator_,
+          *diagnostics_, options_.server_scope, options_.voice_input,
+          [this]() -> std::optional<ActiveVoxListeningContext> {
+            if (!vox_service_)
+              return std::nullopt;
+            const auto current = vox_service_->active_session();
+            if (!current)
+              return std::nullopt;
+            const auto health = vox_service_->health();
+            bool speech_idle = true;
+            if (health.speech) {
+              const auto &speech = *health.speech;
+              speech_idle = speech.repository.queued == 0 &&
+                            speech.repository.synthesizing == 0 &&
+                            speech.repository.ready == 0 &&
+                            speech.repository.playing == 0 &&
+                            speech.synthesis_worker.queued == 0 &&
+                            speech.playback_worker.queued == 0;
+            }
+            return ActiveVoxListeningContext{
+                .session_id = current->session_id,
+                .guild_id = current->guild_id,
+                .text_channel_id = current->text_channel_id,
+                .voice_channel_id = current->voice_channel_id,
+                .connection_generation = current->connection_generation,
+                .ready = current->state == VoxState::ready,
+                .speech_idle = speech_idle};
+          },
+          chronicle_service_.get(), [this](const bool listening) {
+            if (speech_service_)
+              speech_service_->set_voice_input_listening(listening);
+          });
+    }
     const auto add_vox_handler = [this](const std::string_view job_type) {
       scheduler_->add_handler(
           std::string{job_type}, [this](const ClaimedScheduledJob &job) {
@@ -622,6 +667,11 @@ public:
                          ? std::optional{vox_narration_service_->health()}
                          : std::nullopt;
             },
+            .voice_input = [this]() -> std::optional<VoiceListeningHealth> {
+              return voice_listening_service_
+                         ? std::optional{voice_listening_service_->health()}
+                         : std::nullopt;
+            },
         });
     owner_admin_ = std::make_unique<OwnerAdminService>(
         options_.controls, *scope_policy_, *health_service_);
@@ -721,7 +771,7 @@ public:
         appearance_service_.get(), tarot_service_.get(), wager_service_.get(),
         tarot_draw_service_.get(), tarot_house_service_.get(),
         tarot_integration_service_.get(), vox_service_.get(),
-        vox_narration_service_.get());
+        vox_narration_service_.get(), voice_listening_service_.get());
     interaction_router_ = std::make_unique<InteractionRouter>(
         *scope_policy_, options_.controls, options_.features,
         *interaction_handler_, *diagnostics_);
@@ -746,6 +796,13 @@ public:
           .started_at_ms = unix_milliseconds(*clock_),
       });
       instance_started_ = true;
+      // Recovery belongs to application startup, not to the optional runtime
+      // adapter: disabling Vox or voice input must never leave a prior capture
+      // window nonterminal.
+      if (voice_listening_repository_) {
+        static_cast<void>(voice_listening_repository_->abandon_nonterminal(
+            unix_milliseconds(*clock_), "restart", "voice:startup:"));
+      }
       if (vox_repository_) {
         static_cast<void>(vox_repository_->recover(
             options_.instance_id, unix_milliseconds(*clock_),
@@ -809,6 +866,10 @@ public:
       if (vox_service_) {
         vox_service_->start();
         vox_started_ = true;
+      }
+      if (voice_listening_service_) {
+        voice_listening_service_->start();
+        voice_listening_started_ = true;
       }
       discord_->start(
           [this](IncomingMessage message) {
@@ -883,6 +944,12 @@ private:
     if (interaction_router_) {
       interaction_router_->stop();
     }
+    if (interaction_handler_started_) {
+      // Drain queued safety work while VoiceListeningService remains alive,
+      // but keep private response delivery available for its terminal privacy
+      // overwrite during shutdown.
+      interaction_handler_->drain();
+    }
     if (scheduler_started_) {
       scheduler_->stop();
       scheduler_started_ = false;
@@ -890,6 +957,14 @@ private:
     if (vox_narration_started_) {
       vox_narration_service_->stop();
       vox_narration_started_ = false;
+    }
+    if (voice_listening_started_) {
+      voice_listening_service_->stop();
+      voice_listening_started_ = false;
+    }
+    if (interaction_handler_started_) {
+      interaction_handler_->close_delivery();
+      interaction_handler_started_ = false;
     }
     if (vox_started_) {
       vox_service_->stop();
@@ -902,10 +977,6 @@ private:
     if (outbox_started_) {
       outbox_->stop();
       outbox_started_ = false;
-    }
-    if (interaction_handler_started_) {
-      interaction_handler_->stop();
-      interaction_handler_started_ = false;
     }
     if (message_handler_started_) {
       message_handler_->stop();
@@ -963,11 +1034,14 @@ private:
   std::unique_ptr<VoxRepository> vox_repository_;
   std::unique_ptr<SpeechRepository> speech_repository_;
   std::unique_ptr<VoxNarrationRepository> vox_narration_repository_;
+  std::unique_ptr<VoiceListeningRepository> voice_listening_repository_;
   std::unique_ptr<Random> random_;
   std::optional<AppearancePolicy> appearance_policy_;
   std::unique_ptr<AiClient> ai_client_;
   std::unique_ptr<DiscordRuntime> discord_;
   std::unique_ptr<VoiceGateway> voice_gateway_;
+  std::unique_ptr<VoiceInputAdapter> voice_input_adapter_;
+  std::unique_ptr<TranscriptionClient> transcription_;
   std::unique_ptr<TextToSpeechClient> text_to_speech_;
   std::unique_ptr<AudioNormalizer> audio_normalizer_;
   std::unique_ptr<TtsCache> tts_cache_;
@@ -991,6 +1065,7 @@ private:
   std::unique_ptr<VoxService> vox_service_;
   std::unique_ptr<SpeechService> speech_service_;
   std::unique_ptr<VoxNarrationService> vox_narration_service_;
+  std::unique_ptr<VoiceListeningService> voice_listening_service_;
   std::unique_ptr<SchedulerService> scheduler_;
   std::unique_ptr<DurableWorkControlService> durable_controls_;
   std::unique_ptr<InteractionHandler> interaction_handler_;
@@ -1005,6 +1080,7 @@ private:
   bool vox_started_{false};
   bool speech_started_{false};
   bool vox_narration_started_{false};
+  bool voice_listening_started_{false};
   bool instance_started_{false};
   bool instance_finished_{false};
 };

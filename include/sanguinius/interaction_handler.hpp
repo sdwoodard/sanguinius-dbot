@@ -16,16 +16,54 @@
 #include "sanguinius/tarot.hpp"
 #include "sanguinius/tarot_house.hpp"
 #include "sanguinius/tarot_integration.hpp"
-#include "sanguinius/wagers.hpp"
+#include "sanguinius/voice_input.hpp"
 #include "sanguinius/vox.hpp"
 #include "sanguinius/vox_narration.hpp"
+#include "sanguinius/wagers.hpp"
 #include "sanguinius/work_queue.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 
 namespace sanguinius {
+
+namespace interaction_handler_detail {
+
+class SequencedInteractionEditor final
+    : public std::enable_shared_from_this<SequencedInteractionEditor> {
+public:
+  using Sender = std::function<void(InteractionMessage, DeliveryCallback)>;
+
+  explicit SequencedInteractionEditor(Sender sender);
+
+  SequencedInteractionEditor(const SequencedInteractionEditor &) = delete;
+  SequencedInteractionEditor &
+  operator=(const SequencedInteractionEditor &) = delete;
+
+  void submit(InteractionMessage message, DeliveryCallback callback,
+              bool terminal) noexcept;
+
+private:
+  struct PendingEdit {
+    InteractionMessage message;
+    DeliveryCallback callback;
+  };
+
+  void dispatch(PendingEdit pending) noexcept;
+  void complete() noexcept;
+
+  Sender sender_;
+  std::mutex mutex_;
+  bool in_flight_{};
+  bool terminal_seen_{};
+  std::optional<PendingEdit> pending_terminal_;
+};
+
+} // namespace interaction_handler_detail
 
 enum class InteractionOperation {
   status,
@@ -124,11 +162,17 @@ enum class InteractionOperation {
   vox_narration_preview,
   vox_narration_enqueue,
   vox_narration_recent,
+  vox_listen_start,
+  vox_listen_stop,
+  vox_transcript_propose,
+  vox_listening_disable,
+  vox_listening_enable,
 };
 
 struct RoutedInteraction {
   IncomingInteraction interaction;
   InteractionOperation operation{InteractionOperation::status};
+  std::uint64_t voice_disable_generation{};
 };
 
 class InteractionHandler {
@@ -147,23 +191,33 @@ public:
       TarotDrawService *tarot_draws = nullptr,
       TarotHouseService *tarot_house = nullptr,
       TarotIntegrationService *tarot_integration = nullptr,
-      VoxService *vox = nullptr,
-      VoxNarrationService *vox_narration = nullptr);
+      VoxService *vox = nullptr, VoxNarrationService *vox_narration = nullptr,
+      VoiceListeningService *voice_listening = nullptr);
   ~InteractionHandler();
 
   InteractionHandler(const InteractionHandler &) = delete;
   InteractionHandler &operator=(const InteractionHandler &) = delete;
 
   void start();
+  void drain() noexcept;
+  void close_delivery() noexcept;
   void stop() noexcept;
   [[nodiscard]] SubmitResult enqueue(RoutedInteraction interaction);
+  [[nodiscard]] SubmitResult
+  enqueue_privacy_control(RoutedInteraction interaction);
+  void preempt_voice_privacy_control(RoutedInteraction &interaction) noexcept;
   [[nodiscard]] QueueSnapshot queue_snapshot() const;
+  [[nodiscard]] QueueSnapshot privacy_queue_snapshot() const;
+  [[nodiscard]] bool
+  show_voice_transcript_modal(const IncomingInteraction &interaction) const;
 
 private:
   void process(const RoutedInteraction &request);
+  void process_privacy_control(const RoutedInteraction &request) noexcept;
   void ensure_user(const IncomingInteraction &interaction);
   void edit(const IncomingInteraction &interaction, InteractionMessage message,
-            std::string_view diagnostic_category) const noexcept;
+            std::string_view diagnostic_category,
+            DeliveryCallback delivery_callback = {}) const noexcept;
   void edit_reveal(const IncomingInteraction &interaction,
                    OpenPendingNoticeResult reveal,
                    std::string_view diagnostic_category) const noexcept;
@@ -183,6 +237,7 @@ private:
   TarotIntegrationService *tarot_integration_{};
   VoxService *vox_{};
   VoxNarrationService *vox_narration_{};
+  VoiceListeningService *voice_listening_{};
   HealthService &health_service_;
   Diagnostics &diagnostics_;
   FeatureConfiguration features_;
@@ -190,6 +245,8 @@ private:
   std::function<QueueSnapshot()> ai_queue_;
   std::shared_ptr<CallbackFence> callbacks_;
   BoundedExecutor worker_;
+  BoundedExecutor privacy_worker_;
+  BoundedExecutor kill_switch_worker_;
 };
 
 } // namespace sanguinius

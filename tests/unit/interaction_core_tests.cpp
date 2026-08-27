@@ -1,5 +1,6 @@
 #include "sanguinius/command_registry.hpp"
 #include "sanguinius/discord_command_cli.hpp"
+#include "sanguinius/interaction_handler.hpp"
 #include "sanguinius/interaction_response_state.hpp"
 #include "sanguinius/pending_notice.hpp"
 
@@ -11,7 +12,11 @@
 
 #include <array>
 #include <chrono>
+#include <memory>
+#include <mutex>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -22,10 +27,76 @@ namespace {
 
 } // namespace
 
-TEST_CASE("command catalog version thirteen is deterministic and feature gated",
+TEST_CASE("voice interaction privacy overwrite is coalesced and sent last",
+          "[interaction][voice-input][privacy][ordering]") {
+  std::mutex mutex;
+  std::vector<sanguinius::InteractionMessage> sent;
+  std::vector<sanguinius::DeliveryCallback> completions;
+  const auto editor = std::make_shared<
+      sanguinius::interaction_handler_detail::SequencedInteractionEditor>(
+      [&](sanguinius::InteractionMessage message,
+          sanguinius::DeliveryCallback completion) {
+        const std::scoped_lock lock{mutex};
+        sent.push_back(std::move(message));
+        completions.push_back(std::move(completion));
+      });
+
+  bool transcript_receipt{};
+  editor->submit(
+      sanguinius::text_message("Transcript: private words"),
+      [&](const sanguinius::DeliveryResult result) {
+        transcript_receipt = result == sanguinius::DeliveryResult::success;
+      },
+      false);
+  {
+    const std::scoped_lock lock{mutex};
+    REQUIRE(sent.size() == 1);
+    REQUIRE(contains(sent[0].content, "private words"));
+  }
+
+  bool superseded_receipt{};
+  editor->submit(
+      sanguinius::text_message("No transcript was retained."),
+      [&](const sanguinius::DeliveryResult result) {
+        superseded_receipt =
+            result == sanguinius::DeliveryResult::permanent_failure;
+      },
+      true);
+  editor->submit(
+      sanguinius::text_message("Voice listening was disabled. No transcript "
+                               "was retained or delivered."),
+      {}, true);
+  {
+    const std::scoped_lock lock{mutex};
+    REQUIRE(sent.size() == 1);
+  }
+  REQUIRE(superseded_receipt);
+
+  sanguinius::DeliveryCallback transcript_completion;
+  {
+    const std::scoped_lock lock{mutex};
+    transcript_completion = completions[0];
+  }
+  transcript_completion(sanguinius::DeliveryResult::success);
+  REQUIRE(transcript_receipt);
+  {
+    const std::scoped_lock lock{mutex};
+    REQUIRE(sent.size() == 2);
+    REQUIRE_FALSE(contains(sent[1].content, "private words"));
+    REQUIRE(contains(sent[1].content, "No transcript"));
+  }
+
+  transcript_completion(sanguinius::DeliveryResult::success);
+  {
+    const std::scoped_lock lock{mutex};
+    REQUIRE(sent.size() == 2);
+  }
+}
+
+TEST_CASE("command catalog version fourteen is deterministic and feature gated",
           "[interaction][commands]") {
   const auto public_catalog = sanguinius::command_catalog(false);
-  REQUIRE(public_catalog.version == 13);
+  REQUIRE(public_catalog.version == 14);
   REQUIRE(public_catalog.commands.size() == 2);
   REQUIRE(public_catalog.commands[0].name == "sanguinius");
   REQUIRE(public_catalog.commands[0].subcommands.size() == 5);
@@ -76,7 +147,7 @@ TEST_CASE("command catalog version thirteen is deterministic and feature gated",
   REQUIRE(chronicle_catalog.commands[3].name == "sang-admin");
 
   const auto tarot_catalog = sanguinius::command_catalog(true, false, true);
-  REQUIRE(tarot_catalog.version == 13);
+  REQUIRE(tarot_catalog.version == 14);
   REQUIRE(tarot_catalog.commands.size() == 3);
   REQUIRE(tarot_catalog.commands[1].name == "tarot");
   REQUIRE(tarot_catalog.commands[1].subcommands.size() == 15);
@@ -108,16 +179,18 @@ TEST_CASE("command catalog version thirteen is deterministic and feature gated",
       sanguinius::command_catalog(true, false, false, true);
   REQUIRE(vox_catalog.commands.size() == 3);
   REQUIRE(vox_catalog.commands[1].name == "vox");
-  REQUIRE(vox_catalog.commands[1].subcommands.size() == 6);
+  REQUIRE(vox_catalog.commands[1].subcommands.size() == 8);
   REQUIRE(vox_catalog.commands[1].subcommands[0].name == "summon");
   REQUIRE(vox_catalog.commands[1].subcommands[1].name == "status");
   REQUIRE(vox_catalog.commands[1].subcommands[2].name == "leave");
   REQUIRE(vox_catalog.commands[1].subcommands[3].name == "say");
   REQUIRE(vox_catalog.commands[1].subcommands[4].name == "mute");
   REQUIRE(vox_catalog.commands[1].subcommands[5].name == "voice");
+  REQUIRE(vox_catalog.commands[1].subcommands[6].name == "listen-start");
+  REQUIRE(vox_catalog.commands[1].subcommands[7].name == "listen-stop");
   REQUIRE(vox_catalog.commands[2].subcommand_groups.size() == 2);
   REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands.size() ==
-          5);
+          7);
   REQUIRE(vox_catalog.commands[2].subcommand_groups[1].name == "vox");
   REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands[0].name ==
           "disconnect");
@@ -129,6 +202,20 @@ TEST_CASE("command catalog version thirteen is deterministic and feature gated",
           "narration-enqueue");
   REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands[4].name ==
           "narration-recent");
+  REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands[5].name ==
+          "listening-disable");
+  REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands[6].name ==
+          "listening-enable");
+  const auto vox_safety_catalog =
+      sanguinius::command_catalog(false, false, false, true);
+  REQUIRE(vox_safety_catalog.commands.size() == 3);
+  REQUIRE(vox_safety_catalog.commands[2].subcommand_groups.size() == 2);
+  const auto &vox_safety =
+      vox_safety_catalog.commands[2].subcommand_groups[1];
+  REQUIRE(vox_safety.name == "vox");
+  REQUIRE(vox_safety.subcommands.size() == 2);
+  REQUIRE(vox_safety.subcommands[0].name == "listening-disable");
+  REQUIRE(vox_safety.subcommands[1].name == "listening-enable");
   REQUIRE(tarot_catalog.commands[1].subcommand_groups.size() == 1);
   REQUIRE(tarot_catalog.commands[1].subcommand_groups[0].name == "house");
   REQUIRE(tarot_admin.subcommands[5].name == "house-offer");

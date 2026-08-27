@@ -54,7 +54,7 @@ public:
           sanguinius::persistence::production_migrations(),
           {"test", "revision"},
           clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 14);
+      REQUIRE(migrator.apply(database.connection()).current_version == 15);
     }
     context =
         std::make_shared<sanguinius::persistence::SqliteRepositoryContext>(
@@ -626,6 +626,7 @@ TEST_CASE("canon catch-up includes retracted source authors but excludes "
       .body = "The relationship audit survives narrative retraction.",
       .owner_test = false,
       .appearance_decision_id = std::nullopt,
+      .source_voice_window_id = std::nullopt,
       .correlation_id = "canon-correlation",
       .idempotency_key = "proposal:500",
       .now_ms = 1'000,

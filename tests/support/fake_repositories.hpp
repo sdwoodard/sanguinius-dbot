@@ -72,6 +72,7 @@ public:
   void ensure_user(const DiscordUserRecord &user) override {
     std::unique_lock lock{mutex_};
     entered_ = true;
+    ++entered_count_;
     changed_.notify_all();
     changed_.wait(lock, [this] { return !blocked_; });
     users_.insert_or_assign(user.user_id, user);
@@ -105,6 +106,7 @@ public:
     const std::scoped_lock lock{mutex_};
     blocked_ = true;
     entered_ = false;
+    entered_count_ = 0;
   }
 
   void release() {
@@ -119,6 +121,14 @@ public:
     return changed_.wait_for(lock, timeout, [this] { return entered_; });
   }
 
+  [[nodiscard]] bool wait_until_entered_count(
+      const std::size_t count,
+      const std::chrono::milliseconds timeout) const {
+    std::unique_lock lock{mutex_};
+    return changed_.wait_for(
+        lock, timeout, [this, count] { return entered_count_ >= count; });
+  }
+
 private:
   mutable std::mutex mutex_;
   mutable std::condition_variable changed_;
@@ -127,6 +137,7 @@ private:
   std::unordered_map<DiscordSnowflake, UserPreferences> preferences_;
   bool blocked_{};
   bool entered_{};
+  std::size_t entered_count_{};
 };
 
 class FakePendingNoticeRepository final : public PendingNoticeRepository {

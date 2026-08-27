@@ -42,6 +42,7 @@ using namespace std::chrono_literals;
       .interaction_queue_capacity = 64,
       .durable_delivery_receipt_wait = std::chrono::milliseconds{100},
       .speech = {},
+      .voice_input = {},
       .static_speech_assets = {},
   };
   return options;
@@ -72,6 +73,7 @@ TEST_CASE("help and repository commands pass through application seams",
           "[application][commands]") {
   sanguinius::test::ApplicationFixture fixture;
   fixture.application->start();
+  REQUIRE(fixture.voice_listening->abandon_calls.load() == 1);
   REQUIRE_THROWS_AS(fixture.application->start(), std::logic_error);
 
   fixture.discord->emit(sanguinius::test::incoming("!help", 101));
@@ -256,6 +258,7 @@ TEST_CASE("configured owner receives redacted health in primary scope",
       .ai_queue_capacity = 64,
       .ai_worker_count = 2,
       .speech = {},
+      .voice_input = {},
       .static_speech_assets = {},
   }};
   fixture.application->start();
@@ -416,6 +419,7 @@ TEST_CASE("owner admin route is silent when disabled or outside scope",
         .ai_queue_capacity = 64,
         .ai_worker_count = 2,
         .speech = {},
+        .voice_input = {},
         .static_speech_assets = {},
     }};
     fixture.application->start();

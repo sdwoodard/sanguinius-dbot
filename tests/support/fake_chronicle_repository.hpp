@@ -26,6 +26,8 @@ public:
         .source_guild_id = request.source.reference.guild_id,
         .source_channel_id = request.source.reference.channel_id,
         .source_message_id = request.source.reference.message_id,
+        .source_kind = request.source_kind,
+        .source_voice_window_id = request.source_voice_window_id,
         .source_text = request.source.content,
         .source_text_truncated = request.source.content_truncated,
         .occurred_at_ms = request.source.occurred_at_ms,

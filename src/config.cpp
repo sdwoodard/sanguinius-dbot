@@ -197,6 +197,18 @@ request_timeout(const ConfigSource &source, ConfigurationOrigin &origin) {
                            " must be exactly disabled or openai."};
 }
 
+[[nodiscard]] TranscriptionProvider
+parse_transcription_provider(const ConfigSource &source) {
+  constexpr std::string_view variable{"SANGUINIUS_TRANSCRIPTION_PROVIDER"};
+  const auto value = source.environment(variable);
+  if (!value.has_value() || *value == "disabled")
+    return TranscriptionProvider::disabled;
+  if (*value == "openai")
+    return TranscriptionProvider::openai;
+  throw std::runtime_error{std::string{variable} +
+                           " must be exactly disabled or openai."};
+}
+
 void require_exact_tts_value(const ConfigSource &source,
                              const std::string_view variable,
                              const std::string_view expected,
@@ -439,10 +451,30 @@ Config Config::from_source(const ConfigSource &source) {
   }
   config.features.voice_input_enabled =
       optional_boolean(source, "SANGUINIUS_VOICE_INPUT_ENABLED", false);
-  if (config.features.voice_input_enabled) {
+  config.voice_input.enabled = config.features.voice_input_enabled;
+  config.voice_input.guild_consent_attested = optional_boolean(
+      source, "SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED", false);
+  config.transcription_provider = parse_transcription_provider(source);
+  config.voice_input.provider_enabled =
+      config.transcription_provider == TranscriptionProvider::openai;
+  if (const auto model = optional_nonempty(
+          source, "SANGUINIUS_TRANSCRIPTION_MODEL"))
+    config.voice_input.model = *model;
+  config.voice_input.request_timeout = std::chrono::milliseconds{
+      optional_integer(source, "SANGUINIUS_TRANSCRIPTION_REQUEST_TIMEOUT_MS",
+                       30'000, 1, 30'000)};
+  config.voice_input.usage_policy.rolling_day_windows =
+      static_cast<std::size_t>(optional_integer(
+          source, "SANGUINIUS_VOICE_INPUT_ROLLING_DAY_WINDOWS", 10, 1, 10));
+  config.voice_input.usage_policy.rolling_day_micro_usd = optional_integer(
+      source, "SANGUINIUS_VOICE_INPUT_ROLLING_DAY_MICRO_USD", 50'000, 1,
+      50'000);
+  config.voice_input.usage_policy.calendar_month_micro_usd = optional_integer(
+      source, "SANGUINIUS_VOICE_INPUT_MONTHLY_MICRO_USD", 1'000'000, 1,
+      1'000'000);
+  if (config.features.voice_input_enabled && !config.features.vox_enabled) {
     throw std::runtime_error{
-        "SANGUINIUS_VOICE_INPUT_ENABLED=true is unsupported; Vox remains "
-        "voice output only."};
+        "SANGUINIUS_VOICE_INPUT_ENABLED=true requires Vox output."};
   }
 
   config.tts.provider = tts_provider(source);
@@ -557,6 +589,17 @@ std::string_view tts_provider_name(const TtsProvider provider) noexcept {
   return "unknown";
 }
 
+std::string_view transcription_provider_name(
+    const TranscriptionProvider provider) noexcept {
+  switch (provider) {
+  case TranscriptionProvider::disabled:
+    return "disabled";
+  case TranscriptionProvider::openai:
+    return "openai";
+  }
+  return "unknown";
+}
+
 std::string redacted_config_summary(const Config &config,
                                     const BuildInfo &build) {
   std::ostringstream output;
@@ -647,6 +690,12 @@ std::string redacted_config_summary(const Config &config,
          << "tts_cache_mib="
          << config.tts.cache_policy.maximum_bytes / (1024U * 1024U) << '\n'
          << "voice_input=" << enabled(config.features.voice_input_enabled)
+         << '\n'
+         << "voice_input_consent_attested="
+         << enabled(config.voice_input.guild_consent_attested) << '\n'
+         << "transcription_provider="
+         << transcription_provider_name(config.transcription_provider) << '\n'
+         << "transcription_model=" << config.voice_input.model
          << '\n';
   return output.str();
 }

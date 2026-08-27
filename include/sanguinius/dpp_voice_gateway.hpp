@@ -25,6 +25,9 @@ matches_voice_client(const void *current_voice_client,
 [[nodiscard]] std::vector<std::size_t>
 pcm_chunk_sizes(std::size_t byte_count,
                 std::size_t maximum_chunk_bytes = 11'520);
+[[nodiscard]] std::string
+voice_state_update_payload(DiscordSnowflake guild_id,
+                           DiscordSnowflake channel_id, bool self_deaf);
 
 } // namespace dpp_voice_gateway_detail
 
@@ -51,6 +54,8 @@ public:
   [[nodiscard]] VoiceGatewaySubmit send_pcm(std::string_view session_id,
                                             const PcmAudio &audio,
                                             std::string_view marker) override;
+  [[nodiscard]] VoiceGatewaySubmit
+  set_receive_enabled(std::string_view session_id, bool enabled) override;
   [[nodiscard]] VoiceGatewaySnapshot
   snapshot(std::string_view session_id) const noexcept override;
   void shutdown() noexcept override;

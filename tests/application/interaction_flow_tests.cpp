@@ -7,10 +7,13 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -48,6 +51,7 @@ admin_options(const std::size_t interaction_capacity = 64) {
       .interaction_queue_capacity = interaction_capacity,
       .durable_delivery_receipt_wait = std::chrono::milliseconds{100},
       .speech = {},
+      .voice_input = {},
       .static_speech_assets = {.entrance = sanguinius::make_vox_proof_chime(),
                                .error = sanguinius::make_vox_proof_chime(),
                                .farewell = sanguinius::make_vox_proof_chime()},
@@ -91,7 +95,7 @@ admin_options(const std::size_t interaction_capacity = 64) {
   auto options = admin_options();
   options.features.vox_enabled = true;
   options.persistence.schema_version = 13;
-  options.persistence.target_schema_version = 14;
+  options.persistence.target_schema_version = 15;
   return options;
 }
 
@@ -191,7 +195,7 @@ TEST_CASE("Vox interactions connect play once reconnect and leave",
   sanguinius::test::ApplicationFixture fixture{vox_options()};
   fixture.application->start();
   REQUIRE(fixture.vox->recover_calls() == 1);
-  REQUIRE(fixture.discord->command_catalog().version == 13);
+  REQUIRE(fixture.discord->command_catalog().version == 14);
 
   auto summon = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   fixture.discord->emit(slash(summon, "vox", "summon", 900));
@@ -292,6 +296,27 @@ TEST_CASE("disabled Vox omits commands and callbacks but recovers stale state",
   REQUIRE(fixture.voice_gateway->lifecycle().empty());
 }
 
+TEST_CASE("disabled voice input degrades without affecting output Vox",
+          "[application][interaction][vox][voice-input][disabled]") {
+  sanguinius::test::ApplicationFixture fixture{vox_options()};
+  fixture.application->start();
+
+  auto listener =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto request = slash(listener, "vox", "listen-start", 906);
+  request.command_options = {{"duration", std::string{"5"}}};
+  fixture.discord->emit(std::move(request));
+  REQUIRE(listener->wait_for_edit_count(1, 2s));
+  REQUIRE(listener->deferrals() ==
+          std::vector{sanguinius::ResponseVisibility::ephemeral});
+  REQUIRE(contains(listener->edits()[0].content, "disabled"));
+
+  REQUIRE(std::ranges::any_of(
+      fixture.discord->command_catalog().commands,
+      [](const auto &command) { return command.name == "vox"; }));
+  fixture.application->stop();
+}
+
 TEST_CASE("application startup fails closed on wager escrow invariant failure",
           "[application][wager][startup][invariant]") {
   sanguinius::test::ApplicationFixture fixture{tarot_options()};
@@ -310,7 +335,7 @@ TEST_CASE("Tarot commands preserve private authority and public standings",
   sanguinius::test::ApplicationFixture fixture{tarot_options()};
   fixture.application->start();
   REQUIRE(fixture.tarot->initialize_calls == 1);
-  REQUIRE(fixture.discord->command_catalog().version == 13);
+  REQUIRE(fixture.discord->command_catalog().version == 14);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 3);
 
   auto balance = std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -499,8 +524,7 @@ TEST_CASE("Vox speech mute voice and simulated failure commands stay private",
   REQUIRE(contains(speech_test->edits()[0].content, "without a provider"));
   REQUIRE(fixture.vox->command_receipt_count() == 3);
 
-  auto stale =
-      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto stale = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto stale_request = slash(stale, "sang-admin", "speech-test", 914);
   stale_request.subcommand_group_name = "vox";
   stale_request.command_options = {
@@ -823,7 +847,7 @@ TEST_CASE(
     "[application][interaction][chronicle]") {
   sanguinius::test::ApplicationFixture fixture{chronicle_options()};
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 13);
+  REQUIRE(fixture.discord->command_catalog().version == 14);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 4);
 
   auto remember =
@@ -1220,6 +1244,10 @@ TEST_CASE("slash status privacy and scope enforcement remain ephemeral",
   REQUIRE(contains(privacy->edits()[0].content, "Discord DMs are never used"));
   REQUIRE(contains(privacy->edits()[0].content,
                    "Raw received voice audio is never persisted"));
+  REQUIRE(contains(privacy->edits()[0].content,
+                   "guild-wide prior consent must be attested by the owner"));
+  REQUIRE_FALSE(
+      contains(privacy->edits()[0].content, "Your voice-input opt-in"));
   REQUIRE(fixture.identities->user_count() == 1);
   fixture.application->stop();
 }
@@ -1444,7 +1472,7 @@ TEST_CASE(
   sanguinius::test::ApplicationFixture fixture{options};
   fixture.clock->set(std::chrono::sys_seconds{std::chrono::seconds{1'000}});
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 13);
+  REQUIRE(fixture.discord->command_catalog().version == 14);
 
   auto quiet = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto quiet_request = slash(quiet, "sanguinius", "tonight", 520);
@@ -1607,6 +1635,329 @@ TEST_CASE(
   REQUIRE(unavailable_health->replies().size() == 1);
   REQUIRE(contains(unavailable_health->replies()[0].first.content, "disabled"));
   safety.application->stop();
+}
+
+TEST_CASE("voice kill controls bypass general admin and interaction backlog",
+          "[application][interaction][vox][privacy][backpressure]") {
+  auto options = vox_options();
+  options.controls.admin_commands_enabled = false;
+  options.controls.test_mode = false;
+  options.interaction_queue_capacity = 1;
+  sanguinius::test::ApplicationFixture fixture{options};
+  fixture.application->start();
+
+  const auto catalog = fixture.discord->command_catalog();
+  const auto &admin = catalog.commands[2];
+  REQUIRE(admin.name == "sang-admin");
+  REQUIRE(admin.subcommand_groups.size() == 2);
+  REQUIRE(admin.subcommand_groups[1].name == "vox");
+  REQUIRE(admin.subcommand_groups[1].subcommands.size() == 2);
+
+  fixture.identities->block();
+  auto active = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(active, "sanguinius", "status", 540));
+  REQUIRE(fixture.identities->wait_until_entered(2s));
+  auto queued = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(queued, "sanguinius", "status", 541));
+  auto rejected =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(rejected, "sanguinius", "status", 542));
+  REQUIRE(rejected->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(rejected->edits()[0].content, "too many interactions"));
+
+  auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto disable_request = slash(disable, "sang-admin", "listening-disable", 543);
+  disable_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(disable_request));
+  fixture.identities->release();
+  REQUIRE(disable->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(disable->edits()[0].content, "disabled immediately"));
+  REQUIRE(fixture.voice_listening->kill_switch.load());
+  REQUIRE(fixture.voice_listening->kill_switch_changes.load() == 1);
+
+  auto enable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto enable_request = slash(enable, "sang-admin", "listening-enable", 544);
+  enable_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(enable_request));
+  REQUIRE(enable->wait_for_edit_count(1, 2s));
+  REQUIRE_FALSE(fixture.voice_listening->kill_switch.load());
+
+  auto unacknowledged_disable =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  unacknowledged_disable->set_defer_result(
+      sanguinius::DeliveryResult::transient_failure);
+  auto unacknowledged_request =
+      slash(unacknowledged_disable, "sang-admin", "listening-disable", 545);
+  unacknowledged_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(unacknowledged_request));
+  REQUIRE(unacknowledged_disable->wait_for_edit_count(1, 2s));
+  REQUIRE(fixture.voice_listening->kill_switch.load());
+
+  const auto changes_before_unacknowledged_enable =
+      fixture.voice_listening->kill_switch_changes.load();
+  auto unacknowledged_enable =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  unacknowledged_enable->set_defer_result(
+      sanguinius::DeliveryResult::transient_failure);
+  auto unacknowledged_enable_request =
+      slash(unacknowledged_enable, "sang-admin", "listening-enable", 546);
+  unacknowledged_enable_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(unacknowledged_enable_request));
+  REQUIRE_FALSE(fixture.voice_listening->wait_for_kill_switch_changes(
+      changes_before_unacknowledged_enable + 1, 100ms));
+  REQUIRE(fixture.voice_listening->kill_switch.load());
+  REQUIRE(unacknowledged_enable->edits().empty());
+  fixture.application->stop();
+}
+
+TEST_CASE("voice disable persists while the stop-control queue is saturated",
+          "[application][interaction][vox][privacy][backpressure][kill]") {
+  auto options = vox_options();
+  options.controls.admin_commands_enabled = false;
+  options.controls.test_mode = false;
+  options.interaction_queue_capacity = 1;
+  sanguinius::test::ApplicationFixture fixture{options};
+  fixture.application->start();
+
+  fixture.identities->block();
+  auto active_stop =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(active_stop, "vox", "listen-stop", 546));
+  REQUIRE(fixture.identities->wait_until_entered_count(1, 2s));
+
+  auto queued_stop =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(queued_stop, "vox", "listen-stop", 547));
+
+  auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto disable_request = slash(disable, "sang-admin", "listening-disable", 548);
+  disable_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(disable_request));
+
+  REQUIRE(fixture.identities->wait_until_entered_count(2, 2s));
+  fixture.identities->release();
+  REQUIRE(disable->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(disable->edits()[0].content, "disabled immediately"));
+  REQUIRE(fixture.voice_listening->kill_switch.load());
+  REQUIRE(fixture.voice_listening->kill_switch_changes.load() == 1);
+  REQUIRE(active_stop->wait_for_edit_count(1, 2s));
+  REQUIRE(queued_stop->wait_for_edit_count(1, 2s));
+  fixture.application->stop();
+}
+
+TEST_CASE("a newer voice disable supersedes an executing older enable",
+          "[application][interaction][vox][voice-input][privacy][kill]"
+          "[ordering]") {
+  sanguinius::test::ApplicationFixture fixture{vox_options()};
+  std::mutex gate_mutex;
+  std::condition_variable gate_condition;
+  bool enable_entered{};
+  bool release_enable{};
+  bool disable_repair_entered{};
+  bool release_disable_repair{};
+  fixture.voice_listening->before_kill_switch_change = [&](const bool enabled) {
+    std::unique_lock lock{gate_mutex};
+    if (enabled) {
+      disable_repair_entered = true;
+      gate_condition.notify_all();
+      gate_condition.wait(lock, [&] { return release_disable_repair; });
+      return;
+    }
+    enable_entered = true;
+    gate_condition.notify_all();
+    gate_condition.wait(lock, [&] { return release_enable; });
+  };
+  fixture.application->start();
+
+  auto enable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto enable_request = slash(enable, "sang-admin", "listening-enable", 549);
+  enable_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(enable_request));
+  {
+    std::unique_lock lock{gate_mutex};
+    REQUIRE(gate_condition.wait_for(lock, 2s, [&] { return enable_entered; }));
+  }
+
+  auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto disable_request = slash(disable, "sang-admin", "listening-disable", 550);
+  disable_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(disable_request));
+  {
+    const std::scoped_lock lock{gate_mutex};
+    release_enable = true;
+  }
+  gate_condition.notify_all();
+
+  {
+    std::unique_lock lock{gate_mutex};
+    REQUIRE(gate_condition.wait_for(lock, 2s,
+                                    [&] { return disable_repair_entered; }));
+  }
+  REQUIRE_FALSE(enable->wait_for_edit_count(1, 100ms));
+  {
+    const std::scoped_lock lock{gate_mutex};
+    release_disable_repair = true;
+  }
+  gate_condition.notify_all();
+
+  REQUIRE(enable->wait_for_edit_count(1, 2s));
+  REQUIRE(disable->wait_for_edit_count(1, 2s));
+  REQUIRE(
+      contains(enable->edits()[0].content, "newer voice-listening disable"));
+  REQUIRE(contains(disable->edits()[0].content, "disabled immediately"));
+  REQUIRE(fixture.voice_listening->kill_switch.load());
+  REQUIRE(fixture.voice_listening->kill_switch_changes.load() == 2);
+  fixture.application->stop();
+}
+
+TEST_CASE(
+    "shutdown drains a queued emergency voice disable before service stop",
+    "[application][interaction][vox][voice-input][privacy][kill]"
+    "[shutdown]") {
+  sanguinius::test::ApplicationFixture fixture{vox_options()};
+  std::mutex gate_mutex;
+  std::condition_variable gate_condition;
+  bool enable_entered{};
+  bool release_enable{};
+  fixture.voice_listening->before_kill_switch_change = [&](const bool enabled) {
+    if (enabled)
+      return;
+    std::unique_lock lock{gate_mutex};
+    enable_entered = true;
+    gate_condition.notify_all();
+    gate_condition.wait(lock, [&] { return release_enable; });
+  };
+  fixture.application->start();
+
+  auto enable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto enable_request = slash(enable, "sang-admin", "listening-enable", 551);
+  enable_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(enable_request));
+  {
+    std::unique_lock lock{gate_mutex};
+    REQUIRE(gate_condition.wait_for(lock, 2s, [&] { return enable_entered; }));
+  }
+  auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto disable_request = slash(disable, "sang-admin", "listening-disable", 552);
+  disable_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(disable_request));
+
+  std::jthread shutdown{[&] { fixture.application->stop(); }};
+  {
+    const std::scoped_lock lock{gate_mutex};
+    release_enable = true;
+  }
+  gate_condition.notify_all();
+  shutdown.join();
+
+  REQUIRE(fixture.voice_listening->kill_switch.load());
+  REQUIRE(fixture.voice_listening->kill_switch_changes.load() == 2);
+}
+
+TEST_CASE("shutdown persists a preempted disable awaiting Discord defer",
+          "[application][interaction][vox][voice-input][privacy][kill]"
+          "[shutdown][defer]") {
+  sanguinius::test::ApplicationFixture fixture{vox_options()};
+  fixture.application->start();
+  auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  disable->hold_defer_completions();
+  auto disable_request = slash(disable, "sang-admin", "listening-disable", 553);
+  disable_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(disable_request));
+
+  REQUIRE(fixture.voice_listening->wait_for_kill_switch_changes(1));
+  REQUIRE(fixture.voice_listening->kill_switch.load());
+  fixture.application->stop();
+  REQUIRE(fixture.voice_listening->kill_switch.load());
+  REQUIRE(fixture.voice_listening->kill_switch_changes.load() == 1);
+  disable->complete_defer_completions();
+  REQUIRE(fixture.voice_listening->kill_switch_changes.load() == 1);
+}
+
+TEST_CASE("application keeps interaction receipts open through voice shutdown",
+          "[application][interaction][vox][voice-input][privacy][shutdown]") {
+  sanguinius::test::ApplicationFixture fixture{vox_options()};
+  fixture.application->start();
+
+  auto created = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(slash(created, "sang-admin", "test-notice", 554));
+  REQUIRE(created->wait_for_edit_count(1, 2s));
+  REQUIRE(fixture.notices->wait_for_notice_count(1, 2s));
+
+  auto inbox = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  inbox->hold_edit_completions();
+  fixture.discord->emit(slash(inbox, "sanguinius", "inbox", 555));
+  REQUIRE(inbox->wait_for_edit_count(1, 2s));
+  REQUIRE(fixture.notices->pending_count(30, 1'000) == 1);
+
+  std::atomic<bool> receipt_released_during_voice_shutdown{};
+  fixture.voice_input->on_shutdown = [&] {
+    receipt_released_during_voice_shutdown.store(true);
+    inbox->complete_edit_completions();
+  };
+  fixture.application->stop();
+
+  REQUIRE(receipt_released_during_voice_shutdown.load());
+  REQUIRE(fixture.notices->pending_count(30, 1'000) == 0);
+}
+
+TEST_CASE("emergency voice disable supersedes a saturated enable queue",
+          "[application][interaction][vox][voice-input][privacy][kill]"
+          "[backpressure]") {
+  auto options = vox_options();
+  options.interaction_queue_capacity = 1;
+  sanguinius::test::ApplicationFixture fixture{options};
+  std::mutex gate_mutex;
+  std::condition_variable gate_condition;
+  bool enable_entered{};
+  bool release_enable{};
+  fixture.voice_listening->before_kill_switch_change = [&](const bool enabled) {
+    if (enabled)
+      return;
+    std::unique_lock lock{gate_mutex};
+    enable_entered = true;
+    gate_condition.notify_all();
+    gate_condition.wait(lock, [&] { return release_enable; });
+  };
+  fixture.application->start();
+
+  auto active_enable =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto active_request =
+      slash(active_enable, "sang-admin", "listening-enable", 554);
+  active_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(active_request));
+  {
+    std::unique_lock lock{gate_mutex};
+    REQUIRE(gate_condition.wait_for(lock, 2s, [&] { return enable_entered; }));
+  }
+
+  auto queued_enable =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto queued_request =
+      slash(queued_enable, "sang-admin", "listening-enable", 555);
+  queued_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(queued_request));
+
+  auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto disable_request = slash(disable, "sang-admin", "listening-disable", 556);
+  disable_request.subcommand_group_name = "vox";
+  fixture.discord->emit(std::move(disable_request));
+
+  {
+    const std::scoped_lock lock{gate_mutex};
+    release_enable = true;
+  }
+  gate_condition.notify_all();
+
+  REQUIRE(disable->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(disable->edits()[0].content, "disabled immediately"));
+  REQUIRE(queued_enable->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(queued_enable->edits()[0].content, "superseded"));
+  REQUIRE(fixture.voice_listening->wait_for_kill_switch_changes(2));
+  REQUIRE(fixture.voice_listening->kill_switch.load());
+  REQUIRE(fixture.voice_listening->kill_switch_changes.load() == 2);
+  fixture.application->stop();
 }
 
 TEST_CASE("owner durable test controls schedule retry and inspect safely",

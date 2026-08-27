@@ -5,6 +5,7 @@
 #include "sanguinius/dpp_command_registry.hpp"
 #include "sanguinius/dpp_discord_adapter.hpp"
 #include "sanguinius/dpp_voice_gateway.hpp"
+#include "sanguinius/dpp_voice_input_adapter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <dpp/dpp.h>
@@ -143,7 +144,9 @@ TEST_CASE("DPP voice catalog and intent are independently feature gated",
   const auto vox = std::ranges::find(translated, std::string{"vox"},
                                      &dpp::slashcommand::name);
   REQUIRE(vox != translated.end());
-  REQUIRE(vox->options.size() == 6);
+  REQUIRE(vox->options.size() == 8);
+  REQUIRE(vox->options[6].name == "listen-start");
+  REQUIRE(vox->options[7].name == "listen-stop");
   const auto admin = std::ranges::find(translated, std::string{"sang-admin"},
                                        &dpp::slashcommand::name);
   REQUIRE(admin != translated.end());
@@ -151,9 +154,28 @@ TEST_CASE("DPP voice catalog and intent are independently feature gated",
                                            &dpp::command_option::name);
   REQUIRE(vox_admin != admin->options.end());
   REQUIRE(vox_admin->type == dpp::co_sub_command_group);
+  REQUIRE(vox_admin->options.size() == 7);
+  REQUIRE(vox_admin->options[5].name == "listening-disable");
+  REQUIRE(vox_admin->options[6].name == "listening-enable");
+
+  const auto safety_translated =
+      sanguinius::dpp_adapter_detail::translate_command_catalog(
+          sanguinius::command_catalog(false, false, false, true), 42);
+  const auto safety_admin =
+      std::ranges::find(safety_translated, std::string{"sang-admin"},
+                        &dpp::slashcommand::name);
+  REQUIRE(safety_admin != safety_translated.end());
+  const auto safety_vox =
+      std::ranges::find(safety_admin->options, std::string{"vox"},
+                        &dpp::command_option::name);
+  REQUIRE(safety_vox != safety_admin->options.end());
+  REQUIRE(safety_vox->options.size() == 2);
+  REQUIRE(safety_vox->options[0].name == "listening-disable");
+  REQUIRE(safety_vox->options[1].name == "listening-enable");
 
   sanguinius::DppClusterHost text_only{"test-token", false};
   REQUIRE((text_only.intents() & dpp::i_guild_voice_states) == 0U);
+  REQUIRE(text_only.native().ws_mode == dpp::ws_json);
   sanguinius::DppClusterHost voice{"test-token", true};
   REQUIRE((voice.intents() & dpp::i_guild_voice_states) != 0U);
   REQUIRE((voice.intents() & dpp::i_direct_messages) == 0U);
@@ -215,6 +237,20 @@ TEST_CASE("DPP voice-ready translation and binding replacement fail closed",
   REQUIRE_FALSE(sanguinius::dpp_voice_gateway_detail::matches_voice_client(
       nullptr, &current_voice_client));
 
+  using sanguinius::dpp_voice_input_adapter_detail::classify_receive_client;
+  using sanguinius::dpp_voice_input_adapter_detail::ReceiveClientDisposition;
+  REQUIRE(classify_receive_client(&current_voice_client, &current_voice_client,
+                                  10, 10) == ReceiveClientDisposition::accept);
+  REQUIRE(classify_receive_client(&current_voice_client, &stale_voice_client,
+                                  10, 10) ==
+          ReceiveClientDisposition::connection_changed);
+  REQUIRE(classify_receive_client(&current_voice_client, nullptr, 10, {}) ==
+          ReceiveClientDisposition::connection_changed);
+  REQUIRE(classify_receive_client(&current_voice_client, &stale_voice_client,
+                                  10, 11) == ReceiveClientDisposition::ignore);
+  REQUIRE(classify_receive_client(nullptr, &current_voice_client, 10, 10) ==
+          ReceiveClientDisposition::ignore);
+
   const auto chunks =
       sanguinius::dpp_voice_gateway_detail::pcm_chunk_sizes(23'044);
   REQUIRE(chunks == std::vector<std::size_t>{11'520, 11'520, 4});
@@ -222,6 +258,22 @@ TEST_CASE("DPP voice-ready translation and binding replacement fail closed",
                               [](const auto bytes) { return bytes % 4 == 0; }));
   REQUIRE(sanguinius::dpp_voice_gateway_detail::pcm_chunk_sizes(23'043)
               .empty());
+
+  const auto undeaf = nlohmann::json::parse(
+      sanguinius::dpp_voice_gateway_detail::voice_state_update_payload(
+          sanguinius::DiscordSnowflake{10}, sanguinius::DiscordSnowflake{40},
+          false));
+  REQUIRE(undeaf == nlohmann::json{{"op", 4},
+                                   {"d",
+                                    {{"guild_id", "10"},
+                                     {"channel_id", "40"},
+                                     {"self_mute", false},
+                                     {"self_deaf", false}}}});
+  auto self_deaf = nlohmann::json::parse(
+      sanguinius::dpp_voice_gateway_detail::voice_state_update_payload(
+          sanguinius::DiscordSnowflake{10}, sanguinius::DiscordSnowflake{40},
+          true));
+  REQUIRE(self_deaf["d"]["self_deaf"] == true);
 }
 
 TEST_CASE("DPP translates bounded Tarot integer adjustments",

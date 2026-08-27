@@ -98,6 +98,8 @@ HealthSnapshot HealthService::snapshot(const QueueSnapshot message_queue,
       .vox = runtime_.vox ? runtime_.vox() : std::nullopt,
       .vox_narration = runtime_.vox_narration ? runtime_.vox_narration()
                                                : std::nullopt,
+      .voice_input = runtime_.voice_input ? runtime_.voice_input()
+                                           : std::nullopt,
       .scope_matched = scope_matched,
   };
 }
@@ -290,6 +292,38 @@ std::string render_health(const HealthSnapshot &snapshot) {
            << std::max<std::int64_t>(
                   0, narration.journal_head_rowid - narration.cursor_rowid)
            << '\n';
+  }
+  if (snapshot.voice_input) {
+    const auto &voice = *snapshot.voice_input;
+    output << "voice_input_capability="
+           << voice_input_capability_name(voice.capability) << '\n'
+           << "voice_input_kill_switch="
+           << enabled(voice.repository.kill_switch) << '\n'
+           << "voice_input_day_windows=" << voice.repository.day_windows
+           << '\n'
+           << "voice_input_day_micro_usd=" << voice.repository.day_micro_usd
+           << '\n'
+           << "voice_input_month_micro_usd="
+           << voice.repository.month_micro_usd << '\n'
+           << "voice_input_control_queue=" << voice.control_queue.queued << '/'
+           << voice.control_queue.capacity << '\n'
+           << "voice_input_privacy_queue=" << voice.privacy_queue.queued << '/'
+           << voice.privacy_queue.capacity << '\n'
+           << "voice_input_transcription_queue="
+           << voice.transcription_queue.queued << '/'
+           << voice.transcription_queue.capacity << '\n'
+           << "voice_input_callback_drops=" << voice.callback_drops << '\n'
+           << "voice_input_volatile_transcript_drafts="
+           << voice.volatile_transcript_drafts << '\n';
+    if (voice.state)
+      output << "voice_input_state=" << voice_listening_state_name(*voice.state)
+             << '\n';
+    if (voice.repository.last_result_code)
+      output << "voice_input_last_result="
+             << safe_build_metadata(*voice.repository.last_result_code) << '\n';
+    if (voice.last_failure_category)
+      output << "voice_input_last_failure="
+             << safe_build_metadata(*voice.last_failure_category) << '\n';
   }
   output << "admin_commands="
          << enabled(snapshot.controls.admin_commands_enabled) << '\n'

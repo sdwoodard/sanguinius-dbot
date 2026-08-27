@@ -19,7 +19,7 @@ bot's feature boundary to one guild, one primary text channel, and one owner.
 | `!help` | List the supported commands. |
 | `!repo` | Link to this source repository. |
 
-The configured guild receives command catalog version 13. Chronicle, Tarot,
+The configured guild receives command catalog version 14. Chronicle, Tarot,
 and Vox
 commands are registered only when their corresponding feature flag is enabled;
 owner commands remain separately gated:
@@ -69,10 +69,13 @@ owner commands remain separately gated:
 | `/vox say text:<line>` | Owner-only ephemeral admission of a normalized, budgeted generated line while Vox is ready or muted. Distinct interactions remain distinct queue items; cache reuse consumes no provider budget. |
 | `/vox mute duration:<15m\|1h\|4h\|session\|off>` | Owner or active summoner control that preserves the connection, durably expires timed mute, blocks automatic/flavor speech, and still permits direct owner speech. |
 | `/vox voice [voice:onyx]` | Any in-scope member may inspect the selected voice ephemerally; only the owner may change it to the configured allowlist. |
+| `/vox listen-start duration:<5\|10\|15>` | Starts one disabled-by-default, public-indicated anonymous channel-mix window only while Vox is ready, the requester is present, consent is attested, TTS is idle, and exact `gpt-transcribe` capability is ready. The final transcript or sanitized failure edits only the deferred ephemeral response. |
+| `/vox listen-stop` | Any in-scope guild human may immediately abort the active/arming window; buffered audio is scrubbed and no partial transcript is produced. |
 | `/sang-admin vox speech-test scenario:<queue\|provider-failure\|budget-limit\|narration-stale>` | Owner-only, admin/test-mode deterministic queue, fallback, and stale-restart acceptance scenarios. Simulated failures never call the live provider. |
 | `/sang-admin vox narration-preview reference:<event UUID>` | Owner-only ephemeral inspection of one fresh, public-safe narration projection. It performs no TTS and consumes no session budget. |
 | `/sang-admin vox narration-enqueue reference:<event UUID>` | Owner-only, test-mode-gated durable observation of an explicitly test-tagged fresh event; every ordinary visibility, counterpart, mute, quiet, budget, expiry, and deduplication gate still applies. |
 | `/sang-admin vox narration-recent` | Owner-only last-ten sanitized narration states and reasons, without generated line content. |
+| `/sang-admin vox listening-disable\|listening-enable` | Owner-only durable kill switch. Disable latches before persistence, immediately disarms and scrubs capture, restores self-deaf mode or forces disconnect, and discards late provider results. If transport safety cannot be confirmed, listening becomes unavailable and TTS remains blocked until recovery. |
 | `/vox leave` | Ephemerally dismisses the active session for its summoner or the configured owner. |
 | `/sang-admin health` | Ephemeral owner-only health; registered only when admin commands are enabled. |
 | `/sang-admin work-recent` | Ephemeral owner-only inspection of the ten most recent redacted event/job/outbox summaries. |
@@ -318,6 +321,9 @@ disconnect APIs. Configuration fails with a voice-support diagnostic when the
 installed package cannot supply that surface. Milestone 15 adds fixed-argument
 FFmpeg/FFprobe child processes; provider text is never placed in argv or a
 temporary media filename.
+Milestone 17 performs a separate nonfatal compile probe for D++'s combined
+receive callback. A failed receive probe builds the disabled adapter and leaves
+all output-only Vox behavior available.
 
 Catch2 is a development-only dependency. CMake requires it only when
 `BUILD_TESTING=ON`; a prebuilt production executable does not require Catch2 on
@@ -404,7 +410,7 @@ Optional settings are:
 | `SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS` | `10` | Discord REST timeout, from 1 through 300 seconds. |
 | `SANGUINIUS_TIMEZONE` | `America/New_York` | IANA time zone used for the daily 10:00 Chronicle anniversary scan. |
 | `SANGUINIUS_DATABASE_FILE` | `state/sanguinius.sqlite3` | SQLite state file. Production should use an absolute path outside release directories. |
-| `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Register the full owner diagnostic/test catalog and enable transitional prefix health. The owner-only appearance kill-switch commands remain registered when this is `false`. |
+| `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Register the full owner diagnostic/test catalog and enable transitional prefix health. Owner-only appearance kill-switch commands and, when Vox is registered, voice-listening kill-switch commands remain available when this is `false`. |
 | `SANGUINIUS_TEST_MODE` | `false` | Enable auditable, self-targeted durable-work test controls. |
 | `SANGUINIUS_CHRONICLE_ENABLED` | `false` | Register and enable the Living Chronicle context/slash flows. Durable memory expiry remains safe while UI access is disabled. |
 | `SANGUINIUS_TAROT_ENABLED` | `false` | Register and enable Fate balance, history, standings, recovery, peer wagers, and owner test-ledger controls. |
@@ -429,7 +435,13 @@ Optional settings are:
 | `SANGUINIUS_APPEARANCES_MODE` | `off` | Appearance engine mode: `off`, inspection-only `dry_run`, or conservatively budgeted `live`. |
 | `SANGUINIUS_VOX_ENABLED` | `false` | Register output-only Vox commands/callbacks and the Guild Voice States intent. Disabled startup still closes stale persisted sessions. |
 | `SANGUINIUS_VOX_NARRATION_ENABLED` | `false` | Enable post-commit Chronicle, Tarot, appearance, and contextual boundary narration. Requires Vox output. Disabled observations are durably suppressed rather than backlogged; direct `/vox say` and approved static controls remain available. |
-| `SANGUINIUS_VOICE_INPUT_ENABLED` | `false` | Reserved privacy gate. Setting this to `true` is rejected because receive/transcription is not implemented. |
+| `SANGUINIUS_VOICE_INPUT_ENABLED` | `false` | Master gate for experimental 5/10/15-second combined-channel listening windows. Requires Vox; ships off. |
+| `SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED` | `false` | Owner attestation that every present and subsequently joining human gave prior consent outside Discord. Never infer this value. |
+| `SANGUINIUS_TRANSCRIPTION_PROVIDER` | `disabled` | `disabled` or `openai`; disabled preserves all text/TTS behavior. |
+| `SANGUINIUS_TRANSCRIPTION_MODEL` | `gpt-transcribe` | The only Milestone 17 model. Any other value reports voice input unavailable; there is no fallback. |
+| `SANGUINIUS_TRANSCRIPTION_REQUEST_TIMEOUT_MS` | `30000` | Lowerable transcription request deadline, 1–30,000 ms. |
+| `SANGUINIUS_VOICE_INPUT_ROLLING_DAY_WINDOWS` | `10` | Lowerable accepted-window ceiling per rolling 24 hours. |
+| `SANGUINIUS_VOICE_INPUT_ROLLING_DAY_MICRO_USD` / `SANGUINIUS_VOICE_INPUT_MONTHLY_MICRO_USD` | `50000` / `1000000` | Lowerable estimated-cost ceilings ($0.05 rolling day and $1 UTC month), reserving 75 micro-USD/requested second. |
 | `SANGUINIUS_TTS_PROVIDER` | `disabled` | `disabled` or the fixed OpenAI speech adapter. Disabled keeps approved static/text fallback available. |
 | `SANGUINIUS_TTS_MODEL` / `SANGUINIUS_TTS_VOICE` | `tts-1` / `onyx` | Exact allowed production pair; other values fail configuration. |
 | `SANGUINIUS_TTS_CACHE_DIRECTORY` | `/var/cache/sanguinius/tts` | Absolute cache path outside releases, state, and backups. |
@@ -449,6 +461,27 @@ optional variable to select its default. Empty values do not silently fall
 back to the command prefix, model, persona, path, or credential defaults.
 The sample [configuration environment](config/sanguinius.env.example) contains
 all fields without real IDs or credentials.
+
+Experimental voice input uses D++'s anonymous combined receive callback and is
+not a supported dependency of any core feature. It confirms a conspicuous
+public indicator before capture, keeps PCM only in locked/nondumpable anonymous
+memory, streams one in-memory WAV request to `/v1/audio/transcriptions`, and
+returns validated transcript text only through the requester's ephemeral
+interaction. A Chronicle draft exists only when that integration is available;
+it is securely scrubbed by a monotonic five-minute reaper, on eviction, after
+use, and during shutdown. Discord must confirm private transcript delivery;
+failed or unknown receipts are followed by a sequenced transcript-free edit,
+and shutdown keeps that redaction path open until it resolves. If neither the
+ended-status edit nor its replacement can be confirmed, listening becomes
+unavailable and TTS remains excluded until repair or restart. `/sang-admin vox
+listening-disable` is the immediate
+durable kill switch even when the broader admin catalog is disabled. Stop and
+disable preempt capture before Discord acknowledgement or worker admission;
+their audit work uses a dedicated privacy queue. A durable provider-attempt
+marker is committed before entering the network client so restart cannot
+refund an ambiguously transmitted request. D++ warns that Discord does not officially support bot
+audio reception, so a build or runtime without receive capability degrades to
+text/TTS-only.
 
 Validate the complete configuration without starting D++, connecting to
 Discord, or constructing the OpenAI client:
@@ -640,6 +673,17 @@ are migrated to terminal `pre_m16_not_replayed` audit, and the old table is
 removed. It is forward-only: preserve schema-v14 diagnostics, restore the
 checksum-verified schema-v13 backup, activate accepted commit `8a5f7cf`, and
 restore catalog v12 rather than reversing schema 14 in place.
+
+Migration `0015_voice_input` adds immutable owner consent-attestation revisions,
+a durable kill switch/history, one revisioned listening window and append-only
+transition stream, and fixed `gpt-transcribe` operational usage. It stores no
+audio, transcript, transcript hash, detected language, provider body,
+interaction token, or arbitrary JSON. A count-checked Chronicle rebuild adds
+`voice_transcript` provenance while preserving row IDs, FTS, children, views,
+indexes, and every later Tarot/appearance trigger. Catalog v14 adds bounded
+listen/stop and owner kill controls. The feature-off M17 binary can keep schema
+v15; a binary rollback restores the checksum-verified schema-v14 backup and
+catalog v13 together. Never reverse schema 15 in place.
 
 The readable SQL for each ordered migration is
 embedded independently with its SHA-256

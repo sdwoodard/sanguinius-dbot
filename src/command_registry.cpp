@@ -450,7 +450,20 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
                            false,
                            4,
                            4,
-                           {{"Onyx", "onyx"}}}}}},
+                           {{"Onyx", "onyx"}}}}},
+                        {"listen-start",
+                         "Start one short, publicly indicated listening window.",
+                         {{CommandOptionKind::string,
+                           "duration",
+                           "Listening duration in seconds.",
+                           true,
+                           1,
+                           2,
+                           {{"5 seconds", "5"},
+                            {"10 seconds", "10"},
+                            {"15 seconds", "15"}}}}},
+                        {"listen-stop",
+                         "Stop and discard the active listening window."}},
     });
   }
   CommandDefinition owner_controls{
@@ -695,9 +708,25 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
                     {{CommandOptionKind::string, "reference",
                       "Full source-event UUID.", true, 36, 36}}},
                    {"narration-recent",
-                    "Inspect ten sanitized narration audit states."}},
+                    "Inspect ten sanitized narration audit states."},
+                   {"listening-disable",
+                    "Immediately kill voice capture and discard local audio."},
+                   {"listening-enable",
+                    "Clear the durable voice-listening kill switch."}},
           });
     }
+  }
+  if (vox_enabled && !admin_commands_enabled) {
+    owner_controls.subcommand_groups.push_back(
+        CommandSubcommandGroupDefinition{
+            .name = "vox",
+            .description = "Owner-only Vox safety controls.",
+            .subcommands =
+                {{"listening-disable",
+                  "Immediately kill voice capture and discard local audio."},
+                 {"listening-enable",
+                  "Clear the durable voice-listening kill switch."}},
+        });
   }
   catalog.commands.push_back(std::move(owner_controls));
   return catalog;

@@ -153,7 +153,7 @@ public:
                       const std::string_view guild_id, std::string text,
                       std::string deduplication_key,
                       const std::int64_t current_time_ms) {
-    if (stopped_.load())
+    if (stopped_.load() || voice_input_listening_.load())
       return admission(SpeechEnqueueStatus::invalid_session);
     const auto normalized = normalize_tts_text(text);
     if (normalized.scalar_count > configuration_.maximum_text_scalars)
@@ -311,6 +311,12 @@ public:
     } else {
       request_pump();
     }
+  }
+
+  void set_voice_input_listening(const bool listening) noexcept {
+    voice_input_listening_.store(listening);
+    if (!listening)
+      wake();
   }
 
   void wake() noexcept { request_pump(); }
@@ -627,6 +633,8 @@ private:
       const std::string_view error_class,
       const std::string_view source_identity, const std::stop_token stop_token,
       const std::string_view text_override = {}) {
+    if (voice_input_listening_.load())
+      return SpeechEnqueueStatus::invalid_session;
     const auto current = wall_now_ms(clock_);
     const auto default_text =
         kind.ends_with("entrance") ? "The vox is open. Sanguinius attends."
@@ -744,6 +752,8 @@ private:
   }
 
   void pump(const std::stop_token stop_token) {
+    if (voice_input_listening_.load())
+      return;
     {
       const std::scoped_lock lock{state_mutex_};
       if (stopped_.load() || playing_ || playback_pending_)
@@ -845,6 +855,8 @@ private:
         }
         if (narration_transport_deferred(*item))
           return;
+        if (voice_input_listening_.load())
+          return;
         if (!submit_playback(*session, snapshot.guild_id.str(), *item,
                              std::move(audio.audio), marker)) {
           record_failure(TtsFailureCategory::unavailable);
@@ -915,7 +927,8 @@ private:
     const auto speech_id = item.speech_id;
     {
       const std::scoped_lock lock{state_mutex_};
-      if (stopped_.load() || playing_ || playback_pending_)
+      if (stopped_.load() || voice_input_listening_.load() || playing_ ||
+          playback_pending_)
         return false;
       playback_pending_ = speech_id;
     }
@@ -1508,6 +1521,7 @@ private:
   std::optional<std::int64_t> last_normalization_latency_ms_;
   std::atomic<std::size_t> synthesis_worker_rejections_{0};
   std::atomic<std::size_t> playback_worker_rejections_{0};
+  std::atomic<bool> voice_input_listening_{false};
   std::atomic<bool> started_{false};
   std::atomic<bool> stopped_{false};
 };
@@ -1556,6 +1570,10 @@ void SpeechService::session_closed(const std::string_view session_id) noexcept {
 void SpeechService::set_muted(const std::string_view session_id,
                               const bool muted) {
   impl_->set_muted(session_id, muted);
+}
+
+void SpeechService::set_voice_input_listening(const bool listening) noexcept {
+  impl_->set_voice_input_listening(listening);
 }
 
 void SpeechService::wake() noexcept { impl_->wake(); }

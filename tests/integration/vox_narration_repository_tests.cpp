@@ -134,7 +134,7 @@ struct NarrationFixture {
           sanguinius::persistence::production_migrations(),
           {"test-version", "test-revision"},
           clock};
-      REQUIRE(migrator.apply(migration.connection()).current_version == 14);
+      REQUIRE(migrator.apply(migration.connection()).current_version == 15);
       insert_scope(migration.connection());
       migration.connection().execute(
           "INSERT INTO application_instance(instance_id,application_version,"
@@ -277,7 +277,7 @@ TEST_CASE("Vox narration cursor starts at the migration journal head",
                uuid(2), 100);
   sanguinius::persistence::Migrator current{
       production, {"test-version", "test-revision"}, clock};
-  REQUIRE(current.apply(database.connection()).current_version == 14);
+  REQUIRE(current.apply(database.connection()).current_version == 15);
   auto context =
       std::make_shared<sanguinius::persistence::SqliteRepositoryContext>(
           std::move(database));

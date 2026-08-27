@@ -108,6 +108,10 @@ public:
   [[nodiscard]] virtual VoiceGatewaySubmit
   send_pcm(std::string_view session_id, const PcmAudio &audio,
            std::string_view marker) = 0;
+  [[nodiscard]] virtual VoiceGatewaySubmit
+  set_receive_enabled(std::string_view, bool) {
+    return VoiceGatewaySubmit::unavailable;
+  }
   [[nodiscard]] virtual VoiceGatewaySnapshot
   snapshot(std::string_view session_id) const noexcept = 0;
   virtual void shutdown() noexcept = 0;

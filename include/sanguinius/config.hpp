@@ -11,6 +11,7 @@
 #include "sanguinius/wagers.hpp"
 #include "sanguinius/tts.hpp"
 #include "sanguinius/tts_cache.hpp"
+#include "sanguinius/voice_input.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -76,6 +77,11 @@ struct TtsConfiguration {
   std::size_t maximum_text_scalars{maximum_tts_scalar_count};
 };
 
+enum class TranscriptionProvider {
+  disabled,
+  openai,
+};
+
 struct PathConfiguration {
   std::filesystem::path message_log{"logs/messages.log"};
   std::filesystem::path database_file{"state/sanguinius.sqlite3"};
@@ -109,6 +115,8 @@ struct Config {
   DiscordConfiguration discord;
   AiConfiguration ai;
   TtsConfiguration tts;
+  TranscriptionProvider transcription_provider{TranscriptionProvider::disabled};
+  VoiceListeningConfiguration voice_input;
   PathConfiguration paths;
   ControlConfiguration controls;
   FeatureConfiguration features;
@@ -130,6 +138,8 @@ struct Config {
 configuration_origin_name(ConfigurationOrigin origin) noexcept;
 
 [[nodiscard]] std::string_view tts_provider_name(TtsProvider provider) noexcept;
+[[nodiscard]] std::string_view
+transcription_provider_name(TranscriptionProvider provider) noexcept;
 
 [[nodiscard]] std::string redacted_config_summary(const Config &config,
                                                   const BuildInfo &build);

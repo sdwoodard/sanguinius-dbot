@@ -68,6 +68,12 @@ slash_operation(const IncomingInteraction &interaction) {
     if (interaction.subcommand_group_name == "vox" &&
         interaction.subcommand_name == "narration-recent")
       return InteractionOperation::vox_narration_recent;
+    if (interaction.subcommand_group_name == "vox" &&
+        interaction.subcommand_name == "listening-disable")
+      return InteractionOperation::vox_listening_disable;
+    if (interaction.subcommand_group_name == "vox" &&
+        interaction.subcommand_name == "listening-enable")
+      return InteractionOperation::vox_listening_enable;
     if (interaction.subcommand_group_name == "tarot") {
       if (interaction.subcommand_name == "adjust")
         return InteractionOperation::tarot_adjust;
@@ -146,6 +152,10 @@ slash_operation(const IncomingInteraction &interaction) {
       return InteractionOperation::vox_mute;
     if (interaction.subcommand_name == "voice")
       return InteractionOperation::vox_voice;
+    if (interaction.subcommand_name == "listen-start")
+      return InteractionOperation::vox_listen_start;
+    if (interaction.subcommand_name == "listen-stop")
+      return InteractionOperation::vox_listen_stop;
   }
   if (interaction.command_name == "tarot") {
     if (interaction.subcommand_group_name == "house") {
@@ -472,6 +482,15 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
             ChronicleService::edit_entry_modal(*edit_token));
         return;
       }
+      if (parse_voice_control(interaction.custom_id,
+                              voice_transcript_component_prefix)) {
+        if (!state_->features.chronicle_enabled ||
+            !state_->handler.show_voice_transcript_modal(interaction)) {
+          reply_ephemeral(interaction,
+                          "That transcript proposal is invalid or expired.");
+        }
+        return;
+      }
       if (parse_component_token(interaction.custom_id)) {
         operation = InteractionOperation::open_component;
       } else if (parse_wager_history(interaction.custom_id)) {
@@ -520,6 +539,9 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
           return;
         }
         operation = InteractionOperation::chronicle_component;
+      } else if (parse_voice_control(interaction.custom_id,
+                                     voice_listening_stop_prefix)) {
+        operation = InteractionOperation::vox_listen_stop;
       }
     } else if (interaction.kind == InteractionKind::modal_submit &&
                parse_wager_form(interaction.custom_id)) {
@@ -538,6 +560,10 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
                parse_chronicle_component(interaction.custom_id,
                                          chronicle_modal_prefix)) {
       operation = InteractionOperation::chronicle_edit;
+    } else if (interaction.kind == InteractionKind::modal_submit &&
+               parse_voice_control(interaction.custom_id,
+                                   voice_transcript_modal_prefix)) {
+      operation = InteractionOperation::vox_transcript_propose;
     }
     if (!operation.has_value()) {
       reply_ephemeral(interaction,
@@ -591,7 +617,12 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::vox_speech_test ||
       *operation == InteractionOperation::vox_narration_preview ||
       *operation == InteractionOperation::vox_narration_enqueue ||
-      *operation == InteractionOperation::vox_narration_recent;
+      *operation == InteractionOperation::vox_narration_recent ||
+      *operation == InteractionOperation::vox_listen_start ||
+      *operation == InteractionOperation::vox_listen_stop ||
+      *operation == InteractionOperation::vox_transcript_propose ||
+      *operation == InteractionOperation::vox_listening_disable ||
+      *operation == InteractionOperation::vox_listening_enable;
   if (vox_operation && !state_->features.vox_enabled) {
     reply_ephemeral(interaction, "Vox is currently unavailable.");
     return;
@@ -624,7 +655,9 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::wager_test_cleanup ||
       *operation == InteractionOperation::vox_narration_preview ||
       *operation == InteractionOperation::vox_narration_enqueue ||
-      *operation == InteractionOperation::vox_narration_recent;
+      *operation == InteractionOperation::vox_narration_recent ||
+      *operation == InteractionOperation::vox_listening_disable ||
+      *operation == InteractionOperation::vox_listening_enable;
   const bool vox_test_operation =
       *operation == InteractionOperation::vox_test_disconnect ||
       *operation == InteractionOperation::vox_speech_test ||
@@ -632,6 +665,9 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
   const bool appearance_safety_operation =
       *operation == InteractionOperation::appearance_disable ||
       *operation == InteractionOperation::appearance_enable;
+  const bool voice_safety_operation =
+      *operation == InteractionOperation::vox_listening_disable ||
+      *operation == InteractionOperation::vox_listening_enable;
   const bool test_operation =
       *operation == InteractionOperation::test_notice ||
       *operation == InteractionOperation::test_schedule_notice ||
@@ -649,8 +685,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::wager_test_deadline ||
       *operation == InteractionOperation::wager_test_cleanup;
   if (admin_operation || anniversary_test || appearance_safety_operation ||
-      vox_test_operation) {
-    if (!appearance_safety_operation &&
+      voice_safety_operation || vox_test_operation) {
+    if (!appearance_safety_operation && !voice_safety_operation &&
         !state_->controls.admin_commands_enabled) {
       state_->diagnostics.emit(
           {DiagnosticSeverity::warning, "interaction.admin_rejected",
@@ -703,25 +739,44 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       public_profile = *target != interaction.user_id;
     }
   }
+  const bool privacy_control =
+      *operation == InteractionOperation::vox_listen_stop ||
+      *operation == InteractionOperation::vox_listening_disable ||
+      *operation == InteractionOperation::vox_listening_enable;
+  const bool emergency_privacy_control =
+      *operation == InteractionOperation::vox_listen_stop ||
+      *operation == InteractionOperation::vox_listening_disable;
   auto queued = RoutedInteraction{std::move(interaction), *operation};
+  if (privacy_control) {
+    const std::scoped_lock lock{state_->mutex};
+    if (!state_->accepting)
+      return;
+    state_->handler.preempt_voice_privacy_control(queued);
+  }
   queued.interaction.responder->defer(
       (*operation == InteractionOperation::chronicle_timeline ||
        public_profile || *operation == InteractionOperation::tarot_standings ||
        *operation == InteractionOperation::vox_status)
           ? ResponseVisibility::public_message
           : ResponseVisibility::ephemeral,
-      [shared_state,
+      [shared_state, privacy_control, emergency_privacy_control,
        queued = std::move(queued)](const DeliveryResult result) mutable {
         if (result != DeliveryResult::success) {
           shared_state->diagnostics.emit(
               {DiagnosticSeverity::warning, "interaction.defer",
                "Discord did not confirm the interaction acknowledgement.",
                queued.interaction.correlation_id});
-          return;
+          if (!emergency_privacy_control)
+            return;
         }
         const std::scoped_lock lock{shared_state->mutex};
         if (shared_state->accepting) {
-          static_cast<void>(shared_state->handler.enqueue(std::move(queued)));
+          if (privacy_control) {
+            static_cast<void>(shared_state->handler.enqueue_privacy_control(
+                std::move(queued)));
+          } else {
+            static_cast<void>(shared_state->handler.enqueue(std::move(queued)));
+          }
         }
       });
 }

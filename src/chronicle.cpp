@@ -784,6 +784,8 @@ ChronicleService::canonize_message(const IncomingInteraction &interaction) {
           verified_appearance
               ? std::optional<std::string>{verified_appearance->first}
               : std::nullopt,
+      .source_kind = "discord_message",
+      .source_voice_window_id = std::nullopt,
       .correlation_id = interaction.correlation_id,
       .idempotency_key =
           "chronicle:proposal:" + source.reference.message_id.str(),
@@ -796,6 +798,80 @@ ChronicleService::canonize_message(const IncomingInteraction &interaction) {
           now_ms +
           std::chrono::duration_cast<std::chrono::milliseconds>(notice_lifetime)
               .count(),
+      .renewal_dispatches = std::move(renewal_dispatches),
+  });
+  if (result.wake_outbox && outbox_wakeup_)
+    outbox_wakeup_();
+  return result;
+}
+
+ProposalResult ChronicleService::propose_voice_transcript(
+    const IncomingInteraction &interaction, const std::string_view voice_window_id,
+    std::string title, std::string body) {
+  if (interaction.guild_id != scope_.guild_id ||
+      interaction.channel_id != scope_.primary_channel_id ||
+      !interaction.user_id.is_set() ||
+      !valid_uuid_v4(std::string{voice_window_id}) ||
+      !valid_chronicle_text(title, maximum_chronicle_title_size) ||
+      !valid_chronicle_text(body, maximum_chronicle_body_size)) {
+    return {.code = ChronicleResultCode::unauthorized};
+  }
+  const auto now_ms = unix_milliseconds(clock_);
+  const ContextMessageSnapshot source{
+      .reference = {.message_id = {},
+                    .guild_id = interaction.guild_id,
+                    .channel_id = interaction.channel_id},
+      .author = {.user_id = interaction.user_id,
+                 .username = interaction.username,
+                 .display_name = interaction.display_name,
+                 .is_bot = false},
+      .content = {},
+      .content_truncated = false,
+      .occurred_at_ms = now_ms,
+      .mentioned_users = {},
+      .attachments = {}};
+  const auto actions =
+      ProposalActionIds{ids_.next_id(), ids_.next_id(), ids_.next_id()};
+  std::vector<ApprovalRenewalDispatch> renewal_dispatches;
+  constexpr std::size_t renewal_count = maximum_chronicle_mentions + 2;
+  renewal_dispatches.reserve(renewal_count);
+  for (std::size_t index = 0; index < renewal_count; ++index) {
+    renewal_dispatches.push_back(ApprovalRenewalDispatch{
+        .notice_id = ids_.next_id(),
+        .notice_open_token_id = ids_.next_id(),
+        .approve_token_id = ids_.next_id(),
+        .decline_token_id = ids_.next_id(),
+        .notice_event_id = ids_.next_id(),
+        .notice_outbox_id = ids_.next_id(),
+    });
+  }
+  auto result = repository_.create_or_get_proposal(CreateProposalRequest{
+      .entry_id = ids_.next_id(),
+      .event_id = ids_.next_id(),
+      .actions = actions,
+      .source = source,
+      .proposer_user_id = interaction.user_id,
+      .owner_user_id = scope_.owner_user_id,
+      .title = std::move(title),
+      .body = std::move(body),
+      .type = ChronicleEntryType::custom,
+      .visibility = ChronicleVisibility::shared,
+      .owner_test = false,
+      .appearance_decision_id = std::nullopt,
+      .source_kind = "voice_transcript",
+      .source_voice_window_id = std::string{voice_window_id},
+      .correlation_id = interaction.correlation_id,
+      .idempotency_key =
+          "chronicle:voice-transcript:" + std::string{voice_window_id},
+      .now_ms = now_ms,
+      .action_expires_at_ms =
+          now_ms + std::chrono::duration_cast<std::chrono::milliseconds>(
+                       preview_lifetime)
+                       .count(),
+      .notice_expires_at_ms =
+          now_ms + std::chrono::duration_cast<std::chrono::milliseconds>(
+                       notice_lifetime)
+                       .count(),
       .renewal_dispatches = std::move(renewal_dispatches),
   });
   if (result.wake_outbox && outbox_wakeup_)

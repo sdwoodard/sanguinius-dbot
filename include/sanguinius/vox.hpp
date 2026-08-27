@@ -274,6 +274,7 @@ public:
                                          std::string scenario,
                                          Completion completion);
   [[nodiscard]] SubmitResult handle_timeout(const ClaimedScheduledJob &job);
+  [[nodiscard]] std::optional<VoxSession> active_session() const;
   [[nodiscard]] VoxHealth health() const;
 
 private:

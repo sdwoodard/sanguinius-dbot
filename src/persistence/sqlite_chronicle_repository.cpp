@@ -248,6 +248,8 @@ verified_appearance_source(SqliteConnection &connection,
                                ? std::nullopt
                                : std::optional{DiscordSnowflake::parse(
                                      row.column_text(10))},
+      .source_kind = row.column_text(19),
+      .source_voice_window_id = optional_text(row, 20),
       .source_text = row.column_text(11),
       .source_text_truncated = row.column_int64(12) != 0,
       .occurred_at_ms = row.column_int64(13),
@@ -264,7 +266,7 @@ constexpr std::string_view entry_columns =
     "created_by_user_id, source_author_user_id, source_guild_id, "
     "source_channel_id, source_message_id, source_text, source_text_truncated, "
     "occurred_at_ms, created_at_ms, submitted_at_ms, approved_at_ms, "
-    "retracted_at_ms, revision";
+    "retracted_at_ms, revision, source_kind, source_voice_window_id";
 
 void enrich_entry(SqliteConnection &connection, ChronicleEntry &entry) {
   auto participants = connection.prepare(
@@ -712,11 +714,17 @@ ProposalResult SqliteChronicleRepository::create_or_get_proposal(
   require_context(request.source.reference.guild_id,
                   request.source.reference.channel_id, request.proposer_user_id,
                   request.correlation_id, request.now_ms);
-  if (!request.proposer_user_id.is_set() ||
+  const bool voice_source = request.source_kind == "voice_transcript";
+  if ((request.source_kind != "discord_message" && !voice_source) ||
+      (voice_source != request.source_voice_window_id.has_value()) ||
+      (request.source_voice_window_id &&
+       !valid_uuid_v4(*request.source_voice_window_id)) ||
+      !request.proposer_user_id.is_set() ||
       !request.source.reference.guild_id.is_set() ||
       !request.source.reference.channel_id.is_set() ||
-      !request.source.reference.message_id.is_set() ||
+      (voice_source == request.source.reference.message_id.is_set()) ||
       !request.source.author.user_id.is_set() ||
+      (voice_source && request.source.author.is_bot) ||
       (request.source.author.is_bot != request.appearance_decision_id.has_value()) ||
       request.now_ms < 0 || request.action_expires_at_ms <= request.now_ms ||
       !valid_chronicle_text(request.title, maximum_chronicle_title_size) ||
@@ -743,6 +751,20 @@ ProposalResult SqliteChronicleRepository::create_or_get_proposal(
   auto &connection = context_->connection();
   Transaction transaction{connection, TransactionMode::immediate};
   const bool appearance_source = request.appearance_decision_id.has_value();
+  if (voice_source) {
+    auto provenance = connection.prepare(
+        "SELECT 1 FROM voice_listening_window WHERE window_id=? AND "
+        "guild_id=? AND text_channel_id=? AND requester_user_id=? AND "
+        "state='completed'");
+    provenance.bind(1, *request.source_voice_window_id);
+    provenance.bind(2, request.source.reference.guild_id.str());
+    provenance.bind(3, request.source.reference.channel_id.str());
+    provenance.bind(4, request.proposer_user_id.str());
+    if (!provenance.step()) {
+      transaction.commit();
+      return {.code = ChronicleResultCode::unauthorized};
+    }
+  }
   if (appearance_source && !verified_appearance_source(connection, request)) {
     transaction.commit();
     return {.code = ChronicleResultCode::unauthorized};
@@ -769,11 +791,18 @@ ProposalResult SqliteChronicleRepository::create_or_get_proposal(
   }
 
   auto existing = connection.prepare(
-      "SELECT entry_id FROM chronicle_entry WHERE source_guild_id=? AND "
-      "source_channel_id=? AND source_message_id=?");
-  existing.bind(1, request.source.reference.guild_id.str());
-  existing.bind(2, request.source.reference.channel_id.str());
-  existing.bind(3, request.source.reference.message_id.str());
+      voice_source
+          ? "SELECT entry_id FROM chronicle_entry WHERE source_kind="
+            "'voice_transcript' AND source_voice_window_id=?"
+          : "SELECT entry_id FROM chronicle_entry WHERE source_guild_id=? AND "
+            "source_channel_id=? AND source_message_id=?");
+  if (voice_source) {
+    existing.bind(1, *request.source_voice_window_id);
+  } else {
+    existing.bind(1, request.source.reference.guild_id.str());
+    existing.bind(2, request.source.reference.channel_id.str());
+    existing.bind(3, request.source.reference.message_id.str());
+  }
   if (existing.step()) {
     const auto entry_id = existing.column_text(0);
     auto entry = load_entry(connection, entry_id);
@@ -1106,8 +1135,9 @@ ProposalResult SqliteChronicleRepository::create_or_get_proposal(
       "INSERT INTO chronicle_entry (entry_id,entry_type,title,body,visibility,"
       "status,occurred_at_ms,created_at_ms,created_by_user_id,source_guild_id,"
       "source_channel_id,source_message_id,source_author_user_id,source_text,"
-      "source_text_truncated,source_attachment_count,revision) "
-      "VALUES (?,?,?,?,?,'proposed',?,?,?,?,?,?,?,?,?,?,1)");
+      "source_text_truncated,source_attachment_count,revision,source_kind,"
+      "source_voice_window_id) "
+      "VALUES (?,?,?,?,?,'proposed',?,?,?,?,?,?,?,?,?,?,1,?,?)");
   insert.bind(1, request.entry_id);
   insert.bind(2, chronicle_entry_type_name(request.type));
   insert.bind(3, request.title);
@@ -1118,11 +1148,19 @@ ProposalResult SqliteChronicleRepository::create_or_get_proposal(
   insert.bind(8, request.proposer_user_id.str());
   insert.bind(9, request.source.reference.guild_id.str());
   insert.bind(10, request.source.reference.channel_id.str());
-  insert.bind(11, request.source.reference.message_id.str());
+  if (voice_source)
+    insert.bind_null(11);
+  else
+    insert.bind(11, request.source.reference.message_id.str());
   insert.bind(12, request.source.author.user_id.str());
   insert.bind(13, request.source.content);
   insert.bind(14, static_cast<std::int64_t>(request.source.content_truncated));
   insert.bind(15, static_cast<std::int64_t>(request.source.attachments.size()));
+  insert.bind(16, request.source_kind);
+  if (request.source_voice_window_id)
+    insert.bind(17, *request.source_voice_window_id);
+  else
+    insert.bind_null(17);
   insert.execute();
 
   if (appearance_source) {
@@ -1215,7 +1253,10 @@ ProposalResult SqliteChronicleRepository::create_or_get_proposal(
           request.entry_id, request.proposer_user_id,
           request.source.reference.guild_id,
           request.source.reference.channel_id,
-          request.source.reference.message_id, request.now_ms,
+          voice_source
+              ? std::optional<DiscordSnowflake>{}
+              : std::optional{request.source.reference.message_id},
+          request.now_ms,
           request.correlation_id, request.idempotency_key,
           Json{{"entry_id", request.entry_id},
                {"status", "proposed"},
