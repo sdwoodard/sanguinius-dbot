@@ -30,8 +30,18 @@ TarotIntegrationReport TarotIntegrationService::scan() {
   const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
                        clock_.now().time_since_epoch())
                        .count();
-  return repository_.scan(now, 32, [this] { return ids_.next_id(); },
-                          sink_policy_);
+  return repository_.scan(
+      now, 32, [this] { return ids_.next_id(); }, sink_policy_);
+}
+
+bool TarotIntegrationService::suppress_disabled_batch(const std::size_t limit) {
+  if (enabled_)
+    throw std::logic_error{
+        "Enabled Tarot integration cannot suppress disabled work."};
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       clock_.now().time_since_epoch())
+                       .count();
+  return repository_.suppress_disabled(now, limit) >= limit;
 }
 
 void TarotIntegrationService::ensure_schedule() {
@@ -66,10 +76,12 @@ TarotIntegrationService::preview(const IncomingInteraction &) {
 InteractionMessage
 TarotIntegrationService::retry(const IncomingInteraction &interaction) {
   const auto *candidate = option(interaction, "reference");
-  const auto *reference =
-      candidate == nullptr ? nullptr : std::get_if<std::string>(&candidate->value);
+  const auto *reference = candidate == nullptr
+                              ? nullptr
+                              : std::get_if<std::string>(&candidate->value);
   if (reference == nullptr)
-    throw std::invalid_argument{"Integration retry requires a source event UUID."};
+    throw std::invalid_argument{
+        "Integration retry requires a source event UUID."};
   const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
                        clock_.now().time_since_epoch())
                        .count();
@@ -87,8 +99,10 @@ void TarotIntegrationService::observe_committed_event(
   try {
     static_cast<void>(scan());
   } catch (const std::exception &error) {
-    diagnostics_.emit({DiagnosticSeverity::error, "tarot.integration_scan",
-                       error.what(), {}});
+    diagnostics_.emit({DiagnosticSeverity::error,
+                       "tarot.integration_scan",
+                       error.what(),
+                       {}});
   } catch (...) {
     diagnostics_.emit({DiagnosticSeverity::error,
                        "tarot.integration_scan",

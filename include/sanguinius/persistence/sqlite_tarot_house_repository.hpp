@@ -43,8 +43,8 @@ public:
   observe_draw(const TarotDrawRecord &draw, std::int64_t now_ms,
                std::function<std::string()> next_id) override;
   [[nodiscard]] std::vector<HouseMutationResult>
-  reconcile_draws(std::int64_t now_ms,
-                  std::function<std::string()> next_id) override;
+  reconcile_draws(std::int64_t now_ms, std::function<std::string()> next_id,
+                  std::size_t limit = 50) override;
   [[nodiscard]] std::vector<HouseMutationResult>
   resolve_due(std::int64_t now_ms, bool test_only,
               std::function<std::string()> next_id) override;
@@ -68,14 +68,24 @@ public:
   [[nodiscard]] std::vector<HouseWagerRecord>
   history(const DiscordSnowflake &user_id,
           std::optional<std::string_view> reference) override;
+  [[nodiscard]] HouseHistoryPage begin_history(const DiscordSnowflake &user_id,
+                                               std::string cursor_id,
+                                               std::int64_t now_ms) override;
+  [[nodiscard]] HouseHistoryPage
+  load_history_page(const DiscordSnowflake &user_id, std::string_view cursor_id,
+                    std::size_t page, std::int64_t now_ms) override;
   [[nodiscard]] TarotPlayerRecord
   record(const DiscordSnowflake &user_id) override;
   [[nodiscard]] HouseEconomyReport economy() override;
   [[nodiscard]] TarotPlayerProjectionReport check_player_projection() override;
   [[nodiscard]] TarotPlayerProjectionReport
   rebuild_player_projection() override;
+  [[nodiscard]] TarotPlayerProjectionReport
+  rebuild_player_projection_uncommitted();
 
 private:
+  [[nodiscard]] TarotPlayerProjectionReport
+  rebuild_player_projection_unlocked();
   std::shared_ptr<SqliteRepositoryContext> context_;
 };
 
@@ -89,11 +99,17 @@ public:
   scan(std::int64_t now_ms, std::size_t limit,
        std::function<std::string()> next_id,
        TarotIntegrationSinkPolicy sink_policy = {}) override;
+  [[nodiscard]] std::size_t suppress_disabled(std::int64_t now_ms,
+                                              std::size_t limit) override;
   [[nodiscard]] bool retry(std::string_view source_event_id,
                            std::int64_t now_ms) override;
   [[nodiscard]] TarotIntegrationReport inspect() override;
+  [[nodiscard]] TarotIntegrationProjectionReport check_projection();
+  [[nodiscard]] TarotIntegrationProjectionReport
+  rebuild_projection_uncommitted();
 
 private:
+  [[nodiscard]] TarotIntegrationProjectionReport check_projection_unlocked();
   std::shared_ptr<SqliteRepositoryContext> context_;
 };
 

@@ -1,8 +1,11 @@
 #include "sanguinius/tarot_house.hpp"
 #include "sanguinius/tarot_integration.hpp"
 
+#include "sanguinius/presentation.hpp"
+
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <sstream>
 #include <stdexcept>
@@ -10,6 +13,12 @@
 
 namespace sanguinius {
 namespace {
+
+[[nodiscard]] std::int64_t unix_milliseconds(const Clock &clock) {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             clock.now().time_since_epoch())
+      .count();
+}
 
 [[nodiscard]] const InteractionOption *
 option(const IncomingInteraction &interaction, const std::string_view name) {
@@ -28,6 +37,42 @@ string_option(const IncomingInteraction &interaction,
   if (value == nullptr)
     throw std::invalid_argument{std::string{name} + " must be text."};
   return *value;
+}
+
+[[nodiscard]] std::optional<std::pair<std::string, std::size_t>>
+parse_house_history_page(const std::string_view custom_id) {
+  if (!custom_id.starts_with(tarot_house_history_page_prefix))
+    return std::nullopt;
+  const auto value = custom_id.substr(tarot_house_history_page_prefix.size());
+  if (value.size() < 38 || value[36] != ':')
+    return std::nullopt;
+  std::string cursor{value.substr(0, 36)};
+  if (!valid_uuid_v4(cursor))
+    return std::nullopt;
+  std::size_t page{};
+  const auto number = value.substr(37);
+  const auto parsed =
+      std::from_chars(number.data(), number.data() + number.size(), page);
+  if (number.empty() || parsed.ec != std::errc{} ||
+      parsed.ptr != number.data() + number.size() ||
+      page >= tarot_house_history_maximum_items / tarot_house_history_page_size)
+    return std::nullopt;
+  return std::pair{std::move(cursor), page};
+}
+
+[[nodiscard]] std::string house_state_name(HouseWagerState state);
+
+void append_house_history(std::ostringstream &output,
+                          const std::vector<HouseWagerRecord> &rows) {
+  for (const auto &row : rows) {
+    output << "\n"
+           << row.template_slug << " · " << house_state_name(row.state) << " · "
+           << row.choice_label << " at " << row.odds_numerator << ":"
+           << row.odds_denominator << " · stake " << row.stake << " · profit "
+           << row.profit << " · " << row.wager_id;
+    if (row.result)
+      output << " · " << house_result_name(*row.result);
+  }
 }
 
 [[nodiscard]] std::optional<std::int64_t>
@@ -474,23 +519,60 @@ TarotHouseService::apply_component(const IncomingInteraction &interaction) {
 InteractionMessage
 TarotHouseService::history(const IncomingInteraction &interaction) {
   const auto reference = string_option(interaction, "reference");
-  const auto rows = repository_.history(
-      interaction.user_id,
-      reference ? std::optional<std::string_view>{*reference} : std::nullopt);
   std::ostringstream output;
   output << "Your House wager history";
-  if (rows.empty())
-    output << "\nNo visible House wagers were found.";
-  for (const auto &row : rows) {
-    output << "\n"
-           << row.template_slug << " · " << house_state_name(row.state) << " · "
-           << row.choice_label << " at " << row.odds_numerator << ":"
-           << row.odds_denominator << " · stake " << row.stake << " · profit "
-           << row.profit << " · " << row.wager_id;
-    if (row.result)
-      output << " · " << house_result_name(*row.result);
+  if (reference) {
+    if (!valid_uuid_v4(*reference))
+      throw std::invalid_argument{"House history reference is invalid."};
+    const auto rows = repository_.history(
+        interaction.user_id, std::optional<std::string_view>{*reference});
+    if (rows.empty())
+      output << "\nNo visible House wager was found.";
+    append_house_history(output, rows);
+    return text_message(output.str());
   }
-  return text_message(output.str());
+  HouseHistoryPage page;
+  if (const auto control = parse_house_history_page(interaction.custom_id)) {
+    page = repository_.load_history_page(interaction.user_id, control->first,
+                                         control->second,
+                                         unix_milliseconds(clock_));
+    if (page.cursor_id.empty())
+      return text_message(
+          "That House history snapshot expired. Run `/tarot house history` "
+          "for a fresh view.");
+  } else {
+    page = repository_.begin_history(interaction.user_id, ids_.next_id(),
+                                     unix_milliseconds(clock_));
+  }
+  if (page.wagers.empty())
+    output << (page.total == 0 ? "\nNo visible House wagers were found."
+                               : "\nNo wagers on this page remain visible.");
+  append_house_history(output, page.wagers);
+  const auto page_count = std::max<std::size_t>(
+      1, (page.total + tarot_house_history_page_size - 1) /
+             tarot_house_history_page_size);
+  output << "\nPage " << page.page + 1 << " of " << page_count;
+  const auto page_id = [&page](const std::size_t target) {
+    return std::string{tarot_house_history_page_prefix} + page.cursor_id + ":" +
+           std::to_string(target);
+  };
+  auto message = text_message(output.str());
+  message.buttons.push_back(
+      {.custom_id = page.page == 0
+                        ? std::string{presentation::disabled_previous_custom_id}
+                        : page_id(page.page - 1),
+       .label = "Previous",
+       .disabled = page.page == 0,
+       .style = ButtonStyle::secondary});
+  const auto has_next = page.page + 1 < page_count;
+  message.buttons.push_back(
+      {.custom_id = has_next
+                        ? page_id(page.page + 1)
+                        : std::string{presentation::disabled_next_custom_id},
+       .label = "Next",
+       .disabled = !has_next,
+       .style = ButtonStyle::secondary});
+  return message;
 }
 
 InteractionMessage
@@ -703,14 +785,17 @@ void TarotHouseService::observe_draw(const TarotDrawRecord &draw) noexcept {
   }
 }
 
-void TarotHouseService::reconcile_draws() {
+bool TarotHouseService::reconcile_draws(const std::size_t limit) {
+  if (limit == 0 || limit > 50)
+    throw std::invalid_argument{"House reconciliation batch is invalid."};
   const auto results = repository_.reconcile_draws(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           clock_.now().time_since_epoch())
           .count(),
-      id_factory());
+      id_factory(), limit);
   for (const auto &result : results)
     observe(result);
+  return results.size() >= limit;
 }
 
 HouseEconomyReport TarotHouseService::check_invariants() {

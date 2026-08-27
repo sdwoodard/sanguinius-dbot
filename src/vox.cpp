@@ -345,10 +345,53 @@ public:
           speech_->session_closed(session_id);
         teardown_transport(session_id, true);
       }
-      gateway_.shutdown();
     }
+    gateway_.shutdown();
     worker_.stop();
     callback_responder_.stop();
+  }
+
+  void emergency_disable_output() noexcept {
+    const std::scoped_lock operation_lock{operation_mutex_};
+    try {
+      const auto current = repository_.active();
+      if (!current)
+        return;
+      if (speech_)
+        speech_->session_closed(current->session_id);
+      teardown_transport(current->session_id, true);
+      auto result = repository_.transition(
+          {.session_id = current->session_id,
+           .expected_revision = current->revision,
+           .target = VoxState::inactive,
+           .reason = "shutdown",
+           .actor_user_id = std::nullopt,
+           .event_id = ids_.next_id(),
+           .idempotency_key = "vox:safety-disable:" + current->session_id +
+                              ":" + std::to_string(current->revision),
+           .correlation_id = "vox.safety.disable",
+           .now_ms = now_ms(clock_),
+           .timeout_job_id = std::nullopt,
+           .timeout_due_at_ms = std::nullopt,
+           .failure_category = std::nullopt,
+           .public_card = false});
+      if (result.wake_outbox)
+        wake_outbox_();
+    } catch (const std::exception &error) {
+      diagnostics_.emit(
+          {DiagnosticSeverity::error, "vox.safety.disable", error.what(), {}});
+    } catch (...) {
+      diagnostics_.emit({DiagnosticSeverity::error,
+                         "vox.safety.disable",
+                         "Unknown Vox safety shutdown failure.",
+                         {}});
+    }
+  }
+
+  void set_output_operator_disabled(const bool disabled) noexcept {
+    output_operator_disabled_.store(disabled);
+    if (disabled)
+      emergency_disable_output();
   }
 
   SubmitResult summon(VoxCommandContext context, Completion completion) {
@@ -360,6 +403,12 @@ public:
           const std::scoped_lock operation_lock{operation_mutex_};
           if (stopped_.load()) {
             guarded->unavailable();
+            return;
+          }
+          if (output_operator_disabled_.load()) {
+            guarded->complete(
+                command_result(VoxResultCode::feature_disabled,
+                               "Vox output is disabled by the operator."));
             return;
           }
           execute_command(
@@ -504,9 +553,8 @@ public:
                 if (result.wake_scheduler)
                   wake_scheduler_();
                 if (result.code == VoxResultCode::accepted && result.session) {
-                  const bool allow_contextual =
-                      contextual_narration_enabled_ &&
-                      !automatic_speech_suppressed();
+                  const bool allow_contextual = contextual_narration_enabled_ &&
+                                                !automatic_speech_suppressed();
                   const auto farewell_queued =
                       speech_ &&
                       speech_->session_leaving(result.session->session_id,
@@ -810,10 +858,9 @@ public:
                   guarded->complete(repository_.record_command_receipt(
                       context, "speech_test", fingerprint, std::move(result)));
                 };
-                const bool valid_scenario = scenario == "queue" ||
-                                            scenario == "provider-failure" ||
-                                            scenario == "budget-limit" ||
-                                            scenario == "narration-stale";
+                const bool valid_scenario =
+                    scenario == "queue" || scenario == "provider-failure" ||
+                    scenario == "budget-limit" || scenario == "narration-stale";
                 if (!in_scope(context) ||
                     context.actor_user_id != scope_.owner_user_id ||
                     !controls_.admin_commands_enabled || !controls_.test_mode ||
@@ -915,6 +962,7 @@ public:
       last_failure = last_failure_category_;
     }
     return {.enabled = true,
+            .operator_disabled = output_operator_disabled_.load(),
             .state = current ? std::optional{current->state} : std::nullopt,
             .fixture_state =
                 current ? std::optional{current->fixture_state} : std::nullopt,
@@ -1147,8 +1195,8 @@ private:
     };
     auto result = repository_.start(request);
     if (result.code == VoxResultCode::accepted && result.session) {
-      if (contextual_narration_enabled_ && speech_ &&
-          prepare_session_flavor_ && !automatic_speech_suppressed()) {
+      if (contextual_narration_enabled_ && speech_ && prepare_session_flavor_ &&
+          !automatic_speech_suppressed()) {
         speech_->begin_session_flavor(result.session->session_id);
         prepare_session_flavor_(result.session->session_id,
                                 result.session->guild_id.str(),
@@ -1254,16 +1302,16 @@ private:
              .now_ms = current_time,
              .failure_category = std::nullopt});
         if (queued.code == VoxResultCode::accepted && queued.session) {
-          auto entrance = speech_ && contextual_narration_enabled_ &&
-                                  !automatic_speech_suppressed()
-                              ? speech_->take_prepared_entrance(
-                                    queued.session->session_id)
-                              : std::nullopt;
+          auto entrance =
+              speech_ && contextual_narration_enabled_ &&
+                      !automatic_speech_suppressed()
+                  ? speech_->take_prepared_entrance(queued.session->session_id)
+                  : std::nullopt;
           if (speech_ && !entrance)
             static_cast<void>(
                 speech_->take_prepared_entrance(queued.session->session_id));
           if (gateway_.send_pcm(queued.session->session_id,
-                                entrance ? *entrance
+                                entrance  ? *entrance
                                 : speech_ ? speech_->entrance_clip()
                                           : make_vox_proof_chime(),
                                 marker) != VoiceGatewaySubmit::accepted) {
@@ -1689,6 +1737,7 @@ private:
   std::atomic<bool> started_{false};
   std::atomic<bool> stopped_{false};
   std::atomic<bool> reconcile_required_{false};
+  std::atomic<bool> output_operator_disabled_{false};
   std::atomic<std::size_t> reconciliation_retry_attempt_{0};
   std::mutex reconciliation_retry_mutex_;
   std::condition_variable_any reconciliation_retry_condition_;
@@ -1728,6 +1777,12 @@ VoxService::VoxService(VoxRepository &repository, VoiceGateway &gateway,
 VoxService::~VoxService() { stop(); }
 void VoxService::start() { impl_->start(); }
 void VoxService::stop() noexcept { impl_->stop(); }
+void VoxService::set_output_operator_disabled(const bool disabled) noexcept {
+  impl_->set_output_operator_disabled(disabled);
+}
+void VoxService::emergency_disable_output() noexcept {
+  impl_->emergency_disable_output();
+}
 SubmitResult VoxService::summon(VoxCommandContext context,
                                 Completion completion) {
   return impl_->summon(std::move(context), std::move(completion));

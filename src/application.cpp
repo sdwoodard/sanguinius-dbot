@@ -1,9 +1,11 @@
 #include "sanguinius/application.hpp"
 
+#include "sanguinius/ai_generation.hpp"
 #include "sanguinius/ai_responder.hpp"
 #include "sanguinius/ai_work_service.hpp"
 #include "sanguinius/chronicle_sessions.hpp"
 #include "sanguinius/command_registry.hpp"
+#include "sanguinius/cross_feature_orchestrator.hpp"
 #include "sanguinius/durable_work_controls.hpp"
 #include "sanguinius/health.hpp"
 #include "sanguinius/interaction_handler.hpp"
@@ -11,8 +13,11 @@
 #include "sanguinius/message_handler.hpp"
 #include "sanguinius/outbox.hpp"
 #include "sanguinius/owner_admin.hpp"
+#include "sanguinius/sanguinius_overview.hpp"
 #include "sanguinius/scheduler.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <mutex>
 #include <stdexcept>
@@ -22,6 +27,36 @@ namespace sanguinius {
 namespace {
 
 constexpr std::int64_t disabled_feature_job_delay_ms = 60'000;
+constexpr std::int64_t application_heartbeat_interval_ms = 30'000;
+
+class UnavailableVoiceInputAdapter final : public VoiceInputAdapter {
+public:
+  [[nodiscard]] VoiceInputCapability capability() const noexcept override {
+    return VoiceInputCapability::disabled;
+  }
+
+  void start(AudioCallback, EventCallback) override {}
+
+  [[nodiscard]] VoiceInputPresence
+  preflight(const VoiceInputArmRequest &) const override {
+    return {};
+  }
+
+  [[nodiscard]] bool enable_transport(const VoiceInputArmRequest &,
+                                      std::stop_token) override {
+    return false;
+  }
+
+  [[nodiscard]] bool arm(const VoiceInputArmRequest &) override {
+    return false;
+  }
+
+  void disarm() noexcept override {}
+
+  [[nodiscard]] bool disable_transport() noexcept override { return true; }
+
+  void shutdown() noexcept override {}
+};
 
 enum class ApplicationState {
   created,
@@ -35,6 +70,23 @@ enum class ApplicationState {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
              clock.now().time_since_epoch())
       .count();
+}
+
+[[nodiscard]] bool retired_prefix_command(const std::string_view content,
+                                          const std::string_view prefix) {
+  if (!content.starts_with(prefix))
+    return false;
+  const auto start = prefix.size();
+  const auto end = content.find_first_of(" \t\r\n", start);
+  auto name = content.substr(start, end == std::string_view::npos
+                                        ? std::string_view::npos
+                                        : end - start);
+  std::string normalized{name};
+  std::ranges::transform(normalized, normalized.begin(),
+                         [](const unsigned char character) {
+                           return static_cast<char>(std::tolower(character));
+                         });
+  return normalized == "help" || normalized == "repo";
 }
 
 void validate(const ApplicationDependencies &dependencies) {
@@ -89,7 +141,10 @@ public:
         transcription_{std::move(dependencies.transcription)},
         text_to_speech_{std::move(dependencies.text_to_speech)},
         audio_normalizer_{std::move(dependencies.audio_normalizer)},
-        tts_cache_{std::move(dependencies.tts_cache)} {
+        tts_cache_{std::move(dependencies.tts_cache)},
+        runtime_feature_controls_{
+            std::move(dependencies.runtime_feature_controls)},
+        retention_repository_{std::move(dependencies.retention)} {
     if (!clock_ || !id_generator_ || !persistent_id_generator_ ||
         !diagnostics_ || !message_log_ || !application_instances_ ||
         !identities_ || !pending_notices_ || !durable_work_ || !ai_client_ ||
@@ -122,8 +177,8 @@ public:
         *durable_work_, *clock_, *persistent_id_generator_, *diagnostics_,
         *discord_, *discord_, options_.server_scope, options_.instance_id, 32,
         options_.durable_delivery_receipt_wait, [this] {
-          if (vox_narration_service_)
-            vox_narration_service_->wake();
+          if (cross_feature_orchestrator_)
+            cross_feature_orchestrator_->wake();
         });
     if (options_.features.chronicle_enabled &&
         (!chronicle_repository_ || !chronicle_session_repository_)) {
@@ -161,7 +216,11 @@ public:
           *tarot_repository_, *clock_, *persistent_id_generator_, *random_,
           options_.tarot_policy, options_.server_scope,
           options_.controls.test_mode, *diagnostics_,
-          [this] { outbox_->wake(); });
+          [this] { outbox_->wake(); },
+          [this](const std::string_view) {
+            if (cross_feature_orchestrator_)
+              cross_feature_orchestrator_->wake();
+          });
       wager_service_ = std::make_unique<TarotWagerService>(
           *wager_repository_, *clock_, *persistent_id_generator_,
           options_.wager_policy, options_.tarot_policy.starting_fate,
@@ -170,7 +229,11 @@ public:
             if (scheduler_)
               scheduler_->wake();
           },
-          [this] { outbox_->wake(); });
+          [this] { outbox_->wake(); },
+          [this](const std::string_view) {
+            if (cross_feature_orchestrator_)
+              cross_feature_orchestrator_->wake();
+          });
       if (tarot_experience_configured) {
         if (options_.tarot_house_policy.integration_enabled &&
             !tarot_integration_repository_)
@@ -191,22 +254,19 @@ public:
             *options_.tarot_house_catalog, *clock_, *persistent_id_generator_,
             options_.tarot_house_policy, options_.tarot_policy,
             options_.server_scope, options_.controls.test_mode, *diagnostics_,
-            [this](const std::string_view event_type) {
+            [this](const std::string_view) {
               outbox_->wake();
-              if (tarot_integration_service_)
-                tarot_integration_service_->observe_committed_event(event_type);
+              if (cross_feature_orchestrator_)
+                cross_feature_orchestrator_->wake();
             });
         tarot_draw_service_ = std::make_unique<TarotDrawService>(
             *tarot_draw_repository_, *options_.tarot_deck_catalog, *clock_,
             *persistent_id_generator_, *random_, options_.tarot_house_policy,
             options_.server_scope, options_.controls.test_mode, *diagnostics_,
-            [this](const TarotDrawRecord &draw) {
+            [this](const TarotDrawRecord &) {
               outbox_->wake();
-              if (tarot_house_service_)
-                tarot_house_service_->observe_draw(draw);
-              if (tarot_integration_service_)
-                tarot_integration_service_->observe_committed_event(
-                    "tarot.draw_created.v1");
+              if (cross_feature_orchestrator_)
+                cross_feature_orchestrator_->wake();
             });
       }
     }
@@ -253,22 +313,8 @@ public:
           },
           64,
           [this] {
-            if (relationship_service_) {
-              try {
-                static_cast<void>(relationship_service_->recover());
-              } catch (const std::exception &error) {
-                diagnostics_->emit({DiagnosticSeverity::error,
-                                    "relationship.canon_sync",
-                                    error.what(),
-                                    {}});
-              } catch (...) {
-                diagnostics_->emit(
-                    {DiagnosticSeverity::error,
-                     "relationship.canon_sync",
-                     "Unknown Chronicle relationship synchronization failure.",
-                     {}});
-              }
-            }
+            if (cross_feature_orchestrator_)
+              cross_feature_orchestrator_->wake();
           },
           [this](const ContextMessageSnapshot &message)
               -> std::optional<std::pair<std::string, bool>> {
@@ -290,7 +336,11 @@ public:
               scheduler_->wake();
           },
           [this] { outbox_->wake(); }, options_.timezone, ai_client_.get(),
-          ai_work_.get(), durable_work_.get(), diagnostics_.get());
+          ai_work_.get(), durable_work_.get(), diagnostics_.get(),
+          [this] {
+            if (cross_feature_orchestrator_)
+              cross_feature_orchestrator_->wake();
+          });
     }
     scheduler_ = std::make_unique<SchedulerService>(
         *durable_work_, *clock_, *persistent_id_generator_, *diagnostics_,
@@ -320,7 +370,8 @@ public:
                 [this](const PublicDeliveryReceipt receipt) {
                   if (receipt.result != DeliveryResult::success) {
                     diagnostics_->emit(
-                        {DiagnosticSeverity::warning, "vox.tts.text_fallback",
+                        {DiagnosticSeverity::warning,
+                         "vox.tts.text_fallback",
                          "A public-safe Vox failure notice was not delivered.",
                          {}});
                   }
@@ -333,9 +384,9 @@ public:
                         unix_milliseconds(*clock_)));
           });
       vox_service_ = std::make_unique<VoxService>(
-          *vox_repository_, *voice_gateway_, *clock_,
-          *persistent_id_generator_, *diagnostics_, options_.server_scope,
-          options_.controls, options_.instance_id,
+          *vox_repository_, *voice_gateway_, *clock_, *persistent_id_generator_,
+          *diagnostics_, options_.server_scope, options_.controls,
+          options_.instance_id,
           [this] {
             if (scheduler_)
               scheduler_->wake();
@@ -370,8 +421,14 @@ public:
               speech_service_->prepare_session_flavor(
                   std::move(session_id), std::move(guild_id),
                   std::move(entrance), std::move(farewell));
+          },
+          [this] {
+            if (cross_feature_orchestrator_)
+              cross_feature_orchestrator_->wake();
           });
-    if (voice_listening_repository_ && voice_input_adapter_) {
+    if (voice_listening_repository_ && !voice_input_adapter_)
+      voice_input_adapter_ = std::make_unique<UnavailableVoiceInputAdapter>();
+    if (voice_listening_repository_) {
       voice_listening_service_ = std::make_unique<VoiceListeningService>(
           *voice_listening_repository_, *voice_input_adapter_,
           transcription_.get(), *discord_, *clock_, *persistent_id_generator_,
@@ -402,9 +459,35 @@ public:
                 .ready = current->state == VoxState::ready,
                 .speech_idle = speech_idle};
           },
-          chronicle_service_.get(), [this](const bool listening) {
+          chronicle_service_.get(),
+          [this](const bool listening) {
             if (speech_service_)
               speech_service_->set_voice_input_listening(listening);
+          });
+    }
+    if (runtime_feature_controls_) {
+      safety_controls_ = std::make_unique<SafetyControlService>(
+          std::move(runtime_feature_controls_), *clock_,
+          *persistent_id_generator_, options_.features,
+          dynamic_cast<AiGenerationService *>(ai_client_.get()),
+          appearance_service_.get(), speech_service_.get(), vox_service_.get(),
+          voice_listening_service_.get());
+    }
+    if (retention_repository_) {
+      retention_service_ = std::make_unique<RetentionService>(
+          std::move(retention_repository_), *clock_, *persistent_id_generator_,
+          speech_repository_.get(), tts_cache_.get());
+      scheduler_->add_handler(
+          std::string{retention_job_type},
+          [this](const ClaimedScheduledJob &job) {
+            if (!std::holds_alternative<std::monostate>(job.payload))
+              throw std::invalid_argument{"Invalid retention payload."};
+            static_cast<void>(retention_service_->run());
+            const auto current = unix_milliseconds(*clock_);
+            if (durable_work_->reschedule_job(
+                    job, current, RetentionService::next_due_utc(current)) !=
+                WorkMutationStatus::applied)
+              throw std::runtime_error{"Retention claim became stale."};
           });
     }
     const auto add_vox_handler = [this](const std::string_view job_type) {
@@ -418,8 +501,7 @@ public:
               return;
             }
             if (vox_service_->handle_timeout(job) != SubmitResult::accepted) {
-              throw std::runtime_error{
-                  "The Vox timeout queue is unavailable."};
+              throw std::runtime_error{"The Vox timeout queue is unavailable."};
             }
           });
     };
@@ -468,21 +550,13 @@ public:
     scheduler_->add_handler(
         std::string{tarot_integration_job_type},
         [this](const ClaimedScheduledJob &job) {
-          if (!tarot_integration_service_ ||
-              !tarot_integration_service_->enabled()) {
-            const auto current = unix_milliseconds(*clock_);
-            static_cast<void>(durable_work_->defer_job(
-                job, current, current + disabled_feature_job_delay_ms,
-                "feature_disabled"));
-            return;
-          }
-          tarot_integration_service_->validate_scan_job(job);
-          static_cast<void>(tarot_integration_service_->scan());
+          if (cross_feature_orchestrator_)
+            cross_feature_orchestrator_->wake();
           const auto current = unix_milliseconds(*clock_);
-          if (durable_work_->reschedule_job(job, current, current + 60'000) !=
+          if (durable_work_->cancel_claimed_job(job, current) !=
               WorkMutationStatus::applied)
             throw std::runtime_error{
-                "Tarot integration scan claim became stale."};
+                "Obsolete Tarot integration scan claim became stale."};
         });
     scheduler_->add_handler(
         std::string{tarot_house_weekly_offer_job_type},
@@ -573,17 +647,13 @@ public:
         [this](const ClaimedScheduledJob &job) {
           if (!std::holds_alternative<AppearanceScanJobPayload>(job.payload))
             throw std::invalid_argument{"Invalid appearance scan payload."};
-          const bool scanned =
-              appearance_service_ && appearance_service_->scan_events();
+          if (cross_feature_orchestrator_)
+            cross_feature_orchestrator_->wake();
           const auto current = unix_milliseconds(*clock_);
-          const auto status =
-              scanned
-                  ? durable_work_->reschedule_job(job, current,
-                                                  current + 60'000)
-                  : durable_work_->defer_job(job, current, current + 60'000,
-                                             "appearance_runtime_not_ready");
+          const auto status = durable_work_->cancel_claimed_job(job, current);
           if (status != WorkMutationStatus::applied)
-            throw std::runtime_error{"Appearance scan claim became stale."};
+            throw std::runtime_error{
+                "Obsolete appearance scan claim became stale."};
         });
     scheduler_->add_handler(
         std::string{appearance_purge_job_type},
@@ -614,6 +684,108 @@ public:
           if (status != WorkMutationStatus::applied)
             throw std::runtime_error{"TTS purge claim became stale."};
         });
+    cross_feature_orchestrator_ =
+        std::make_unique<CrossFeatureOrchestrator>(*diagnostics_);
+    if (relationship_service_) {
+      cross_feature_orchestrator_->add_consumer("relationships", [this] {
+        return relationship_service_->recover(50) >= 50;
+      });
+    }
+    if (tarot_house_service_) {
+      cross_feature_orchestrator_->add_consumer("tarot_house", [this] {
+        return tarot_house_service_->reconcile_draws(50);
+      });
+    }
+    if (tarot_integration_service_) {
+      cross_feature_orchestrator_->add_consumer("tarot_integration", [this] {
+        if (!tarot_integration_service_->enabled())
+          return tarot_integration_service_->suppress_disabled_batch(50);
+        const auto report = tarot_integration_service_->scan();
+        return report.pending != 0;
+      });
+    }
+    if (appearance_service_) {
+      cross_feature_orchestrator_->add_consumer("appearances", [this] {
+        return appearance_service_->scan_event_batch(50);
+      });
+    }
+    if (vox_narration_service_) {
+      cross_feature_orchestrator_->add_consumer("vox_narration", [this] {
+        return vox_narration_service_->run_one_cycle();
+      });
+    }
+    cross_feature_orchestrator_->add_consumer("application_heartbeat", [this] {
+      const auto current = unix_milliseconds(*clock_);
+      if (current < last_application_heartbeat_ms_ ||
+          current - last_application_heartbeat_ms_ >=
+              application_heartbeat_interval_ms) {
+        application_instances_->record_heartbeat(options_.instance_id, current);
+        last_application_heartbeat_ms_ = current;
+      }
+      return false;
+    });
+
+    message_observation_pipeline_ =
+        std::make_unique<MessageObservationPipeline>(*diagnostics_);
+    message_observation_pipeline_->add_observer(
+        "identity", [this](const IncomingMessage &message) {
+          const bool primary_scope =
+              message.guild_id == options_.server_scope.guild_id &&
+              message.channel_id == options_.server_scope.primary_channel_id;
+          if (!primary_scope)
+            return;
+          identities_->ensure_user(DiscordUserRecord{
+              .user_id = message.author_user_id,
+              .display_name =
+                  message.author_display_name.empty()
+                      ? std::nullopt
+                      : std::optional<std::string>{message.author_display_name},
+              .username =
+                  message.author_username.empty()
+                      ? std::nullopt
+                      : std::optional<std::string>{message.author_username},
+              .is_bot = message.author_is_bot,
+              .observed_at_ms = unix_milliseconds(*clock_),
+          });
+        });
+    if (chronicle_session_service_) {
+      message_observation_pipeline_->add_observer(
+          "chronicle_session", [this](const IncomingMessage &message) {
+            chronicle_session_service_->observe_message(message);
+          });
+    }
+    if (appearance_service_) {
+      message_observation_pipeline_->add_observer(
+          "appearances", [this](const IncomingMessage &message) {
+            const bool primary_scope =
+                message.guild_id == options_.server_scope.guild_id &&
+                message.channel_id == options_.server_scope.primary_channel_id;
+            const bool observable =
+                !message.author_is_bot ||
+                (message.bot_user_id.is_set() &&
+                 message.author_user_id == message.bot_user_id);
+            const bool deprecated_command = retired_prefix_command(
+                message.content, options_.command_prefix);
+            const bool direct_invocation =
+                !message.author_is_bot &&
+                (deprecated_command ||
+                 parse_admin_operation(message.content, options_.command_prefix)
+                     .has_value() ||
+                 ai_responder_->handles(message));
+            if (!primary_scope || !observable || direct_invocation)
+              return;
+            appearance_service_->observe_message(AppearanceMessageObservation{
+                .message_id = message.message_id,
+                .guild_id = message.guild_id,
+                .channel_id = message.channel_id,
+                .author_user_id = message.author_user_id,
+                .author_is_bot = message.author_is_bot,
+                .excerpt = message.content,
+                .observed_at_ms = unix_milliseconds(*clock_),
+                .correlation_id = message.correlation_id,
+            });
+          });
+    }
     durable_controls_ = std::make_unique<DurableWorkControlService>(
         *durable_work_, *clock_, *persistent_id_generator_,
         options_.server_scope, [this] { scheduler_->wake(); },
@@ -672,106 +844,44 @@ public:
                          ? std::optional{voice_listening_service_->health()}
                          : std::nullopt;
             },
+            .cross_feature = [this]() -> std::optional<CrossFeatureHealth> {
+              return cross_feature_orchestrator_
+                         ? std::optional{cross_feature_orchestrator_->health()}
+                         : std::nullopt;
+            },
         });
     owner_admin_ = std::make_unique<OwnerAdminService>(
         options_.controls, *scope_policy_, *health_service_);
+    overview_service_ =
+        std::make_unique<SanguiniusOverviewService>(options_.features, *clock_);
     message_handler_ = std::make_unique<MessageHandler>(
         *message_log_, *ai_responder_, *discord_, *diagnostics_, *owner_admin_,
         options_.command_prefix, options_.message_queue_capacity,
         [this](const IncomingMessage &message) {
-          const bool primary_scope =
-              message.guild_id == options_.server_scope.guild_id &&
-              message.channel_id == options_.server_scope.primary_channel_id;
-          if (primary_scope) {
-            try {
-              identities_->ensure_user(DiscordUserRecord{
-                  .user_id = message.author_user_id,
-                  .display_name =
-                      message.author_display_name.empty()
-                          ? std::nullopt
-                          : std::optional<
-                                std::string>{message.author_display_name},
-                  .username =
-                      message.author_username.empty()
-                          ? std::nullopt
-                          : std::optional<std::string>{message.author_username},
-                  .is_bot = message.author_is_bot,
-                  .observed_at_ms = unix_milliseconds(*clock_),
-              });
-            } catch (const std::exception &error) {
-              diagnostics_->emit({DiagnosticSeverity::error,
-                                  "message.identity_observer", error.what(),
-                                  message.correlation_id});
-            } catch (...) {
-              diagnostics_->emit({DiagnosticSeverity::error,
-                                  "message.identity_observer",
-                                  "Unknown identity observation failure.",
-                                  message.correlation_id});
-            }
-          }
-          if (chronicle_session_service_) {
-            try {
-              chronicle_session_service_->observe_message(message);
-            } catch (const std::exception &error) {
-              diagnostics_->emit({DiagnosticSeverity::error,
-                                  "chronicle.session_context_observer",
-                                  error.what(), message.correlation_id});
-            } catch (...) {
-              diagnostics_->emit(
-                  {DiagnosticSeverity::error,
-                   "chronicle.session_context_observer",
-                   "Unknown Chronicle session observation failure.",
-                   message.correlation_id});
-            }
-          }
-          const bool appearance_author_is_observable =
-              !message.author_is_bot ||
-              (message.bot_user_id.is_set() &&
-               message.author_user_id == message.bot_user_id);
-          const bool appearance_direct_invocation =
-              !message.author_is_bot &&
-              (parse_admin_operation(message.content, options_.command_prefix)
-                   .has_value() ||
-               ai_responder_->handles(message) ||
-               parse_command(message.content, options_.command_prefix) !=
-                   Command::none);
-          if (primary_scope && appearance_service_ &&
-              appearance_author_is_observable &&
-              !appearance_direct_invocation) {
-            try {
-              appearance_service_->observe_message(AppearanceMessageObservation{
-                  .message_id = message.message_id,
-                  .guild_id = message.guild_id,
-                  .channel_id = message.channel_id,
-                  .author_user_id = message.author_user_id,
-                  .author_is_bot = message.author_is_bot,
-                  .excerpt = message.content,
-                  .observed_at_ms = unix_milliseconds(*clock_),
-                  .correlation_id = message.correlation_id,
-              });
-            } catch (const std::exception &error) {
-              diagnostics_->emit({DiagnosticSeverity::error,
-                                  "appearance.message_observer", error.what(),
-                                  message.correlation_id});
-            } catch (...) {
-              diagnostics_->emit({DiagnosticSeverity::error,
-                                  "appearance.message_observer",
-                                  "Unknown appearance observation failure.",
-                                  message.correlation_id});
-            }
-          }
+          message_observation_pipeline_->observe(message);
+        },
+        [this](const HealthSnapshot &snapshot) {
+          return bounded_health_message(overview_service_->owner_health(
+              render_health(snapshot),
+              appearance_service_ ? appearance_service_->member_status_summary()
+                                  : "unavailable",
+              safety_controls_ ? safety_controls_->member_status()
+                               : MemberRuntimeStatus{},
+              appearance_service_ ? appearance_service_->status_summary()
+                                  : std::string_view{}));
         });
     interaction_handler_ = std::make_unique<InteractionHandler>(
         *identities_, *notice_service_, *clock_, *durable_controls_,
         chronicle_service_.get(), chronicle_session_service_.get(),
-        *health_service_, *diagnostics_, options_.features,
+        *health_service_, *diagnostics_, options_.features, *overview_service_,
         [this] { return message_handler_->queue_snapshot(); },
         [this] { return ai_responder_->queue_snapshot(); },
         options_.interaction_queue_capacity, relationship_service_.get(),
         appearance_service_.get(), tarot_service_.get(), wager_service_.get(),
         tarot_draw_service_.get(), tarot_house_service_.get(),
         tarot_integration_service_.get(), vox_service_.get(),
-        vox_narration_service_.get(), voice_listening_service_.get());
+        vox_narration_service_.get(), voice_listening_service_.get(),
+        safety_controls_.get());
     interaction_router_ = std::make_unique<InteractionRouter>(
         *scope_policy_, options_.controls, options_.features,
         *interaction_handler_, *diagnostics_);
@@ -787,22 +897,17 @@ public:
     }
 
     try {
+      const auto started_at_ms = unix_milliseconds(*clock_);
       application_instances_->record_start(ApplicationInstanceRecord{
           .instance_id = options_.instance_id,
           .application_version = options_.build.version,
           .git_revision = options_.build.revision,
           .hostname = options_.hostname,
           .process_id = options_.process_id,
-          .started_at_ms = unix_milliseconds(*clock_),
+          .started_at_ms = started_at_ms,
       });
+      last_application_heartbeat_ms_ = started_at_ms;
       instance_started_ = true;
-      // Recovery belongs to application startup, not to the optional runtime
-      // adapter: disabling Vox or voice input must never leave a prior capture
-      // window nonterminal.
-      if (voice_listening_repository_) {
-        static_cast<void>(voice_listening_repository_->abandon_nonterminal(
-            unix_milliseconds(*clock_), "restart", "voice:startup:"));
-      }
       if (vox_repository_) {
         static_cast<void>(vox_repository_->recover(
             options_.instance_id, unix_milliseconds(*clock_),
@@ -821,8 +926,6 @@ public:
         throw std::runtime_error{
             "Wager escrow invariant verification failed during startup."};
       }
-      if (tarot_house_service_)
-        tarot_house_service_->reconcile_draws();
       if (tarot_house_service_ &&
           !tarot_house_service_->check_invariants().valid) {
         throw std::runtime_error{
@@ -830,15 +933,6 @@ public:
       }
       if (tarot_house_service_)
         tarot_house_service_->ensure_weekly_schedule();
-      if (tarot_integration_service_)
-        tarot_integration_service_->ensure_schedule();
-      if (relationship_service_) {
-        static_cast<void>(relationship_service_->recover());
-        if (!relationship_service_->check_projection().valid) {
-          throw std::runtime_error{
-              "Relationship projection verification failed during startup."};
-        }
-      }
       if (appearance_service_)
         appearance_service_->start();
       static_cast<void>(notice_service_->recover_incomplete_deliveries());
@@ -871,6 +965,8 @@ public:
         voice_listening_service_->start();
         voice_listening_started_ = true;
       }
+      cross_feature_orchestrator_->start();
+      cross_feature_started_ = true;
       discord_->start(
           [this](IncomingMessage message) {
             try {
@@ -941,6 +1037,10 @@ public:
 private:
   void stop_components() noexcept {
     discord_->stop_accepting();
+    if (cross_feature_started_) {
+      cross_feature_orchestrator_->stop();
+      cross_feature_started_ = false;
+    }
     if (interaction_router_) {
       interaction_router_->stop();
     }
@@ -1045,11 +1145,14 @@ private:
   std::unique_ptr<TextToSpeechClient> text_to_speech_;
   std::unique_ptr<AudioNormalizer> audio_normalizer_;
   std::unique_ptr<TtsCache> tts_cache_;
+  std::unique_ptr<RuntimeFeatureControlRepository> runtime_feature_controls_;
+  std::unique_ptr<RetentionRepository> retention_repository_;
   std::unique_ptr<AiResponder> ai_responder_;
   std::unique_ptr<AiWorkService> ai_work_;
   std::unique_ptr<ServerScopePolicy> scope_policy_;
   std::unique_ptr<HealthService> health_service_;
   std::unique_ptr<OwnerAdminService> owner_admin_;
+  std::unique_ptr<SanguiniusOverviewService> overview_service_;
   std::unique_ptr<MessageHandler> message_handler_;
   std::unique_ptr<PendingNoticeService> notice_service_;
   std::unique_ptr<OutboxService> outbox_;
@@ -1066,6 +1169,10 @@ private:
   std::unique_ptr<SpeechService> speech_service_;
   std::unique_ptr<VoxNarrationService> vox_narration_service_;
   std::unique_ptr<VoiceListeningService> voice_listening_service_;
+  std::unique_ptr<SafetyControlService> safety_controls_;
+  std::unique_ptr<RetentionService> retention_service_;
+  std::unique_ptr<CrossFeatureOrchestrator> cross_feature_orchestrator_;
+  std::unique_ptr<MessageObservationPipeline> message_observation_pipeline_;
   std::unique_ptr<SchedulerService> scheduler_;
   std::unique_ptr<DurableWorkControlService> durable_controls_;
   std::unique_ptr<InteractionHandler> interaction_handler_;
@@ -1081,6 +1188,8 @@ private:
   bool speech_started_{false};
   bool vox_narration_started_{false};
   bool voice_listening_started_{false};
+  bool cross_feature_started_{false};
+  std::int64_t last_application_heartbeat_ms_{};
   bool instance_started_{false};
   bool instance_finished_{false};
 };

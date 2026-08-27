@@ -31,6 +31,13 @@ struct TarotIntegrationReport {
   std::size_t effects{};
 };
 
+struct TarotIntegrationProjectionReport {
+  bool valid{};
+  std::size_t expected_title_count{};
+  std::size_t title_source_count{};
+  std::size_t title_mismatch_count{};
+};
+
 struct TarotIntegrationSinkPolicy {
   bool chronicle_enabled{true};
 };
@@ -38,12 +45,13 @@ struct TarotIntegrationSinkPolicy {
 class TarotIntegrationRepository {
 public:
   virtual ~TarotIntegrationRepository() = default;
-  virtual void ensure_schedule(std::int64_t now_ms,
-                               std::string job_id) = 0;
+  virtual void ensure_schedule(std::int64_t now_ms, std::string job_id) = 0;
   [[nodiscard]] virtual TarotIntegrationReport
   scan(std::int64_t now_ms, std::size_t limit,
        std::function<std::string()> next_id,
        TarotIntegrationSinkPolicy sink_policy = {}) = 0;
+  [[nodiscard]] virtual std::size_t suppress_disabled(std::int64_t now_ms,
+                                                      std::size_t limit) = 0;
   [[nodiscard]] virtual bool retry(std::string_view source_event_id,
                                    std::int64_t now_ms) = 0;
   [[nodiscard]] virtual TarotIntegrationReport inspect() = 0;
@@ -57,12 +65,14 @@ public:
                           TarotIntegrationSinkPolicy sink_policy);
 
   [[nodiscard]] TarotIntegrationReport scan();
+  [[nodiscard]] bool suppress_disabled_batch(std::size_t limit = 50);
   void ensure_schedule();
   void validate_scan_job(const ClaimedScheduledJob &job) const;
   [[nodiscard]] bool enabled() const noexcept;
   [[nodiscard]] InteractionMessage
   preview(const IncomingInteraction &interaction);
-  [[nodiscard]] InteractionMessage retry(const IncomingInteraction &interaction);
+  [[nodiscard]] InteractionMessage
+  retry(const IncomingInteraction &interaction);
   void observe_committed_event(std::string_view event_type) noexcept;
 
 private:

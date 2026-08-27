@@ -75,10 +75,21 @@ struct ConversationEntry {
 };
 
 struct EmbedPayload {
+  struct Field {
+    std::string name;
+    std::string value;
+    bool inline_field{};
+
+    [[nodiscard]] bool operator==(const Field &) const = default;
+  };
+
   std::uint32_t color{};
   std::string title;
   std::string url{};
   std::string description;
+  std::vector<Field> fields{};
+  std::string footer{};
+  std::optional<std::int64_t> timestamp_ms{};
 };
 
 struct ReplyRequest {
@@ -97,6 +108,13 @@ enum class CommandOptionKind {
   string,
   user,
   integer,
+};
+
+enum class CommandAudience {
+  member,
+  owner_safety,
+  owner_admin,
+  owner_test,
 };
 
 struct CommandOptionChoiceDefinition {
@@ -118,14 +136,15 @@ struct CommandOptionDefinition {
   std::optional<std::int64_t> minimum_integer{};
   std::optional<std::int64_t> maximum_integer{};
 
-  [[nodiscard]] bool operator==(const CommandOptionDefinition &) const =
-      default;
+  [[nodiscard]] bool
+  operator==(const CommandOptionDefinition &) const = default;
 };
 
 struct CommandSubcommandDefinition {
   std::string name;
   std::string description;
   std::vector<CommandOptionDefinition> options{};
+  CommandAudience audience{CommandAudience::member};
 
   [[nodiscard]] bool
   operator==(const CommandSubcommandDefinition &) const = default;
@@ -146,6 +165,8 @@ struct CommandDefinition {
   std::vector<CommandSubcommandDefinition> subcommands;
   ApplicationCommandKind kind{ApplicationCommandKind::chat_input};
   std::vector<CommandSubcommandGroupDefinition> subcommand_groups{};
+  std::vector<CommandOptionDefinition> options{};
+  CommandAudience audience{CommandAudience::member};
 
   [[nodiscard]] bool operator==(const CommandDefinition &) const = default;
 };
@@ -211,6 +232,8 @@ struct DiscordRuntimeStatus {
 enum class ButtonStyle {
   primary,
   secondary,
+  success,
+  danger,
 };
 
 struct ButtonPayload {

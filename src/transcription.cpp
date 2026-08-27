@@ -28,8 +28,7 @@ TranscriptionError::TranscriptionError(
     : std::runtime_error{std::move(message)}, category_{category},
       provider_request_id_{std::move(provider_request_id)} {}
 
-TranscriptionFailureCategory
-TranscriptionError::category() const noexcept {
+TranscriptionFailureCategory TranscriptionError::category() const noexcept {
   return category_;
 }
 
@@ -62,16 +61,16 @@ std::string sanitize_transcription_request_id(const std::string_view value) {
   return std::string{value};
 }
 
-std::array<std::byte, 44>
-pcm_wav_header(const std::size_t pcm_bytes, const std::uint32_t sample_rate,
-               const std::uint16_t channels,
-               const std::uint16_t bits_per_sample) {
+std::array<std::byte, 44> pcm_wav_header(const std::size_t pcm_bytes,
+                                         const std::uint32_t sample_rate,
+                                         const std::uint16_t channels,
+                                         const std::uint16_t bits_per_sample) {
   if (pcm_bytes == 0 || pcm_bytes > std::numeric_limits<std::uint32_t>::max() ||
       sample_rate == 0 || channels == 0 || bits_per_sample != 16 ||
       pcm_bytes % (static_cast<std::size_t>(channels) * 2U) != 0)
     throw std::invalid_argument{"PCM audio cannot be represented as WAV."};
-  const auto byte_rate = static_cast<std::uint64_t>(sample_rate) * channels *
-                         bits_per_sample / 8U;
+  const auto byte_rate =
+      static_cast<std::uint64_t>(sample_rate) * channels * bits_per_sample / 8U;
   if (byte_rate > std::numeric_limits<std::uint32_t>::max())
     throw std::invalid_argument{"PCM WAV byte rate is invalid."};
   std::array<std::byte, 44> header{};
@@ -108,6 +107,8 @@ const char *transcription_failure_category_name(
     return "timeout";
   case TranscriptionFailureCategory::rate_limited:
     return "rate_limited";
+  case TranscriptionFailureCategory::authentication:
+    return "authentication";
   case TranscriptionFailureCategory::provider_rejected:
     return "provider_rejected";
   case TranscriptionFailureCategory::provider_unavailable:

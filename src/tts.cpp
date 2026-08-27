@@ -57,7 +57,8 @@ void validate_sequence(const std::string_view input, const std::size_t offset,
 [[nodiscard]] std::string hex_digest(const std::span<const std::byte> input) {
   std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context{
       EVP_MD_CTX_new(), &EVP_MD_CTX_free};
-  if (!context || EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1 ||
+  if (!context ||
+      EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1 ||
       EVP_DigestUpdate(context.get(), input.data(), input.size()) != 1) {
     throw std::runtime_error{"Unable to initialize the TTS cache digest."};
   }
@@ -87,7 +88,8 @@ TtsError::TtsError(const TtsFailureCategory category, std::string message,
 TtsFailureCategory TtsError::category() const noexcept { return category_; }
 bool TtsError::retryable() const noexcept { return retryable_; }
 
-std::optional<std::chrono::milliseconds> TtsError::retry_after() const noexcept {
+std::optional<std::chrono::milliseconds>
+TtsError::retry_after() const noexcept {
   return retry_after_;
 }
 
@@ -102,8 +104,9 @@ NormalizedTtsText normalize_tts_text(const std::string_view input) {
   for (std::size_t offset = 0; offset < input.size();) {
     const auto lead = static_cast<unsigned char>(input[offset]);
     if (lead <= 0x7FU) {
-      if (lead == 0U || (lead < 0x20U && lead != '\t' && lead != '\n' &&
-                         lead != '\r') || lead == 0x7FU) {
+      if (lead == 0U ||
+          (lead < 0x20U && lead != '\t' && lead != '\n' && lead != '\r') ||
+          lead == 0x7FU) {
         throw TtsError{TtsFailureCategory::invalid_request,
                        "TTS text contains a prohibited control character."};
       }
@@ -154,13 +157,12 @@ NormalizedTtsText normalize_tts_text(const std::string_view input) {
 }
 
 std::int64_t estimated_tts_cost_micro_usd(const std::size_t scalar_count) {
-  if (scalar_count > static_cast<std::size_t>(
-                         std::numeric_limits<std::int64_t>::max() /
-                         tts_micro_usd_per_character)) {
+  if (scalar_count >
+      static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max() /
+                               tts_micro_usd_per_character)) {
     throw std::overflow_error{"TTS cost estimate overflowed."};
   }
-  return static_cast<std::int64_t>(scalar_count) *
-         tts_micro_usd_per_character;
+  return static_cast<std::int64_t>(scalar_count) * tts_micro_usd_per_character;
 }
 
 bool wav_media_signature(const std::span<const std::byte> bytes) noexcept {
@@ -177,13 +179,16 @@ bool wav_media_signature(const std::span<const std::byte> bytes) noexcept {
 std::string tts_cache_key(const NormalizedTtsText &text,
                           const TtsRequest &request) {
   std::ostringstream canonical;
-  canonical << "sanguinius-tts-cache-v2\n" << request.provider << '\n'
-            << request.model << '\n' << request.voice << '\n'
-            << static_cast<int>(request.response_format) << '\n' << request.speed
-            << "\n48000\n2\n16\n" << text.text;
+  canonical << "sanguinius-tts-cache-v2\n"
+            << request.provider << '\n'
+            << request.model << '\n'
+            << request.voice << '\n'
+            << static_cast<int>(request.response_format) << '\n'
+            << request.speed << "\n48000\n2\n16\n"
+            << text.text;
   const auto serialized = canonical.str();
-  return hex_digest(std::as_bytes(std::span{serialized.data(),
-                                            serialized.size()}));
+  return hex_digest(
+      std::as_bytes(std::span{serialized.data(), serialized.size()}));
 }
 
 std::string sha256_hex(const std::span<const std::byte> bytes) {
@@ -222,10 +227,14 @@ tts_failure_category_name(const TtsFailureCategory category) noexcept {
     return "timeout";
   case TtsFailureCategory::rate_limited:
     return "rate_limited";
+  case TtsFailureCategory::authentication:
+    return "authentication";
   case TtsFailureCategory::provider_rejected:
     return "provider_rejected";
   case TtsFailureCategory::provider_unavailable:
     return "provider_unavailable";
+  case TtsFailureCategory::circuit_open:
+    return "circuit_open";
   case TtsFailureCategory::invalid_media:
     return "invalid_media";
   case TtsFailureCategory::oversized_media:

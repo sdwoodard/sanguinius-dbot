@@ -491,6 +491,7 @@ void finish_claim_without_reward(SqliteConnection &connection,
                           .entries = {},
                           .offset = 0,
                           .total = 0,
+                          .previous_custom_id = std::nullopt,
                           .next_custom_id = std::nullopt};
 }
 
@@ -617,7 +618,8 @@ std::int64_t SqliteTarotRepository::balance(const DiscordSnowflake &user_id) {
 
 TarotHistoryPage SqliteTarotRepository::create_history_snapshot(
     const TarotHistorySnapshotRequest &request) {
-  if (!valid_uuid_v4(request.cursor_id) || request.page_token_ids.size() != 9 ||
+  if (!valid_uuid_v4(request.cursor_id) ||
+      request.page_token_ids.size() != 10 ||
       std::ranges::any_of(request.page_token_ids,
                           [](const auto &id) { return !valid_uuid_v4(id); }))
     throw std::invalid_argument{"Tarot history snapshot request is invalid."};
@@ -688,11 +690,11 @@ TarotHistoryPage SqliteTarotRepository::create_history_snapshot(
     item.execute();
   }
 
-  const auto page_count = entries.empty()
-                              ? std::size_t{0}
-                              : (entries.size() - 1) / tarot_history_page_size;
+  const auto page_count =
+      std::max<std::size_t>(1, (entries.size() + tarot_history_page_size - 1) /
+                                   tarot_history_page_size);
   for (std::size_t page = 0; page < page_count; ++page) {
-    const auto offset = (page + 1) * tarot_history_page_size;
+    const auto offset = page * tarot_history_page_size;
     auto token = connection.prepare(
         "INSERT INTO interaction_token "
         "(token_id, token_version, interaction_kind, action, entity_type, "
@@ -719,13 +721,14 @@ TarotHistoryPage SqliteTarotRepository::create_history_snapshot(
                           .entries = {},
                           .offset = 0,
                           .total = entries.size(),
+                          .previous_custom_id = std::nullopt,
                           .next_custom_id = std::nullopt};
   const auto first_count = std::min(entries.size(), tarot_history_page_size);
   result.entries.assign(entries.begin(),
                         entries.begin() +
                             static_cast<std::ptrdiff_t>(first_count));
   if (entries.size() > tarot_history_page_size)
-    result.next_custom_id = custom_id(request.page_token_ids.front());
+    result.next_custom_id = custom_id(request.page_token_ids[1]);
   return result;
 }
 
@@ -778,6 +781,7 @@ SqliteTarotRepository::history_page(const TarotHistoryPageRequest &request) {
                           .entries = {},
                           .offset = offset,
                           .total = total,
+                          .previous_custom_id = std::nullopt,
                           .next_custom_id = std::nullopt};
   auto items = connection.prepare(
       "SELECT tx.transaction_id, tx.ledger_sequence, tx.transaction_type, "
@@ -819,6 +823,17 @@ SqliteTarotRepository::history_page(const TarotHistoryPageRequest &request) {
          .reason = items.column_is_null(6)
                        ? std::nullopt
                        : std::optional<std::string>{items.column_text(6)}});
+  }
+  if (offset > 0) {
+    auto previous = connection.prepare(
+        "SELECT token_id FROM interaction_token "
+        "WHERE entity_type = 'tarot_history_cursor' AND entity_id = ? "
+        "AND action = ?");
+    previous.bind(1, cursor_id);
+    previous.bind(2, "tarot.history." +
+                         std::to_string(offset - tarot_history_page_size));
+    if (previous.step())
+      result.previous_custom_id = custom_id(previous.column_text(0));
   }
   if (offset + tarot_history_page_size < total) {
     auto next = connection.prepare(

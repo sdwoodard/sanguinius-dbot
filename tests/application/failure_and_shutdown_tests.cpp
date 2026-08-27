@@ -110,8 +110,7 @@ TEST_CASE("history failure still generates from the triggering request",
   REQUIRE(requests.size() == 1);
   REQUIRE(contains(requests[0].conversation[1].content,
                    "CURRENT REQUEST\nlatest request"));
-  REQUIRE_FALSE(
-      contains(requests[0].conversation[1].content, "Test User"));
+  REQUIRE_FALSE(contains(requests[0].conversation[1].content, "Test User"));
   REQUIRE(contains(requests[0].conversation[0].content,
                    "CURRENT REQUEST AUTHOR METADATA\nDisplay name: Test User"));
   REQUIRE_FALSE(contains(requests[0].conversation[0].content,
@@ -125,7 +124,7 @@ TEST_CASE("message log failure does not prevent command routing",
   sanguinius::test::ApplicationFixture fixture;
   fixture.log->fail();
   fixture.application->start();
-  fixture.discord->emit(sanguinius::test::incoming("!help"));
+  fixture.discord->emit(sanguinius::test::incoming("<@42> help"));
 
   REQUIRE(fixture.discord->wait_for_reply_count(1, 2s));
   REQUIRE(fixture.diagnostics->contains_category("message.logging"));
@@ -165,7 +164,7 @@ TEST_CASE("full application queue replies only to actionable input",
   fixture.discord->emit(sanguinius::test::incoming("ordinary one", 1));
   REQUIRE(fixture.log->wait_until_entered(2s));
   fixture.discord->emit(sanguinius::test::incoming("ordinary two", 2));
-  fixture.discord->emit(sanguinius::test::incoming("!help", 3));
+  fixture.discord->emit(sanguinius::test::incoming("<@42> help", 3));
   fixture.discord->emit(sanguinius::test::incoming("ordinary four", 4));
 
   REQUIRE(fixture.discord->wait_for_reply_count(1, 2s));

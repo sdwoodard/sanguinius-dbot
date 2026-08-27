@@ -360,6 +360,12 @@ Config Config::from_source(const ConfigSource &source) {
     config.ai.model = *model;
     config.origins.openai_model = ConfigurationOrigin::configured;
   }
+  config.ai.input_rate_micro_usd_per_million_tokens = optional_integer(
+      source, "SANGUINIUS_OPENAI_INPUT_MICRO_USD_PER_MILLION_TOKENS", 0, 0,
+      1'000'000'000);
+  config.ai.output_rate_micro_usd_per_million_tokens = optional_integer(
+      source, "SANGUINIUS_OPENAI_OUTPUT_MICRO_USD_PER_MILLION_TOKENS", 0, 0,
+      1'000'000'000);
   if (const auto persona_file =
           optional_nonempty(source, "SANGUINIUS_PERSONA_FILE");
       persona_file.has_value()) {
@@ -442,10 +448,9 @@ Config Config::from_source(const ConfigSource &source) {
   config.features.appearances_mode = appearance_mode(source);
   config.features.vox_enabled =
       optional_boolean(source, "SANGUINIUS_VOX_ENABLED", false);
-  config.features.vox_narration_enabled = optional_boolean(
-      source, "SANGUINIUS_VOX_NARRATION_ENABLED", false);
-  if (config.features.vox_narration_enabled &&
-      !config.features.vox_enabled) {
+  config.features.vox_narration_enabled =
+      optional_boolean(source, "SANGUINIUS_VOX_NARRATION_ENABLED", false);
+  if (config.features.vox_narration_enabled && !config.features.vox_enabled) {
     throw std::runtime_error{
         "SANGUINIUS_VOX_NARRATION_ENABLED=true requires Vox output."};
   }
@@ -457,21 +462,21 @@ Config Config::from_source(const ConfigSource &source) {
   config.transcription_provider = parse_transcription_provider(source);
   config.voice_input.provider_enabled =
       config.transcription_provider == TranscriptionProvider::openai;
-  if (const auto model = optional_nonempty(
-          source, "SANGUINIUS_TRANSCRIPTION_MODEL"))
+  if (const auto model =
+          optional_nonempty(source, "SANGUINIUS_TRANSCRIPTION_MODEL"))
     config.voice_input.model = *model;
   config.voice_input.request_timeout = std::chrono::milliseconds{
       optional_integer(source, "SANGUINIUS_TRANSCRIPTION_REQUEST_TIMEOUT_MS",
                        30'000, 1, 30'000)};
   config.voice_input.usage_policy.rolling_day_windows =
       static_cast<std::size_t>(optional_integer(
-          source, "SANGUINIUS_VOICE_INPUT_ROLLING_DAY_WINDOWS", 10, 1, 10));
-  config.voice_input.usage_policy.rolling_day_micro_usd = optional_integer(
-      source, "SANGUINIUS_VOICE_INPUT_ROLLING_DAY_MICRO_USD", 50'000, 1,
-      50'000);
-  config.voice_input.usage_policy.calendar_month_micro_usd = optional_integer(
-      source, "SANGUINIUS_VOICE_INPUT_MONTHLY_MICRO_USD", 1'000'000, 1,
-      1'000'000);
+          source, "SANGUINIUS_VOICE_INPUT_ROLLING_DAY_WINDOWS", 50, 1, 50));
+  config.voice_input.usage_policy.rolling_day_micro_usd =
+      optional_integer(source, "SANGUINIUS_VOICE_INPUT_ROLLING_DAY_MICRO_USD",
+                       250'000, 1, 250'000);
+  config.voice_input.usage_policy.calendar_month_micro_usd =
+      optional_integer(source, "SANGUINIUS_VOICE_INPUT_MONTHLY_MICRO_USD",
+                       5'000'000, 1, 5'000'000);
   if (config.features.voice_input_enabled && !config.features.vox_enabled) {
     throw std::runtime_error{
         "SANGUINIUS_VOICE_INPUT_ENABLED=true requires Vox output."};
@@ -500,21 +505,22 @@ Config Config::from_source(const ConfigSource &source) {
       source, "SANGUINIUS_TTS_MAXIMUM_TEXT_SCALARS", 350, 1, 350));
   config.tts.usage_policy.rolling_day_attempts =
       static_cast<std::size_t>(optional_integer(
-          source, "SANGUINIUS_TTS_ROLLING_DAY_ATTEMPTS", 20, 1, 20));
+          source, "SANGUINIUS_TTS_ROLLING_DAY_ATTEMPTS", 100, 1, 100));
   config.tts.usage_policy.rolling_day_micro_usd = optional_integer(
-      source, "SANGUINIUS_TTS_ROLLING_DAY_MICRO_USD", 100'000, 1, 100'000);
+      source, "SANGUINIUS_TTS_ROLLING_DAY_MICRO_USD", 500'000, 1, 500'000);
   config.tts.usage_policy.calendar_month_micro_usd = optional_integer(
-      source, "SANGUINIUS_TTS_MONTHLY_MICRO_USD", 2'000'000, 1, 2'000'000);
+      source, "SANGUINIUS_TTS_MONTHLY_MICRO_USD", 10'000'000, 1, 10'000'000);
   config.tts.cache_policy.maximum_bytes =
       static_cast<std::uintmax_t>(optional_integer(
           source, "SANGUINIUS_TTS_CACHE_MAXIMUM_MIB", 128, 1, 128)) *
       1024U * 1024U;
   config.tts.cache_policy.maximum_age = std::chrono::hours{
-      optional_integer(source, "SANGUINIUS_TTS_CACHE_MAXIMUM_DAYS", 30, 1,
-                       30) *
+      optional_integer(source, "SANGUINIUS_TTS_CACHE_MAXIMUM_DAYS", 30, 1, 30) *
       24};
-  config.tts.normalization_limits.maximum_duration_ms = optional_integer(
-      source, "SANGUINIUS_TTS_MAXIMUM_DURATION_SECONDS", 20, 1, 20) * 1'000;
+  config.tts.normalization_limits.maximum_duration_ms =
+      optional_integer(source, "SANGUINIUS_TTS_MAXIMUM_DURATION_SECONDS", 20, 1,
+                       20) *
+      1'000;
   config.tts.connect_timeout = std::chrono::milliseconds{optional_integer(
       source, "SANGUINIUS_TTS_CONNECT_TIMEOUT_MS", 5'000, 1, 5'000)};
   config.tts.request_timeout = std::chrono::milliseconds{optional_integer(
@@ -589,8 +595,8 @@ std::string_view tts_provider_name(const TtsProvider provider) noexcept {
   return "unknown";
 }
 
-std::string_view transcription_provider_name(
-    const TranscriptionProvider provider) noexcept {
+std::string_view
+transcription_provider_name(const TranscriptionProvider provider) noexcept {
   switch (provider) {
   case TranscriptionProvider::disabled:
     return "disabled";
@@ -603,100 +609,104 @@ std::string_view transcription_provider_name(
 std::string redacted_config_summary(const Config &config,
                                     const BuildInfo &build) {
   std::ostringstream output;
-  output << "Configuration valid\n"
-         << "version=" << build.version << '\n'
-         << "revision=" << build.revision << '\n'
-         << "discord_token=configured\n"
-         << "openai_api_key=configured\n"
-         << "guild_id=configured\n"
-         << "primary_channel_id=configured\n"
-         << "owner_user_id=configured\n"
-         << "message_log="
-         << configuration_origin_name(config.origins.message_log) << '\n'
-         << "database_file="
-         << configuration_origin_name(config.origins.database_file) << '\n'
-         << "command_prefix="
-         << configuration_origin_name(config.origins.command_prefix) << '\n'
-         << "openai_model="
-         << configuration_origin_name(config.origins.openai_model) << '\n'
-         << "persona_file="
-         << configuration_origin_name(config.origins.persona_file) << '\n'
-         << "timezone=" << configuration_origin_name(config.origins.timezone)
-         << '\n'
-         << "appearance_policy_file="
-         << configuration_origin_name(config.origins.appearance_policy_file)
-         << '\n'
-         << "appearance_policy_version="
-         << config.appearance_policy.policy_version << '\n'
-         << "tarot_deck_file="
-         << configuration_origin_name(config.origins.tarot_deck_file) << '\n'
-         << "tarot_house_file="
-         << configuration_origin_name(config.origins.tarot_house_file) << '\n'
-         << "tarot_deck_version="
-         << (config.tarot_deck_catalog
-                 ? config.tarot_deck_catalog->version
-                 : std::string{emperor_tarot_catalog_version})
-         << '\n'
-         << "tarot_house_catalog_version="
-         << (config.tarot_house_catalog
-                 ? config.tarot_house_catalog->version
-                 : std::string{tarot_house_catalog_version})
-         << '\n'
-         << "discord_request_timeout="
-         << configuration_origin_name(config.origins.discord_request_timeout)
-         << '\n'
-         << "admin_commands=" << enabled(config.controls.admin_commands_enabled)
-         << '\n'
-         << "test_mode=" << enabled(config.controls.test_mode) << '\n'
-         << "chronicle=" << enabled(config.features.chronicle_enabled) << '\n'
-         << "tarot=" << enabled(config.features.tarot_enabled) << '\n'
-         << "tarot_starting_fate=" << config.tarot_policy.starting_fate << '\n'
-         << "tarot_grace=" << config.tarot_policy.grace_threshold << "->"
-         << config.tarot_policy.grace_target << "/"
-         << config.tarot_policy.grace_cooldown_hours << "h\n"
-         << "tarot_trial=" << config.tarot_policy.trial_threshold << "/"
-         << config.tarot_policy.trial_reward_min << "-"
-         << config.tarot_policy.trial_reward_max << "/"
-         << config.tarot_policy.trial_cooldown_hours << "h\n"
-         << "tarot_wager_stake=" << config.wager_policy.minimum_stake << "-"
-         << config.wager_policy.maximum_stake << '\n'
-         << "tarot_wager_timing=" << config.wager_policy.offer_expiry_hours
-         << "/" << config.wager_policy.default_outcome_hours << "/"
-         << config.wager_policy.resolution_grace_hours << "h\n"
-         << "tarot_draw_cooldown="
-         << config.tarot_house_policy.draw_cooldown_ms / 3'600'000 << "h\n"
-         << "tarot_house=" << enabled(config.tarot_house_policy.house_enabled)
-         << '\n'
-         << "tarot_house_exposure=" << config.tarot_house_policy.exposure_cap
-         << '\n'
-         << "tarot_house_profit_cap=" << config.tarot_house_policy.profit_cap
-         << '\n'
-         << "tarot_integration="
-         << enabled(config.tarot_house_policy.integration_enabled) << '\n'
-         << "appearances="
-         << appearance_mode_name(config.features.appearances_mode) << '\n'
-         << "vox=" << enabled(config.features.vox_enabled) << '\n'
-         << "vox_narration="
-         << enabled(config.features.vox_narration_enabled) << '\n'
-         << "tts_provider=" << tts_provider_name(config.tts.provider) << '\n'
-         << "tts_model=tts-1\n"
-         << "tts_voice=onyx\n"
-         << "tts_daily_attempts="
-         << config.tts.usage_policy.rolling_day_attempts << '\n'
-         << "tts_daily_micro_usd="
-         << config.tts.usage_policy.rolling_day_micro_usd << '\n'
-         << "tts_monthly_micro_usd="
-         << config.tts.usage_policy.calendar_month_micro_usd << '\n'
-         << "tts_cache_mib="
-         << config.tts.cache_policy.maximum_bytes / (1024U * 1024U) << '\n'
-         << "voice_input=" << enabled(config.features.voice_input_enabled)
-         << '\n'
-         << "voice_input_consent_attested="
-         << enabled(config.voice_input.guild_consent_attested) << '\n'
-         << "transcription_provider="
-         << transcription_provider_name(config.transcription_provider) << '\n'
-         << "transcription_model=" << config.voice_input.model
-         << '\n';
+  output
+      << "Configuration valid\n"
+      << "version=" << build.version << '\n'
+      << "revision=" << build.revision << '\n'
+      << "discord_token=configured\n"
+      << "openai_api_key=configured\n"
+      << "guild_id=configured\n"
+      << "primary_channel_id=configured\n"
+      << "owner_user_id=configured\n"
+      << "message_log=" << configuration_origin_name(config.origins.message_log)
+      << '\n'
+      << "database_file="
+      << configuration_origin_name(config.origins.database_file) << '\n'
+      << "command_prefix="
+      << configuration_origin_name(config.origins.command_prefix) << '\n'
+      << "openai_model="
+      << configuration_origin_name(config.origins.openai_model) << '\n'
+      << "persona_file="
+      << configuration_origin_name(config.origins.persona_file) << '\n'
+      << "timezone=" << configuration_origin_name(config.origins.timezone)
+      << '\n'
+      << "openai_pricing="
+      << (config.ai.input_rate_micro_usd_per_million_tokens > 0 &&
+                  config.ai.output_rate_micro_usd_per_million_tokens > 0
+              ? "audited"
+              : "unconfigured")
+      << '\n'
+      << "appearance_policy_file="
+      << configuration_origin_name(config.origins.appearance_policy_file)
+      << '\n'
+      << "appearance_policy_version=" << config.appearance_policy.policy_version
+      << '\n'
+      << "tarot_deck_file="
+      << configuration_origin_name(config.origins.tarot_deck_file) << '\n'
+      << "tarot_house_file="
+      << configuration_origin_name(config.origins.tarot_house_file) << '\n'
+      << "tarot_deck_version="
+      << (config.tarot_deck_catalog
+              ? config.tarot_deck_catalog->version
+              : std::string{emperor_tarot_catalog_version})
+      << '\n'
+      << "tarot_house_catalog_version="
+      << (config.tarot_house_catalog ? config.tarot_house_catalog->version
+                                     : std::string{tarot_house_catalog_version})
+      << '\n'
+      << "discord_request_timeout="
+      << configuration_origin_name(config.origins.discord_request_timeout)
+      << '\n'
+      << "admin_commands=" << enabled(config.controls.admin_commands_enabled)
+      << '\n'
+      << "test_mode=" << enabled(config.controls.test_mode) << '\n'
+      << "chronicle=" << enabled(config.features.chronicle_enabled) << '\n'
+      << "tarot=" << enabled(config.features.tarot_enabled) << '\n'
+      << "tarot_starting_fate=" << config.tarot_policy.starting_fate << '\n'
+      << "tarot_grace=" << config.tarot_policy.grace_threshold << "->"
+      << config.tarot_policy.grace_target << "/"
+      << config.tarot_policy.grace_cooldown_hours << "h\n"
+      << "tarot_trial=" << config.tarot_policy.trial_threshold << "/"
+      << config.tarot_policy.trial_reward_min << "-"
+      << config.tarot_policy.trial_reward_max << "/"
+      << config.tarot_policy.trial_cooldown_hours << "h\n"
+      << "tarot_wager_stake=" << config.wager_policy.minimum_stake << "-"
+      << config.wager_policy.maximum_stake << '\n'
+      << "tarot_wager_timing=" << config.wager_policy.offer_expiry_hours << "/"
+      << config.wager_policy.default_outcome_hours << "/"
+      << config.wager_policy.resolution_grace_hours << "h\n"
+      << "tarot_draw_cooldown="
+      << config.tarot_house_policy.draw_cooldown_ms / 3'600'000 << "h\n"
+      << "tarot_house=" << enabled(config.tarot_house_policy.house_enabled)
+      << '\n'
+      << "tarot_house_exposure=" << config.tarot_house_policy.exposure_cap
+      << '\n'
+      << "tarot_house_profit_cap=" << config.tarot_house_policy.profit_cap
+      << '\n'
+      << "tarot_integration="
+      << enabled(config.tarot_house_policy.integration_enabled) << '\n'
+      << "appearances="
+      << appearance_mode_name(config.features.appearances_mode) << '\n'
+      << "vox=" << enabled(config.features.vox_enabled) << '\n'
+      << "vox_narration=" << enabled(config.features.vox_narration_enabled)
+      << '\n'
+      << "tts_provider=" << tts_provider_name(config.tts.provider) << '\n'
+      << "tts_model=tts-1\n"
+      << "tts_voice=onyx\n"
+      << "tts_daily_attempts=" << config.tts.usage_policy.rolling_day_attempts
+      << '\n'
+      << "tts_daily_micro_usd=" << config.tts.usage_policy.rolling_day_micro_usd
+      << '\n'
+      << "tts_monthly_micro_usd="
+      << config.tts.usage_policy.calendar_month_micro_usd << '\n'
+      << "tts_cache_mib="
+      << config.tts.cache_policy.maximum_bytes / (1024U * 1024U) << '\n'
+      << "voice_input=" << enabled(config.features.voice_input_enabled) << '\n'
+      << "voice_input_consent_attested="
+      << enabled(config.voice_input.guild_consent_attested) << '\n'
+      << "transcription_provider="
+      << transcription_provider_name(config.transcription_provider) << '\n'
+      << "transcription_model=" << config.voice_input.model << '\n';
   return output.str();
 }
 

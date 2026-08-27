@@ -4,6 +4,7 @@
 #include "sanguinius/command_registry.hpp"
 #include "sanguinius/pending_notice.hpp"
 #include "sanguinius/persistent_id.hpp"
+#include "sanguinius/presentation.hpp"
 #include "sanguinius/tarot.hpp"
 #include "sanguinius/tarot_house.hpp"
 #include "sanguinius/wagers.hpp"
@@ -17,15 +18,20 @@ namespace sanguinius {
 namespace {
 
 void reply_ephemeral(const IncomingInteraction &interaction,
-                     const std::string &content) {
+                     const presentation::ErrorKind kind,
+                     const std::string_view retry_command = {}) {
   if (interaction.responder) {
-    interaction.responder->reply(text_message(content),
+    interaction.responder->reply(presentation::error(kind, retry_command),
                                  ResponseVisibility::ephemeral);
   }
 }
 
 [[nodiscard]] std::optional<InteractionOperation>
 slash_operation(const IncomingInteraction &interaction) {
+  if (interaction.command_name == "help")
+    return InteractionOperation::help;
+  if (interaction.command_name == "repo")
+    return InteractionOperation::repo;
   if (interaction.command_name == "sanguinius") {
     if (interaction.subcommand_group_name == "quiet") {
       if (interaction.subcommand_name == "for")
@@ -53,6 +59,34 @@ slash_operation(const IncomingInteraction &interaction) {
       return InteractionOperation::appearance_feedback;
   }
   if (interaction.command_name == "sang-admin") {
+    if (interaction.subcommand_group_name == "safety" &&
+        interaction.subcommand_name == "status")
+      return InteractionOperation::safety_status;
+    if (interaction.subcommand_group_name == "safety" &&
+        interaction.subcommand_name == "set") {
+      const auto target = std::ranges::find(interaction.command_options,
+                                            "target", &InteractionOption::name);
+      const auto mode = std::ranges::find(interaction.command_options, "mode",
+                                          &InteractionOption::name);
+      const auto *target_value = target == interaction.command_options.end()
+                                     ? nullptr
+                                     : std::get_if<std::string>(&target->value);
+      const auto *mode_value = mode == interaction.command_options.end()
+                                   ? nullptr
+                                   : std::get_if<std::string>(&mode->value);
+      if (target_value == nullptr || mode_value == nullptr)
+        return std::nullopt;
+      const bool disable = *mode_value == "disabled";
+      if (*mode_value != "enabled" && !disable)
+        return std::nullopt;
+      if (*target_value == "appearances")
+        return disable ? InteractionOperation::appearance_disable
+                       : InteractionOperation::appearance_enable;
+      if (*target_value == "voice-input")
+        return disable ? InteractionOperation::vox_listening_disable
+                       : InteractionOperation::vox_listening_enable;
+      return InteractionOperation::safety_set;
+    }
     if (interaction.subcommand_group_name == "vox" &&
         interaction.subcommand_name == "disconnect")
       return InteractionOperation::vox_test_disconnect;
@@ -68,12 +102,6 @@ slash_operation(const IncomingInteraction &interaction) {
     if (interaction.subcommand_group_name == "vox" &&
         interaction.subcommand_name == "narration-recent")
       return InteractionOperation::vox_narration_recent;
-    if (interaction.subcommand_group_name == "vox" &&
-        interaction.subcommand_name == "listening-disable")
-      return InteractionOperation::vox_listening_disable;
-    if (interaction.subcommand_group_name == "vox" &&
-        interaction.subcommand_name == "listening-enable")
-      return InteractionOperation::vox_listening_enable;
     if (interaction.subcommand_group_name == "tarot") {
       if (interaction.subcommand_name == "adjust")
         return InteractionOperation::tarot_adjust;
@@ -133,10 +161,6 @@ slash_operation(const IncomingInteraction &interaction) {
         return InteractionOperation::appearance_recent;
       if (interaction.subcommand_name == "trigger")
         return InteractionOperation::appearance_trigger;
-      if (interaction.subcommand_name == "disable")
-        return InteractionOperation::appearance_disable;
-      if (interaction.subcommand_name == "enable")
-        return InteractionOperation::appearance_enable;
     }
   }
   if (interaction.command_name == "vox") {
@@ -253,13 +277,17 @@ slash_operation(const IncomingInteraction &interaction) {
   if (command == catalog.commands.end() ||
       command->kind != ApplicationCommandKind::chat_input)
     return false;
-  const CommandSubcommandDefinition *definition = nullptr;
-  if (interaction.subcommand_group_name.empty()) {
+  const std::vector<CommandOptionDefinition> *expected_options = nullptr;
+  if (interaction.subcommand_group_name.empty() &&
+      interaction.subcommand_name.empty() && command->subcommands.empty() &&
+      command->subcommand_groups.empty()) {
+    expected_options = &command->options;
+  } else if (interaction.subcommand_group_name.empty()) {
     const auto found =
         std::ranges::find(command->subcommands, interaction.subcommand_name,
                           &CommandSubcommandDefinition::name);
     if (found != command->subcommands.end())
-      definition = &*found;
+      expected_options = &found->options;
   } else {
     const auto group = std::ranges::find(
         command->subcommand_groups, interaction.subcommand_group_name,
@@ -270,12 +298,12 @@ slash_operation(const IncomingInteraction &interaction) {
         std::ranges::find(group->subcommands, interaction.subcommand_name,
                           &CommandSubcommandDefinition::name);
     if (found != group->subcommands.end())
-      definition = &*found;
+      expected_options = &found->options;
   }
-  if (definition == nullptr ||
-      interaction.command_options.size() > definition->options.size())
+  if (expected_options == nullptr ||
+      interaction.command_options.size() > expected_options->size())
     return false;
-  for (const auto &expected : definition->options) {
+  for (const auto &expected : *expected_options) {
     const auto count = std::count_if(
         interaction.command_options.begin(), interaction.command_options.end(),
         [&expected](const InteractionOption &option) {
@@ -309,14 +337,14 @@ slash_operation(const IncomingInteraction &interaction) {
         return false;
     }
   }
-  return std::all_of(
-      interaction.command_options.begin(), interaction.command_options.end(),
-      [definition](const InteractionOption &option) {
-        return std::ranges::any_of(definition->options,
-                                   [&option](const auto &expected) {
-                                     return expected.name == option.name;
-                                   });
-      });
+  return std::all_of(interaction.command_options.begin(),
+                     interaction.command_options.end(),
+                     [expected_options](const InteractionOption &option) {
+                       return std::ranges::any_of(
+                           *expected_options, [&option](const auto &expected) {
+                             return expected.name == option.name;
+                           });
+                     });
 }
 
 } // namespace
@@ -359,9 +387,7 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       {interaction.guild_id, interaction.channel_id, interaction.user_id},
       RequiredRole::member);
   if (!member_scope.allowed()) {
-    reply_ephemeral(interaction,
-                    "Use Sanguinius interactions in the configured primary "
-                    "guild channel.");
+    reply_ephemeral(interaction, presentation::ErrorKind::wrong_scope);
     return;
   }
 
@@ -370,18 +396,18 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
     if (!interaction.custom_id.empty() ||
         !interaction.selected_values.empty() ||
         !interaction.modal_fields.empty() || interaction.context_message) {
-      reply_ephemeral(interaction, "This command request is malformed.");
+      reply_ephemeral(interaction, presentation::ErrorKind::malformed);
       return;
     }
     if (!valid_slash_shape(interaction)) {
-      reply_ephemeral(interaction, "This Chronicle command is malformed.");
+      reply_ephemeral(interaction, presentation::ErrorKind::malformed);
       return;
     }
     if (interaction.command_name == "chronicle" &&
         interaction.subcommand_name == "remember") {
       if (!state_->features.chronicle_enabled ||
           !interaction.command_options.empty()) {
-        reply_ephemeral(interaction, "The Chronicle is currently unavailable.");
+        reply_ephemeral(interaction, presentation::ErrorKind::feature_disabled);
         return;
       }
       interaction.responder->show_modal(ChronicleService::remember_modal());
@@ -389,7 +415,7 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
     }
     operation = slash_operation(interaction);
     if (!operation.has_value()) {
-      reply_ephemeral(interaction, "That Sanguinius command is not available.");
+      reply_ephemeral(interaction, presentation::ErrorKind::malformed);
       return;
     }
   } else if (interaction.kind == InteractionKind::message_context_command) {
@@ -399,7 +425,7 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
         !interaction.command_options.empty() ||
         !interaction.custom_id.empty() ||
         !interaction.context_message.has_value()) {
-      reply_ephemeral(interaction, "That context action is not available yet.");
+      reply_ephemeral(interaction, presentation::ErrorKind::feature_disabled);
       return;
     }
     operation = InteractionOperation::chronicle_canonize;
@@ -420,20 +446,21 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
         !interaction.subcommand_name.empty() ||
         !interaction.command_options.empty() || interaction.context_message ||
         malformed_button || malformed_select || malformed_modal) {
-      reply_ephemeral(interaction, "This control request is malformed.");
+      reply_ephemeral(interaction, presentation::ErrorKind::malformed);
       return;
     }
     if (interaction.kind == InteractionKind::modal_submit &&
         interaction.custom_id == "chronicle.remember:1") {
       if (!state_->features.chronicle_enabled) {
-        reply_ephemeral(interaction, "The Chronicle is currently unavailable.");
+        reply_ephemeral(interaction, presentation::ErrorKind::feature_disabled);
         return;
       }
       operation = InteractionOperation::chronicle_memory_preview;
     } else if (interaction.kind == InteractionKind::button) {
       if (const auto form_token = parse_wager_form(interaction.custom_id)) {
         if (!state_->features.tarot_enabled) {
-          reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+          reply_ephemeral(interaction,
+                          presentation::ErrorKind::feature_disabled);
           return;
         }
         interaction.responder->show_modal(
@@ -443,7 +470,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       if (const auto evidence_token =
               parse_wager_evidence_form(interaction.custom_id)) {
         if (!state_->features.tarot_enabled) {
-          reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+          reply_ephemeral(interaction,
+                          presentation::ErrorKind::feature_disabled);
           return;
         }
         interaction.responder->show_modal(
@@ -453,7 +481,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       if (const auto outcome_token =
               parse_wager_outcome_form(interaction.custom_id)) {
         if (!state_->features.tarot_enabled) {
-          reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+          reply_ephemeral(interaction,
+                          presentation::ErrorKind::feature_disabled);
           return;
         }
         interaction.responder->show_modal(
@@ -464,7 +493,7 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
               interaction.custom_id, chronicle_session_edit_prefix)) {
         if (!state_->features.chronicle_enabled) {
           reply_ephemeral(interaction,
-                          "The Chronicle is currently unavailable.");
+                          presentation::ErrorKind::feature_disabled);
           return;
         }
         interaction.responder->show_modal(
@@ -475,7 +504,7 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
               interaction.custom_id, chronicle_modal_prefix)) {
         if (!state_->features.chronicle_enabled) {
           reply_ephemeral(interaction,
-                          "The Chronicle is currently unavailable.");
+                          presentation::ErrorKind::feature_disabled);
           return;
         }
         interaction.responder->show_modal(
@@ -486,8 +515,8 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
                               voice_transcript_component_prefix)) {
         if (!state_->features.chronicle_enabled ||
             !state_->handler.show_voice_transcript_modal(interaction)) {
-          reply_ephemeral(interaction,
-                          "That transcript proposal is invalid or expired.");
+          reply_ephemeral(interaction, presentation::ErrorKind::expired,
+                          "/vox listen-start");
         }
         return;
       }
@@ -495,25 +524,37 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
         operation = InteractionOperation::open_component;
       } else if (parse_wager_history(interaction.custom_id)) {
         if (!state_->features.tarot_enabled) {
-          reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+          reply_ephemeral(interaction,
+                          presentation::ErrorKind::feature_disabled);
           return;
         }
         operation = InteractionOperation::wager_history;
       } else if (parse_wager_component(interaction.custom_id)) {
         if (!state_->features.tarot_enabled) {
-          reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+          reply_ephemeral(interaction,
+                          presentation::ErrorKind::feature_disabled);
           return;
         }
         operation = InteractionOperation::wager_component;
+      } else if (interaction.custom_id.starts_with(
+                     tarot_house_history_page_prefix)) {
+        if (!state_->features.tarot_enabled) {
+          reply_ephemeral(interaction,
+                          presentation::ErrorKind::feature_disabled);
+          return;
+        }
+        operation = InteractionOperation::tarot_house_history;
       } else if (parse_tarot_house_component(interaction.custom_id)) {
         if (!state_->features.tarot_enabled) {
-          reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+          reply_ephemeral(interaction,
+                          presentation::ErrorKind::feature_disabled);
           return;
         }
         operation = InteractionOperation::tarot_house_component;
       } else if (parse_tarot_component(interaction.custom_id)) {
         if (!state_->features.tarot_enabled) {
-          reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+          reply_ephemeral(interaction,
+                          presentation::ErrorKind::feature_disabled);
           return;
         }
         operation = InteractionOperation::tarot_component;
@@ -522,7 +563,12 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
                  valid_uuid_v4(interaction.custom_id.substr(
                      appearance_feedback_component_prefix.size()))) {
         operation = InteractionOperation::appearance_feedback_component;
-      } else if (parse_chronicle_component(interaction.custom_id,
+      } else if (interaction.custom_id.starts_with(
+                     chronicle_title_page_prefix)) {
+        operation = InteractionOperation::chronicle_title_list;
+      } else if (interaction.custom_id.starts_with(
+                     chronicle_search_page_prefix) ||
+                 parse_chronicle_component(interaction.custom_id,
                                            chronicle_search_component_prefix)) {
         operation = InteractionOperation::chronicle_search_component;
       } else if (parse_chronicle_component(
@@ -535,7 +581,7 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
                                            memory_draft_component_prefix)) {
         if (!state_->features.chronicle_enabled) {
           reply_ephemeral(interaction,
-                          "The Chronicle is currently unavailable.");
+                          presentation::ErrorKind::feature_disabled);
           return;
         }
         operation = InteractionOperation::chronicle_component;
@@ -566,12 +612,11 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       operation = InteractionOperation::vox_transcript_propose;
     }
     if (!operation.has_value()) {
-      reply_ephemeral(interaction,
-                      "This control is invalid or no longer available.");
+      reply_ephemeral(interaction, presentation::ErrorKind::stale);
       return;
     }
   } else {
-    reply_ephemeral(interaction, "That context action is not available yet.");
+    reply_ephemeral(interaction, presentation::ErrorKind::feature_disabled);
     return;
   }
 
@@ -595,7 +640,7 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
   if ((chronicle_operation || chronicle_session_operation ||
        anniversary_test) &&
       !state_->features.chronicle_enabled) {
-    reply_ephemeral(interaction, "The Chronicle is currently unavailable.");
+    reply_ephemeral(interaction, presentation::ErrorKind::feature_disabled);
     return;
   }
 
@@ -603,7 +648,7 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation >= InteractionOperation::tarot_balance &&
       *operation <= InteractionOperation::wager_test_cleanup;
   if (tarot_operation && !state_->features.tarot_enabled) {
-    reply_ephemeral(interaction, "The Tarot is currently unavailable.");
+    reply_ephemeral(interaction, presentation::ErrorKind::feature_disabled);
     return;
   }
   const bool vox_operation =
@@ -620,16 +665,16 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::vox_narration_recent ||
       *operation == InteractionOperation::vox_listen_start ||
       *operation == InteractionOperation::vox_listen_stop ||
-      *operation == InteractionOperation::vox_transcript_propose ||
-      *operation == InteractionOperation::vox_listening_disable ||
-      *operation == InteractionOperation::vox_listening_enable;
+      *operation == InteractionOperation::vox_transcript_propose;
   if (vox_operation && !state_->features.vox_enabled) {
-    reply_ephemeral(interaction, "Vox is currently unavailable.");
+    reply_ephemeral(interaction, presentation::ErrorKind::feature_disabled);
     return;
   }
 
   const bool admin_operation =
       *operation == InteractionOperation::admin_health ||
+      *operation == InteractionOperation::safety_status ||
+      *operation == InteractionOperation::safety_set ||
       *operation == InteractionOperation::work_recent ||
       *operation == InteractionOperation::work_dead ||
       *operation == InteractionOperation::test_notice ||
@@ -665,6 +710,9 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
   const bool appearance_safety_operation =
       *operation == InteractionOperation::appearance_disable ||
       *operation == InteractionOperation::appearance_enable;
+  const bool unified_safety_operation =
+      *operation == InteractionOperation::safety_status ||
+      *operation == InteractionOperation::safety_set;
   const bool voice_safety_operation =
       *operation == InteractionOperation::vox_listening_disable ||
       *operation == InteractionOperation::vox_listening_enable;
@@ -685,15 +733,15 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::wager_test_deadline ||
       *operation == InteractionOperation::wager_test_cleanup;
   if (admin_operation || anniversary_test || appearance_safety_operation ||
-      voice_safety_operation || vox_test_operation) {
-    if (!appearance_safety_operation && !voice_safety_operation &&
-        !state_->controls.admin_commands_enabled) {
+      unified_safety_operation || voice_safety_operation ||
+      vox_test_operation) {
+    if (!appearance_safety_operation && !unified_safety_operation &&
+        !voice_safety_operation && !state_->controls.admin_commands_enabled) {
       state_->diagnostics.emit(
           {DiagnosticSeverity::warning, "interaction.admin_rejected",
            "Owner interaction was rejected because administration is disabled.",
            interaction.correlation_id});
-      reply_ephemeral(interaction,
-                      "Owner administration is currently disabled.");
+      reply_ephemeral(interaction, presentation::ErrorKind::feature_disabled);
       return;
     }
     const auto owner_scope = state_->scope_policy.authorize(
@@ -704,7 +752,7 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
           {DiagnosticSeverity::warning, "interaction.admin_rejected",
            "Owner interaction was rejected by authorization policy.",
            interaction.correlation_id});
-      reply_ephemeral(interaction, "This owner-only command is unavailable.");
+      reply_ephemeral(interaction, presentation::ErrorKind::forbidden);
       return;
     }
     if ((test_operation || anniversary_test || vox_test_operation) &&
@@ -713,19 +761,17 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
           {DiagnosticSeverity::warning, "interaction.admin_rejected",
            "Owner test interaction was rejected because test mode is disabled.",
            interaction.correlation_id});
-      reply_ephemeral(interaction, "Owner test mode is currently disabled.");
+      reply_ephemeral(interaction, presentation::ErrorKind::feature_disabled);
       return;
     }
     if (*operation == InteractionOperation::appearance_simulate &&
         state_->features.appearances_mode != AppearanceMode::dry_run) {
-      reply_ephemeral(interaction,
-                      "Appearance simulation requires dry_run mode.");
+      reply_ephemeral(interaction, presentation::ErrorKind::feature_disabled);
       return;
     }
     if (*operation == InteractionOperation::appearance_trigger &&
         state_->features.appearances_mode != AppearanceMode::live) {
-      reply_ephemeral(interaction,
-                      "Owner live trigger requires configured live mode.");
+      reply_ephemeral(interaction, presentation::ErrorKind::feature_disabled);
       return;
     }
   }

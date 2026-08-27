@@ -5,8 +5,8 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
 #include <cctype>
+#include <charconv>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -23,8 +23,7 @@ bounded_retry_after(const std::string_view value) noexcept {
   if (value.empty() || parsed.ec != std::errc{} ||
       parsed.ptr != value.data() + value.size() || seconds < 0)
     return std::nullopt;
-  return std::chrono::milliseconds{
-      std::min<std::int64_t>(seconds, 5) * 1'000};
+  return std::chrono::milliseconds{std::min<std::int64_t>(seconds, 5) * 1'000};
 }
 
 namespace {
@@ -49,8 +48,8 @@ public:
   const auto whitespace = [](const unsigned char character) {
     return std::isspace(character) != 0;
   };
-  value.erase(value.begin(), std::find_if_not(value.begin(), value.end(),
-                                               whitespace));
+  value.erase(value.begin(),
+              std::find_if_not(value.begin(), value.end(), whitespace));
   value.erase(std::find_if_not(value.rbegin(), value.rend(), whitespace).base(),
               value.end());
   return value;
@@ -100,7 +99,8 @@ size_t capture_header(const char *data, const size_t size, const size_t count,
   const auto separator = line.find(':');
   if (separator == std::string_view::npos)
     return bytes;
-  const auto name = lower_ascii(trim_ascii(std::string{line.substr(0, separator)}));
+  const auto name =
+      lower_ascii(trim_ascii(std::string{line.substr(0, separator)}));
   const auto value = trim_ascii(std::string{line.substr(separator + 1)});
   if (name == "content-type") {
     const auto semicolon = value.find(';');
@@ -124,35 +124,15 @@ int cancel_transfer(void *context, curl_off_t, curl_off_t, curl_off_t,
          type == "application/octet-stream";
 }
 
-[[nodiscard]] std::string provider_error_message(
-    const std::span<const std::byte> body, const long status) {
-  if (body.size() <= 64U * 1024U) {
-    try {
-      const std::string text{reinterpret_cast<const char *>(body.data()),
-                             body.size()};
-      const auto parsed = nlohmann::json::parse(text);
-      if (parsed.contains("error") && parsed.at("error").is_object() &&
-          parsed.at("error").contains("message") &&
-          parsed.at("error").at("message").is_string()) {
-        const auto message = parsed.at("error").at("message").get<std::string>();
-        if (!message.empty() && message.size() <= 500)
-          return message;
-      }
-    } catch (const nlohmann::json::exception &) {
-    }
-  }
-  return "The TTS provider returned HTTP status " + std::to_string(status) +
-         '.';
-}
-
 } // namespace
 
 CurlTtsHttpTransport::CurlTtsHttpTransport() {
   static_cast<void>(curl_global());
 }
 
-TtsHttpResponse CurlTtsHttpTransport::post(const TtsHttpRequest &request,
-                                           const std::stop_token stop_token) const {
+TtsHttpResponse
+CurlTtsHttpTransport::post(const TtsHttpRequest &request,
+                           const std::stop_token stop_token) const {
   if (stop_token.stop_requested())
     throw TtsError{TtsFailureCategory::cancelled, "TTS request was cancelled."};
   if (request.url != speech_url || request.authorization.empty() ||
@@ -160,8 +140,8 @@ TtsHttpResponse CurlTtsHttpTransport::post(const TtsHttpRequest &request,
     throw TtsError{TtsFailureCategory::invalid_request,
                    "TTS HTTP request configuration is invalid."};
 
-  std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> handle{curl_easy_init(),
-                                                            &curl_easy_cleanup};
+  std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> handle{
+      curl_easy_init(), &curl_easy_cleanup};
   if (!handle)
     throw TtsError{TtsFailureCategory::unavailable,
                    "Unable to create a TTS HTTP request."};
@@ -215,8 +195,8 @@ TtsHttpResponse CurlTtsHttpTransport::post(const TtsHttpRequest &request,
   if (buffer.oversized)
     throw TtsError{TtsFailureCategory::oversized_media,
                    "TTS response exceeded the encoded media limit."};
-  const auto failed_before_response = buffer.response.status == 0 &&
-                                      buffer.response.body.empty();
+  const auto failed_before_response =
+      buffer.response.status == 0 && buffer.response.body.empty();
   if (result == CURLE_OPERATION_TIMEDOUT)
     throw TtsError{TtsFailureCategory::timeout, "TTS request timed out.",
                    failed_before_response};
@@ -249,11 +229,12 @@ OpenAiTtsClient::synthesize(const TtsRequest &request,
   if (stop_token.stop_requested())
     throw TtsError{TtsFailureCategory::cancelled, "TTS request was cancelled."};
   if (request.provider != "openai" || request.model != "tts-1" ||
-      request.voice != "onyx" ||
-      request.response_format != AudioFormat::wav || request.speed != 1.0 ||
+      request.voice != "onyx" || request.response_format != AudioFormat::wav ||
+      request.speed != 1.0 ||
       request.timeout <= std::chrono::milliseconds::zero())
-    throw TtsError{TtsFailureCategory::invalid_request,
-                   "The configured TTS model, voice, or media format is not allowed."};
+    throw TtsError{
+        TtsFailureCategory::invalid_request,
+        "The configured TTS model, voice, or media format is not allowed."};
   const auto normalized = normalize_tts_text(request.text);
   const auto json = nlohmann::json{{"model", request.model},
                                    {"input", normalized.text},
@@ -270,18 +251,17 @@ OpenAiTtsClient::synthesize(const TtsRequest &request,
       stop_token);
 
   if (response.status < 200 || response.status >= 300) {
-    const auto category = response.status == 429
-                              ? TtsFailureCategory::rate_limited
-                          : response.status == 408
-                              ? TtsFailureCategory::timeout
-                          : response.status >= 500
-                              ? TtsFailureCategory::provider_unavailable
-                              : TtsFailureCategory::provider_rejected;
+    const auto category =
+        response.status == 401 || response.status == 403
+            ? TtsFailureCategory::authentication
+        : response.status == 429 ? TtsFailureCategory::rate_limited
+        : response.status == 408 ? TtsFailureCategory::timeout
+        : response.status >= 500 ? TtsFailureCategory::provider_unavailable
+                                 : TtsFailureCategory::provider_rejected;
     const bool retryable = response.status == 408 || response.status == 429 ||
                            response.status >= 500;
-    throw TtsError{category,
-                   provider_error_message(response.body, response.status),
-                   retryable, response.retry_after, response.request_id};
+    throw TtsError{category, "The TTS provider request failed.", retryable,
+                   response.retry_after, response.request_id};
   }
   if (!accepted_content_type(response.content_type) ||
       !wav_media_signature(response.body)) {

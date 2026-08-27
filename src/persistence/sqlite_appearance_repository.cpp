@@ -1458,8 +1458,6 @@ void SqliteAppearanceRepository::register_policy(const AppearancePolicy &policy,
     refresh.bind(5, type);
     refresh.execute();
   };
-  enqueue_recurring("00000000-0000-4000-8000-000000000701",
-                    appearance_scan_job_type, "appearance.scan.recurring.v1");
   enqueue_recurring("00000000-0000-4000-8000-000000000702",
                     appearance_purge_job_type, "appearance.purge.recurring.v1");
   transaction.commit();
@@ -2052,10 +2050,11 @@ AppearanceCandidate SqliteAppearanceRepository::simulate(
   return candidate;
 }
 
-std::vector<AppearanceCandidate>
-SqliteAppearanceRepository::scan_events(const AppearancePolicy &policy,
-                                        const std::int64_t now_ms,
-                                        const std::string_view instance_id) {
+std::vector<AppearanceCandidate> SqliteAppearanceRepository::scan_events(
+    const AppearancePolicy &policy, const std::int64_t now_ms,
+    const std::string_view instance_id, const std::size_t limit) {
+  if (limit == 0 || limit > 50)
+    throw std::invalid_argument{"Appearance event batch is invalid."};
   static_cast<void>(instance_id);
   const std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
@@ -2073,7 +2072,8 @@ SqliteAppearanceRepository::scan_events(const AppearancePolicy &policy,
       "appearance_event_observation o JOIN event_journal e ON "
       "e.event_id=o.source_event_id LEFT JOIN tarot_appearance_candidate tarot "
       "ON tarot.source_event_id=o.source_event_id WHERE o.processed_at_ms IS "
-      "NULL ORDER BY o.recorded_at_ms,o.source_event_id LIMIT 32");
+      "NULL ORDER BY o.recorded_at_ms,o.source_event_id LIMIT ?");
+  events.bind(1, static_cast<std::int64_t>(limit));
   struct Event {
     std::string id;
     std::string type;
@@ -2278,26 +2278,42 @@ SqliteAppearanceRepository::scan_events(const AppearancePolicy &policy,
       result.push_back(std::move(candidate));
     }
   }
-  auto recoverable =
-      connection.prepare("SELECT c.candidate_id FROM appearance_candidate c "
-                         "WHERE c.evaluation_started_at_ms IS NULL "
-                         "AND NOT EXISTS(SELECT 1 FROM appearance_decision d "
-                         "WHERE d.candidate_id=c.candidate_id) "
-                         "ORDER BY c.created_at_ms,c.candidate_id LIMIT ?");
-  recoverable.bind(1, static_cast<std::int64_t>(32 - result.size()));
-  std::vector<std::string> recoverable_ids;
-  while (recoverable.step())
-    recoverable_ids.push_back(recoverable.column_text(0));
-  for (const auto &candidate_id : recoverable_ids) {
-    mark_evaluation_started(connection, candidate_id, now_ms);
-    auto candidate = read_candidate(connection, candidate_id);
-    const auto candidate_policy =
-        load_policy_snapshot(connection, candidate.policy_version);
-    refresh_event_source(connection, candidate_policy, now_ms, candidate, true);
-    result.push_back(std::move(candidate));
+  const auto remaining = limit - result.size();
+  if (remaining != 0) {
+    auto recoverable =
+        connection.prepare("SELECT c.candidate_id FROM appearance_candidate c "
+                           "WHERE c.evaluation_started_at_ms IS NULL "
+                           "AND NOT EXISTS(SELECT 1 FROM appearance_decision d "
+                           "WHERE d.candidate_id=c.candidate_id) "
+                           "ORDER BY c.created_at_ms,c.candidate_id LIMIT ?");
+    recoverable.bind(1, static_cast<std::int64_t>(remaining));
+    std::vector<std::string> recoverable_ids;
+    while (recoverable.step())
+      recoverable_ids.push_back(recoverable.column_text(0));
+    for (const auto &candidate_id : recoverable_ids) {
+      mark_evaluation_started(connection, candidate_id, now_ms);
+      auto candidate = read_candidate(connection, candidate_id);
+      const auto candidate_policy =
+          load_policy_snapshot(connection, candidate.policy_version);
+      refresh_event_source(connection, candidate_policy, now_ms, candidate,
+                           true);
+      result.push_back(std::move(candidate));
+    }
   }
   transaction.commit();
   return result;
+}
+
+bool SqliteAppearanceRepository::event_scan_backlog() {
+  const std::scoped_lock lock{context_->mutex()};
+  auto query = context_->connection().prepare(
+      "SELECT EXISTS(SELECT 1 FROM appearance_event_observation WHERE "
+      "processed_at_ms IS NULL UNION ALL SELECT 1 FROM appearance_candidate c "
+      "WHERE c.evaluation_started_at_ms IS NULL AND NOT EXISTS(SELECT 1 FROM "
+      "appearance_decision d WHERE d.candidate_id=c.candidate_id))");
+  if (!query.step())
+    throw std::runtime_error{"Appearance event backlog inspection failed."};
+  return query.column_int64(0) != 0;
 }
 
 bool SqliteAppearanceRepository::record_final(

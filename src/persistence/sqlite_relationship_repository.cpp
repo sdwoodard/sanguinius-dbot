@@ -747,9 +747,10 @@ PromptFinalizationStatus SqliteRelationshipRepository::fail_prompt_attempt(
 }
 
 std::size_t SqliteRelationshipRepository::recover_prompt_attempts(
-    const std::string_view instance_id, const std::int64_t now_ms) {
+    const std::string_view instance_id, const std::int64_t now_ms,
+    const std::size_t limit) {
   require_id(instance_id);
-  if (now_ms < 0)
+  if (now_ms < 0 || limit == 0 || limit > 50)
     throw std::invalid_argument{"Invalid recovery time."};
   const std::scoped_lock lock{context_->mutex()};
   Transaction transaction{context_->connection(), TransactionMode::immediate};
@@ -757,9 +758,13 @@ std::size_t SqliteRelationshipRepository::recover_prompt_attempts(
       "UPDATE ai_prompt_attempt SET state='abandoned',"
       "completed_at_ms=max(prepared_at_ms,?),"
       "failure_code='process_restart' WHERE state='prepared' AND "
-      "application_instance_id<>?");
+      "application_instance_id<>? AND attempt_id IN (SELECT attempt_id FROM "
+      "ai_prompt_attempt WHERE state='prepared' AND application_instance_id<>? "
+      "ORDER BY prepared_at_ms,attempt_id LIMIT ?)");
   update.bind(1, now_ms);
   update.bind(2, instance_id);
+  update.bind(3, instance_id);
+  update.bind(4, static_cast<std::int64_t>(limit));
   update.execute();
   const auto changed =
       static_cast<std::size_t>(context_->connection().changes());
@@ -768,8 +773,9 @@ std::size_t SqliteRelationshipRepository::recover_prompt_attempts(
 }
 
 std::size_t SqliteRelationshipRepository::synchronize_chronicle_sources(
-    PersistentIdGenerator &ids, const std::int64_t now_ms) {
-  if (now_ms < 0)
+    PersistentIdGenerator &ids, const std::int64_t now_ms,
+    const std::size_t limit) {
+  if (now_ms < 0 || limit == 0 || limit > 50)
     throw std::invalid_argument{"Invalid synchronization time."};
   const std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
@@ -787,7 +793,8 @@ std::size_t SqliteRelationshipRepository::synchronize_chronicle_sources(
       "COALESCE(json_extract(e.payload_json,'$.test'),0)=0 AND NOT EXISTS "
       "(SELECT 1 FROM relationship_event r WHERE r.source_event_id=e.event_id "
       "AND r.subject_user_id=p.user_id) GROUP BY e.event_id,p.user_id "
-      "ORDER BY e.occurred_at_ms,e.event_id,p.user_id");
+      "ORDER BY e.occurred_at_ms,e.event_id,p.user_id LIMIT ?");
+  sources.bind(1, static_cast<std::int64_t>(limit));
   std::size_t count = 0;
   while (sources.step()) {
     const auto event_id = sources.column_text(0);
@@ -801,44 +808,52 @@ std::size_t SqliteRelationshipRepository::synchronize_chronicle_sources(
       ++count;
     }
   }
-  auto sessions = connection.prepare(
-      "SELECT e.event_id,e.event_type,e.occurred_at_ms,p.user_id FROM "
-      "event_journal e JOIN chronicle_session_participant p ON "
-      "p.session_id=e.aggregate_id JOIN discord_user u ON u.user_id=p.user_id "
-      "JOIN user_preference pref ON pref.user_id=p.user_id WHERE "
-      "e.event_type='chronicle.session_completed.v1' AND u.is_bot=0 AND "
-      "pref.chronicle_opt_in=1 AND NOT EXISTS (SELECT 1 FROM "
-      "relationship_event r "
-      "WHERE r.source_event_id=e.event_id AND r.subject_user_id=p.user_id) "
-      "ORDER BY e.occurred_at_ms,e.event_id,p.user_id");
-  while (sessions.step()) {
-    if (detail::insert_relationship_event_uncommitted(
-            connection, ids.next_id(), sessions.column_text(0),
-            sessions.column_text(1), "session.completed",
-            DiscordSnowflake::parse(sessions.column_text(3)),
-            relationship_policy(RelationshipSourceKind::session_completed),
-            sessions.column_int64(2), now_ms))
-      ++count;
+  if (count < limit) {
+    auto sessions = connection.prepare(
+        "SELECT e.event_id,e.event_type,e.occurred_at_ms,p.user_id FROM "
+        "event_journal e JOIN chronicle_session_participant p ON "
+        "p.session_id=e.aggregate_id JOIN discord_user u ON "
+        "u.user_id=p.user_id "
+        "JOIN user_preference pref ON pref.user_id=p.user_id WHERE "
+        "e.event_type='chronicle.session_completed.v1' AND u.is_bot=0 AND "
+        "pref.chronicle_opt_in=1 AND NOT EXISTS (SELECT 1 FROM "
+        "relationship_event r "
+        "WHERE r.source_event_id=e.event_id AND r.subject_user_id=p.user_id) "
+        "ORDER BY e.occurred_at_ms,e.event_id,p.user_id LIMIT ?");
+    sessions.bind(1, static_cast<std::int64_t>(limit - count));
+    while (sessions.step()) {
+      if (detail::insert_relationship_event_uncommitted(
+              connection, ids.next_id(), sessions.column_text(0),
+              sessions.column_text(1), "session.completed",
+              DiscordSnowflake::parse(sessions.column_text(3)),
+              relationship_policy(RelationshipSourceKind::session_completed),
+              sessions.column_int64(2), now_ms))
+        ++count;
+    }
   }
-  auto titles = connection.prepare(
-      "SELECT e.event_id,e.event_type,e.occurred_at_ms,"
-      "json_extract(e.payload_json,'$.recipient_user_id') FROM event_journal e "
-      "JOIN discord_user u ON u.user_id=json_extract(e.payload_json,"
-      "'$.recipient_user_id') JOIN user_preference pref ON "
-      "pref.user_id=u.user_id "
-      "WHERE e.event_type='chronicle.title_awarded.v1' AND u.is_bot=0 AND "
-      "pref.chronicle_opt_in=1 AND NOT EXISTS (SELECT 1 FROM "
-      "relationship_event r "
-      "WHERE r.source_event_id=e.event_id AND r.subject_user_id=u.user_id) "
-      "ORDER BY e.occurred_at_ms,e.event_id,u.user_id");
-  while (titles.step()) {
-    if (detail::insert_relationship_event_uncommitted(
-            connection, ids.next_id(), titles.column_text(0),
-            titles.column_text(1), "title.awarded",
-            DiscordSnowflake::parse(titles.column_text(3)),
-            relationship_policy(RelationshipSourceKind::title_awarded),
-            titles.column_int64(2), now_ms))
-      ++count;
+  if (count < limit) {
+    auto titles = connection.prepare(
+        "SELECT e.event_id,e.event_type,e.occurred_at_ms,"
+        "json_extract(e.payload_json,'$.recipient_user_id') FROM event_journal "
+        "e "
+        "JOIN discord_user u ON u.user_id=json_extract(e.payload_json,"
+        "'$.recipient_user_id') JOIN user_preference pref ON "
+        "pref.user_id=u.user_id "
+        "WHERE e.event_type='chronicle.title_awarded.v1' AND u.is_bot=0 AND "
+        "pref.chronicle_opt_in=1 AND NOT EXISTS (SELECT 1 FROM "
+        "relationship_event r "
+        "WHERE r.source_event_id=e.event_id AND r.subject_user_id=u.user_id) "
+        "ORDER BY e.occurred_at_ms,e.event_id,u.user_id LIMIT ?");
+    titles.bind(1, static_cast<std::int64_t>(limit - count));
+    while (titles.step()) {
+      if (detail::insert_relationship_event_uncommitted(
+              connection, ids.next_id(), titles.column_text(0),
+              titles.column_text(1), "title.awarded",
+              DiscordSnowflake::parse(titles.column_text(3)),
+              relationship_policy(RelationshipSourceKind::title_awarded),
+              titles.column_int64(2), now_ms))
+        ++count;
+    }
   }
   transaction.commit();
   return count;
@@ -1014,6 +1029,20 @@ ProjectionCheckResult SqliteRelationshipRepository::rebuild_projection() {
   const std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
   Transaction transaction{connection, TransactionMode::immediate};
+  const auto result = rebuild_projection_unlocked();
+  transaction.commit();
+  return result;
+}
+
+ProjectionCheckResult
+SqliteRelationshipRepository::rebuild_projection_uncommitted() {
+  const std::scoped_lock lock{context_->mutex()};
+  return rebuild_projection_unlocked();
+}
+
+ProjectionCheckResult
+SqliteRelationshipRepository::rebuild_projection_unlocked() {
+  auto &connection = context_->connection();
   const auto expected = build_projection(connection);
   if (expected.chain_errors != 0) {
     throw DatabaseError{DatabaseErrorCategory::constraint, SQLITE_CONSTRAINT,
@@ -1044,7 +1073,6 @@ ProjectionCheckResult SqliteRelationshipRepository::rebuild_projection() {
                         SQLITE_CONSTRAINT,
                         "Relationship projection rebuild verification failed."};
   }
-  transaction.commit();
   return result;
 }
 

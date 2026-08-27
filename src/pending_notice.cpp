@@ -1,5 +1,7 @@
 #include "sanguinius/pending_notice.hpp"
 
+#include "sanguinius/presentation.hpp"
+
 #include <chrono>
 #include <stdexcept>
 
@@ -186,6 +188,7 @@ make_neutral_notice_card(const CreatePendingNoticeRequest &request) {
                   .custom_id = make_component_id(request.token_id),
                   .label = "Open sealed notice",
                   .disabled = false,
+                  .style = ButtonStyle::primary,
               }},
               .allowed_user_mentions = {request.target_user_id},
           },
@@ -196,12 +199,14 @@ InteractionMessage
 render_private_notice(const OpenPendingNoticeResult &result) {
   if (result.status == OpenPendingNoticeStatus::opened &&
       result.notice.has_value()) {
-    InteractionMessage message = text_message(
-        "**" + result.notice->content.title + "**\n" +
-        result.notice->content.body);
+    InteractionMessage message =
+        text_message("**" + result.notice->content.title + "**\n" +
+                     result.notice->content.body);
     for (const auto &action : result.notice->content.actions) {
-      message.buttons.push_back(ButtonPayload{.custom_id = action.custom_id,
-                                              .label = action.label});
+      message.buttons.push_back(ButtonPayload{
+          .custom_id = action.custom_id,
+          .label = action.label,
+          .style = presentation::action_button_style(action.label)});
     }
     return message;
   }

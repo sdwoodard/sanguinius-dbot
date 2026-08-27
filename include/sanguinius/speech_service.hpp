@@ -42,6 +42,8 @@ using SpeechTextFallback =
 
 struct SpeechServiceHealth {
   bool provider_enabled{};
+  bool provider_configured{};
+  std::string provider_circuit_state{"closed"};
   std::string voice{"onyx"};
   QueueSnapshot synthesis_worker;
   QueueSnapshot playback_worker;
@@ -53,6 +55,12 @@ struct SpeechServiceHealth {
   std::optional<std::int64_t> last_normalization_latency_ms;
   std::optional<std::string> last_failure_category;
 };
+
+// Removes expired/orphaned cache files and their matching database metadata.
+// The operation is idempotent and is shared by live Vox and always-on
+// maintenance so disabling Vox cannot strand generated audio.
+[[nodiscard]] std::size_t reconcile_tts_cache(SpeechRepository &repository,
+                                              TtsCache &cache);
 
 class SpeechService {
 public:
@@ -84,6 +92,7 @@ public:
   void session_closed(std::string_view session_id) noexcept;
   void set_muted(std::string_view session_id, bool muted);
   void set_voice_input_listening(bool listening) noexcept;
+  void set_provider_operator_disabled(bool disabled) noexcept;
   void wake() noexcept;
   void begin_session_flavor(std::string session_id);
   void prepare_session_flavor(std::string session_id, std::string guild_id,

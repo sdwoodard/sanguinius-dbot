@@ -4,6 +4,7 @@
 #include "sanguinius/pending_notice.hpp"
 #include "sanguinius/persistence/transaction.hpp"
 #include "sanguinius/persistent_id.hpp"
+#include "sanguinius/presentation.hpp"
 #include "sqlite_durable_work_writes.hpp"
 
 #include <nlohmann/json.hpp>
@@ -342,7 +343,10 @@ empty_history_result(const WagerMutationStatus status) {
           .outcomes = {},
           .evidence = {},
           .evidence_total_count = 0,
+          .previous_cursor_id = std::nullopt,
           .next_cursor_id = std::nullopt,
+          .page = 0,
+          .total = 0,
           .controls = {},
           .exact = false};
 }
@@ -778,7 +782,9 @@ public_card(const WagerRecord &wager,
   if (!sealed) {
     for (const auto &control : controls)
       message.buttons.push_back(
-          {.custom_id = control.custom_id, .label = control.action});
+          {.custom_id = control.custom_id,
+           .label = control.action,
+           .style = presentation::action_button_style(control.action)});
   }
   return PublicMessageRequest{
       .guild_id = {}, .channel_id = {}, .message = std::move(message)};
@@ -1529,10 +1535,10 @@ SqliteWagerRepository::preview(const WagerPreviewRequest &request) {
 
 namespace {
 
-void enqueue_card_edit(SqliteConnection &connection, const WagerIdFactory &ids,
-                       const WagerInvocation &call, const WagerRecord &wager,
-                       const std::optional<std::string>
-                           causation_event_id = std::nullopt) {
+void enqueue_card_edit(
+    SqliteConnection &connection, const WagerIdFactory &ids,
+    const WagerInvocation &call, const WagerRecord &wager,
+    const std::optional<std::string> causation_event_id = std::nullopt) {
   auto source =
       connection.prepare("SELECT create_outbox_id FROM tarot_wager_public_card "
                          "WHERE wager_id = ?");
@@ -3034,7 +3040,10 @@ SqliteWagerRepository::history(const WagerHistoryRequest &request) {
             load_resolution_activity(context_->connection(), wager->wager_id),
         .evidence = std::move(evidence.entries),
         .evidence_total_count = evidence.total_count,
+        .previous_cursor_id = std::nullopt,
         .next_cursor_id = std::nullopt,
+        .page = 0,
+        .total = 1,
         .controls = current_controls(context_->connection(), request.next_id,
                                      request.invocation, *wager, role),
         .exact = true};
@@ -3043,7 +3052,7 @@ SqliteWagerRepository::history(const WagerHistoryRequest &request) {
   }
   if (request.cursor_id) {
     auto cursor = context_->connection().prepare(
-        "SELECT user_id,expires_at_ms,next_cursor_id FROM "
+        "SELECT user_id,expires_at_ms,next_cursor_id,item_count FROM "
         "tarot_wager_history_cursor WHERE cursor_id = ?");
     cursor.bind(1, *request.cursor_id);
     if (!cursor.step())
@@ -3052,7 +3061,10 @@ SqliteWagerRepository::history(const WagerHistoryRequest &request) {
               .outcomes = {},
               .evidence = {},
               .evidence_total_count = 0,
+              .previous_cursor_id = std::nullopt,
               .next_cursor_id = std::nullopt,
+              .page = 0,
+              .total = 0,
               .controls = {},
               .exact = false};
     if (cursor.column_text(0) != request.invocation.user_id.str())
@@ -3061,7 +3073,10 @@ SqliteWagerRepository::history(const WagerHistoryRequest &request) {
               .outcomes = {},
               .evidence = {},
               .evidence_total_count = 0,
+              .previous_cursor_id = std::nullopt,
               .next_cursor_id = std::nullopt,
+              .page = 0,
+              .total = 0,
               .controls = {},
               .exact = false};
     if (cursor.column_int64(1) <= request.invocation.now_ms)
@@ -3070,7 +3085,10 @@ SqliteWagerRepository::history(const WagerHistoryRequest &request) {
               .outcomes = {},
               .evidence = {},
               .evidence_total_count = 0,
+              .previous_cursor_id = std::nullopt,
               .next_cursor_id = std::nullopt,
+              .page = 0,
+              .total = 0,
               .controls = {},
               .exact = false};
     WagerHistoryResult result{
@@ -3079,12 +3097,57 @@ SqliteWagerRepository::history(const WagerHistoryRequest &request) {
         .outcomes = {},
         .evidence = {},
         .evidence_total_count = 0,
+        .previous_cursor_id = std::nullopt,
         .next_cursor_id =
             cursor.column_is_null(2)
                 ? std::nullopt
                 : std::optional<std::string>{cursor.column_text(2)},
+        .page = 0,
+        .total = 0,
         .controls = {},
         .exact = false};
+    auto previous = context_->connection().prepare(
+        "SELECT cursor_id FROM tarot_wager_history_cursor WHERE "
+        "next_cursor_id=? LIMIT 2");
+    previous.bind(1, *request.cursor_id);
+    if (previous.step()) {
+      result.previous_cursor_id = previous.column_text(0);
+      if (previous.step())
+        throw DatabaseError{DatabaseErrorCategory::schema, SQLITE_SCHEMA,
+                            SQLITE_SCHEMA,
+                            "Wager history cursor chain is ambiguous."};
+    }
+    auto newer = context_->connection().prepare(
+        "WITH RECURSIVE chain(cursor_id,item_count,depth) AS ("
+        "SELECT cursor_id,item_count,0 FROM tarot_wager_history_cursor WHERE "
+        "cursor_id=? UNION ALL SELECT parent.cursor_id,parent.item_count,"
+        "chain.depth+1 FROM tarot_wager_history_cursor parent JOIN chain ON "
+        "parent.next_cursor_id=chain.cursor_id) SELECT COALESCE(max(depth),0),"
+        "COALESCE(sum(item_count),0) FROM chain");
+    newer.bind(1, *request.cursor_id);
+    if (!newer.step())
+      throw std::runtime_error{"Wager history page query failed."};
+    const auto page = newer.column_int64(0);
+    const auto newer_items = newer.column_int64(1);
+    auto older = context_->connection().prepare(
+        "WITH RECURSIVE chain(cursor_id,item_count,next_cursor_id) AS ("
+        "SELECT cursor_id,item_count,next_cursor_id FROM "
+        "tarot_wager_history_cursor WHERE cursor_id=? UNION ALL SELECT "
+        "child.cursor_id,child.item_count,child.next_cursor_id FROM "
+        "tarot_wager_history_cursor child JOIN chain ON "
+        "child.cursor_id=chain.next_cursor_id) SELECT "
+        "COALESCE(sum(item_count),0) FROM chain");
+    older.bind(1, *request.cursor_id);
+    if (!older.step())
+      throw std::runtime_error{"Wager history total query failed."};
+    const auto total =
+        newer_items + older.column_int64(0) - cursor.column_int64(3);
+    if (page < 0 || total < 0)
+      throw DatabaseError{DatabaseErrorCategory::schema, SQLITE_SCHEMA,
+                          SQLITE_SCHEMA,
+                          "Wager history cursor metadata is invalid."};
+    result.page = static_cast<std::size_t>(page);
+    result.total = static_cast<std::size_t>(total);
     auto items = context_->connection().prepare(
         "SELECT wager_id FROM tarot_wager_history_item WHERE cursor_id = ? "
         "ORDER BY position");
@@ -3129,7 +3192,10 @@ SqliteWagerRepository::history(const WagerHistoryRequest &request) {
                             .outcomes = {},
                             .evidence = {},
                             .evidence_total_count = 0,
+                            .previous_cursor_id = std::nullopt,
                             .next_cursor_id = std::nullopt,
+                            .page = 0,
+                            .total = wager_ids.size(),
                             .controls = {},
                             .exact = false};
   const auto first_page_size =
@@ -3138,9 +3204,11 @@ SqliteWagerRepository::history(const WagerHistoryRequest &request) {
     result.wagers.push_back(
         *load_wager(context_->connection(), wager_ids[index]));
   std::optional<std::string> next_cursor;
-  const auto page_count = (wager_ids.size() + wager_history_page_size - 1) /
-                          wager_history_page_size;
-  for (std::size_t page = page_count; page > 1; --page) {
+  const auto page_count = std::max<std::size_t>(
+      1, (wager_ids.size() + wager_history_page_size - 1) /
+             wager_history_page_size);
+  std::optional<std::string> first_next_cursor;
+  for (std::size_t page = page_count; page > 0; --page) {
     const auto offset = (page - 1) * wager_history_page_size;
     const auto item_count =
         std::min(wager_history_page_size, wager_ids.size() - offset);
@@ -3170,9 +3238,11 @@ SqliteWagerRepository::history(const WagerHistoryRequest &request) {
       insert_item.bind(3, wager_ids[offset + position]);
       insert_item.execute();
     }
+    if (page == 1)
+      first_next_cursor = next_cursor;
     next_cursor = cursor_id;
   }
-  result.next_cursor_id = std::move(next_cursor);
+  result.next_cursor_id = std::move(first_next_cursor);
   transaction.commit();
   return result;
 }
@@ -3206,7 +3276,10 @@ SqliteWagerRepository::disputes(const WagerHistoryRequest &request) {
                             .outcomes = {},
                             .evidence = {},
                             .evidence_total_count = 0,
+                            .previous_cursor_id = std::nullopt,
                             .next_cursor_id = std::nullopt,
+                            .page = 0,
+                            .total = ids.size(),
                             .controls = {},
                             .exact = false};
   for (const auto &id : ids) {

@@ -1,5 +1,6 @@
 #include "sanguinius/chronicle.hpp"
 #include "sanguinius/interaction_handler.hpp"
+#include "sanguinius/safety_controls.hpp"
 #include "sanguinius/transcription.hpp"
 #include "sanguinius/voice_input.hpp"
 
@@ -7,6 +8,7 @@
 #include "support/fake_clock.hpp"
 #include "support/fake_diagnostics.hpp"
 #include "support/fake_id_generator.hpp"
+#include "support/fake_safety.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -270,7 +272,7 @@ public:
   }
 
   void release_ended_receipt(const sanguinius::DeliveryResult result =
-                                  sanguinius::DeliveryResult::success) {
+                                 sanguinius::DeliveryResult::success) {
     sanguinius::DeliveryCallback callback;
     {
       const std::scoped_lock lock{deferred_mutex_};
@@ -281,7 +283,7 @@ public:
   }
 
   void release_replacement_receipt(const sanguinius::DeliveryResult result =
-                                        sanguinius::DeliveryResult::success) {
+                                       sanguinius::DeliveryResult::success) {
     sanguinius::PublicDeliveryCallback callback;
     {
       const std::scoped_lock lock{deferred_mutex_};
@@ -289,10 +291,11 @@ public:
     }
     if (!callback)
       return;
-    callback(result == sanguinius::DeliveryResult::success
-                 ? sanguinius::PublicDeliveryReceipt{
-                       result, sanguinius::DiscordId{901U}}
-                 : sanguinius::PublicDeliveryReceipt{result, std::nullopt});
+    callback(
+        result == sanguinius::DeliveryResult::success
+            ? sanguinius::PublicDeliveryReceipt{result,
+                                                sanguinius::DiscordId{901U}}
+            : sanguinius::PublicDeliveryReceipt{result, std::nullopt});
   }
 
   [[nodiscard]] std::string visible_status() const {
@@ -506,6 +509,21 @@ public:
   std::string result_text{"This must not be called on manual stop."};
 };
 
+class CircuitStateTranscription final : public sanguinius::TranscriptionClient {
+public:
+  [[nodiscard]] sanguinius::Transcript
+  transcribe(const sanguinius::TranscriptionRequest &, std::stop_token,
+             const std::function<void()> &) const override {
+    return {.text = "Circuit health test.",
+            .provider_request_id = "request-id"};
+  }
+  [[nodiscard]] std::string provider_circuit_state() const override {
+    return state;
+  }
+
+  std::string state{"open"};
+};
+
 class BlockingTranscription final : public sanguinius::TranscriptionClient {
 public:
   [[nodiscard]] sanguinius::Transcript
@@ -674,6 +692,37 @@ TEST_CASE("secure audio buffer is fixed capacity and observably scrubbed",
   buffer.scrub();
   REQUIRE(buffer.size() == 0);
   REQUIRE(buffer.all_zero_for_test());
+}
+
+TEST_CASE("persisted transcription circuit degrades member listening status",
+          "[voice-input][provider][circuit][status][restart]") {
+  OrderingLog log;
+  OrderingRepository repository;
+  OrderingVoiceAdapter adapter{log};
+  OrderingDelivery delivery{log};
+  CircuitStateTranscription transcription;
+  sanguinius::test::FakeClock clock;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  sanguinius::VoiceListeningService voice{
+      repository,         adapter,       &transcription,
+      delivery,           clock,         ids,
+      diagnostics,        voice_scope(), voice_configuration(),
+      ready_voice_context};
+  REQUIRE(voice.health().provider_circuit_state == "open");
+
+  auto runtime =
+      std::make_unique<sanguinius::test::FakeRuntimeFeatureControlRepository>();
+  sanguinius::SafetyControlService safety{std::move(runtime),
+                                          clock,
+                                          ids,
+                                          {.voice_input_enabled = true},
+                                          nullptr,
+                                          nullptr,
+                                          nullptr,
+                                          nullptr,
+                                          &voice};
+  REQUIRE(safety.member_status().voice_input == "degraded");
 }
 
 TEST_CASE("voice shutdown confirms a sequenced private transcript overwrite",
@@ -2536,10 +2585,12 @@ TEST_CASE("transcription finalization exceptions discard Chronicle drafts",
       std::byte{0x54}, std::byte{0x54}, std::byte{0x54}, std::byte{0x54}};
   adapter.emit_audio(boundary_frame);
 
-  REQUIRE(eventually([&service] {
-    return service.health().last_failure_category ==
-           "transcription_finalize_failed";
-  }));
+  REQUIRE(eventually(
+      [&service] {
+        return service.health().last_failure_category ==
+               "transcription_finalize_failed";
+      },
+      5s));
   std::string custom_id;
   {
     const std::scoped_lock lock{result_mutex};

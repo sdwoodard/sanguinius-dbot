@@ -1,32 +1,38 @@
 #include "sanguinius/composition_root.hpp"
 
+#include "sanguinius/ai_generation.hpp"
 #include "sanguinius/diagnostics.hpp"
-#include "sanguinius/dpp_discord_adapter.hpp"
 #include "sanguinius/dpp_cluster_host.hpp"
+#include "sanguinius/dpp_discord_adapter.hpp"
 #include "sanguinius/dpp_voice_gateway.hpp"
 #include "sanguinius/dpp_voice_input_adapter.hpp"
 #include "sanguinius/ffmpeg_audio_normalizer.hpp"
 #include "sanguinius/id_generator.hpp"
 #include "sanguinius/message_logger.hpp"
 #include "sanguinius/openai_client.hpp"
-#include "sanguinius/openai_tts_client.hpp"
 #include "sanguinius/openai_transcription_client.hpp"
+#include "sanguinius/openai_tts_client.hpp"
 #include "sanguinius/persistence/database.hpp"
 #include "sanguinius/persistence/migrator.hpp"
+#include "sanguinius/persistence/sqlite_ai_generation_repository.hpp"
 #include "sanguinius/persistence/sqlite_appearance_repository.hpp"
 #include "sanguinius/persistence/sqlite_chronicle_repository.hpp"
 #include "sanguinius/persistence/sqlite_chronicle_session_repository.hpp"
 #include "sanguinius/persistence/sqlite_durable_work_repository.hpp"
+#include "sanguinius/persistence/sqlite_provider_circuit_repository.hpp"
 #include "sanguinius/persistence/sqlite_relationship_repository.hpp"
-#include "sanguinius/persistence/sqlite_speech_repository.hpp"
 #include "sanguinius/persistence/sqlite_repositories.hpp"
+#include "sanguinius/persistence/sqlite_retention_repository.hpp"
+#include "sanguinius/persistence/sqlite_safety_control_repository.hpp"
+#include "sanguinius/persistence/sqlite_speech_repository.hpp"
 #include "sanguinius/persistence/sqlite_tarot_house_repository.hpp"
 #include "sanguinius/persistence/sqlite_tarot_repository.hpp"
-#include "sanguinius/persistence/sqlite_wager_repository.hpp"
-#include "sanguinius/persistence/sqlite_vox_repository.hpp"
-#include "sanguinius/persistence/sqlite_vox_narration_repository.hpp"
 #include "sanguinius/persistence/sqlite_voice_input_repository.hpp"
+#include "sanguinius/persistence/sqlite_vox_narration_repository.hpp"
+#include "sanguinius/persistence/sqlite_vox_repository.hpp"
+#include "sanguinius/persistence/sqlite_wager_repository.hpp"
 #include "sanguinius/persistent_id.hpp"
+#include "sanguinius/provider_circuit.hpp"
 #include "sanguinius/random.hpp"
 #include "sanguinius/static_speech_assets.hpp"
 #include "sanguinius/tts_cache.hpp"
@@ -65,12 +71,8 @@ namespace {
 } // namespace
 
 void validate_runtime_configuration(const Config &config) {
-  if (!config.features.vox_enabled)
-    return;
-  if (config.tts.model != "tts-1" || config.tts.voice != "onyx" ||
-      !config.tts.cache_directory.is_absolute() ||
-      !config.tts.fallback_directory.is_absolute())
-    throw std::runtime_error{"Vox TTS fixed runtime configuration is invalid."};
+  if (!config.tts.cache_directory.is_absolute())
+    throw std::runtime_error{"The TTS cache path must be absolute."};
   const auto resolved = [](const std::filesystem::path &path) {
     std::error_code error;
     auto absolute = std::filesystem::absolute(path, error);
@@ -92,14 +94,10 @@ void validate_runtime_configuration(const Config &config) {
     return true;
   };
   const auto cache = resolved(config.tts.cache_directory);
-  const auto fallback = resolved(config.tts.fallback_directory);
   const auto database = resolved(config.paths.database_file);
   const auto message_log = resolved(config.paths.message_log);
-  if (within(database, cache) || within(message_log, cache) ||
-      within(fallback, cache) || within(cache, fallback))
-    throw std::runtime_error{
-        "The TTS cache path overlaps persistent or fallback data."};
-  validate_ffmpeg_runtime(config.tts.ffprobe_path, config.tts.ffmpeg_path);
+  if (within(database, cache) || within(message_log, cache))
+    throw std::runtime_error{"The TTS cache path overlaps persistent data."};
 
   const auto validate_directory = [](const std::filesystem::path &path,
                                      const std::string_view label,
@@ -115,13 +113,12 @@ void validate_runtime_configuration(const Config &config) {
           !std::filesystem::is_directory(status))
         throw std::runtime_error{"Configured " + std::string{label} +
                                  " path is not a safe directory."};
-      struct stat native_status {};
+      struct stat native_status{};
       constexpr auto permission_bits =
           S_IRWXU | S_IRWXG | S_IRWXO | S_ISUID | S_ISGID | S_ISVTX;
-      if (owner_only &&
-          (::lstat(path.c_str(), &native_status) != 0 ||
-           native_status.st_uid != ::geteuid() ||
-           (native_status.st_mode & permission_bits) != S_IRWXU))
+      if (owner_only && (::lstat(path.c_str(), &native_status) != 0 ||
+                         native_status.st_uid != ::geteuid() ||
+                         (native_status.st_mode & permission_bits) != S_IRWXU))
         throw std::runtime_error{"Configured " + std::string{label} +
                                  " directory is not owner-only."};
       if (::access(path.c_str(), R_OK | X_OK | (required ? 0 : W_OK)) != 0)
@@ -140,6 +137,16 @@ void validate_runtime_configuration(const Config &config) {
                                " directory cannot be created securely."};
   };
   validate_directory(config.tts.cache_directory, "TTS cache", false, true);
+  if (!config.features.vox_enabled)
+    return;
+  if (config.tts.model != "tts-1" || config.tts.voice != "onyx" ||
+      !config.tts.fallback_directory.is_absolute())
+    throw std::runtime_error{"Vox TTS fixed runtime configuration is invalid."};
+  const auto fallback = resolved(config.tts.fallback_directory);
+  if (within(fallback, cache) || within(cache, fallback))
+    throw std::runtime_error{
+        "The TTS cache path overlaps persistent or fallback data."};
+  validate_ffmpeg_runtime(config.tts.ffprobe_path, config.tts.ffmpeg_path);
   validate_directory(config.tts.fallback_directory, "Vox fallback", true,
                      false);
   static_cast<void>(load_static_speech_assets(config.tts.fallback_directory));
@@ -195,10 +202,10 @@ std::unique_ptr<Application> make_application(const Config &config) {
   auto tarot_integration =
       std::make_unique<persistence::SqliteTarotIntegrationRepository>(
           repository_context);
-  auto vox = std::make_unique<persistence::SqliteVoxRepository>(
-      repository_context);
-  auto speech = std::make_unique<persistence::SqliteSpeechRepository>(
-      repository_context);
+  auto vox =
+      std::make_unique<persistence::SqliteVoxRepository>(repository_context);
+  auto speech =
+      std::make_unique<persistence::SqliteSpeechRepository>(repository_context);
   auto vox_narration =
       std::make_unique<persistence::SqliteVoxNarrationRepository>(
           repository_context, config.tts.usage_policy);
@@ -219,8 +226,18 @@ std::unique_ptr<Application> make_application(const Config &config) {
   auto diagnostics = std::make_unique<ConsoleDiagnostics>();
   auto message_log =
       std::make_unique<MessageLogger>(config.paths.message_log, *clock);
-  auto ai_client =
-      std::make_unique<OpenAiClient>(config.ai.api_key, config.ai.model);
+  auto ai_client = std::make_unique<AiGenerationService>(
+      std::make_unique<OpenAiClient>(config.ai.api_key, config.ai.model),
+      std::make_unique<persistence::SqliteAiGenerationRepository>(
+          repository_context),
+      *clock, *persistent_ids, config.discord.server_scope,
+      AiGenerationPolicy{
+          .input_rate_micro_usd_per_million_tokens =
+              config.ai.input_rate_micro_usd_per_million_tokens,
+          .output_rate_micro_usd_per_million_tokens =
+              config.ai.output_rate_micro_usd_per_million_tokens,
+          .model = config.ai.model,
+      });
   auto cluster_host = std::make_shared<DppClusterHost>(
       config.discord.token, config.features.vox_enabled);
   auto discord = std::make_unique<DppDiscordAdapter>(
@@ -241,27 +258,37 @@ std::unique_ptr<Application> make_application(const Config &config) {
   }
   if (config.transcription_provider == TranscriptionProvider::openai &&
       config.voice_input.model == transcription_model) {
-    transcription = std::make_unique<OpenAiTranscriptionClient>(
-        config.ai.api_key, nullptr,
-        OpenAiTranscriptionClientConfiguration{
-            .model = std::string{transcription_model},
-            .total_timeout = config.voice_input.request_timeout});
+    transcription = std::make_unique<CircuitBreakingTranscriptionClient>(
+        std::make_unique<OpenAiTranscriptionClient>(
+            config.ai.api_key, nullptr,
+            OpenAiTranscriptionClientConfiguration{
+                .model = std::string{transcription_model},
+                .total_timeout = config.voice_input.request_timeout}),
+        std::make_unique<persistence::SqliteProviderCircuitRepository>(
+            repository_context),
+        *clock, *persistent_ids);
   }
   if (config.features.vox_enabled) {
     if (config.tts.provider == TtsProvider::openai) {
-      text_to_speech = std::make_unique<OpenAiTtsClient>(
-          config.ai.api_key, nullptr,
-          OpenAiTtsClientConfiguration{
-              .connect_timeout = config.tts.connect_timeout,
-              .total_timeout = config.tts.request_timeout,
-              .maximum_body_bytes = maximum_tts_encoded_bytes,
-          });
+      text_to_speech = std::make_unique<CircuitBreakingTextToSpeechClient>(
+          std::make_unique<OpenAiTtsClient>(
+              config.ai.api_key, nullptr,
+              OpenAiTtsClientConfiguration{
+                  .connect_timeout = config.tts.connect_timeout,
+                  .total_timeout = config.tts.request_timeout,
+                  .maximum_body_bytes = maximum_tts_encoded_bytes,
+              }),
+          std::make_unique<persistence::SqliteProviderCircuitRepository>(
+              repository_context),
+          *clock, *persistent_ids);
     }
     audio_normalizer = std::make_unique<FfmpegAudioNormalizer>(
         config.tts.ffprobe_path, config.tts.ffmpeg_path);
-    tts_cache = std::make_unique<FilesystemTtsCache>(
-        config.tts.cache_directory, config.tts.cache_policy);
   }
+  // Retention remains active even when Vox is configured off, so the cache
+  // must still be available for expiry and orphan reconciliation.
+  tts_cache = std::make_unique<FilesystemTtsCache>(config.tts.cache_directory,
+                                                   config.tts.cache_policy);
 
   auto static_speech_assets =
       config.features.vox_enabled
@@ -347,6 +374,11 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .text_to_speech = std::move(text_to_speech),
           .audio_normalizer = std::move(audio_normalizer),
           .tts_cache = std::move(tts_cache),
+          .runtime_feature_controls = std::make_unique<
+              persistence::SqliteRuntimeFeatureControlRepository>(
+              repository_context),
+          .retention = std::make_unique<persistence::SqliteRetentionRepository>(
+              repository_context),
       });
 }
 

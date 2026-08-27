@@ -184,6 +184,8 @@ int monitor_transfer(void *context, curl_off_t, curl_off_t,
 }
 
 [[nodiscard]] TranscriptionFailureCategory http_category(const long status) {
+  if (status == 401 || status == 403)
+    return TranscriptionFailureCategory::authentication;
   if (status == 408)
     return TranscriptionFailureCategory::timeout;
   if (status == 429)

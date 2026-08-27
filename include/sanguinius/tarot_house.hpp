@@ -24,7 +24,10 @@ inline constexpr std::int64_t normal_tarot_draw_cooldown_ms = 86'400'000;
 inline constexpr std::int64_t default_house_exposure_cap = 100;
 inline constexpr std::int64_t default_house_profit_cap = 20;
 inline constexpr std::string_view tarot_house_component_prefix{"sgh:1:"};
+inline constexpr std::string_view tarot_house_history_page_prefix{"sghp:1:"};
 inline constexpr std::string_view tarot_house_timezone{"America/New_York"};
+inline constexpr std::size_t tarot_house_history_page_size = 5;
+inline constexpr std::size_t tarot_house_history_maximum_items = 50;
 
 struct TarotHousePolicy {
   bool house_enabled{true};
@@ -157,6 +160,13 @@ struct HouseWagerRecord {
   std::int64_t terminal_cooldown_ms{};
   bool recovery{};
   bool is_test{};
+};
+
+struct HouseHistoryPage {
+  std::string cursor_id;
+  std::size_t page{};
+  std::size_t total{};
+  std::vector<HouseWagerRecord> wagers;
 };
 
 struct HousePlayRequest {
@@ -316,8 +326,8 @@ public:
   observe_draw(const TarotDrawRecord &draw, std::int64_t now_ms,
                std::function<std::string()> next_id) = 0;
   [[nodiscard]] virtual std::vector<HouseMutationResult>
-  reconcile_draws(std::int64_t now_ms,
-                  std::function<std::string()> next_id) = 0;
+  reconcile_draws(std::int64_t now_ms, std::function<std::string()> next_id,
+                  std::size_t limit = 50) = 0;
   [[nodiscard]] virtual std::vector<HouseMutationResult>
   resolve_due(std::int64_t now_ms, bool test_only,
               std::function<std::string()> next_id) = 0;
@@ -342,6 +352,12 @@ public:
   [[nodiscard]] virtual std::vector<HouseWagerRecord>
   history(const DiscordSnowflake &user_id,
           std::optional<std::string_view> reference) = 0;
+  [[nodiscard]] virtual HouseHistoryPage
+  begin_history(const DiscordSnowflake &user_id, std::string cursor_id,
+                std::int64_t now_ms) = 0;
+  [[nodiscard]] virtual HouseHistoryPage
+  load_history_page(const DiscordSnowflake &user_id, std::string_view cursor_id,
+                    std::size_t page, std::int64_t now_ms) = 0;
   [[nodiscard]] virtual TarotPlayerRecord
   record(const DiscordSnowflake &user_id) = 0;
   [[nodiscard]] virtual HouseEconomyReport economy() = 0;
@@ -386,7 +402,7 @@ public:
   handle_weekly_offer(const ClaimedScheduledJob &job, bool operational);
   void handle_offer_expiry(const ClaimedScheduledJob &job);
   void observe_draw(const TarotDrawRecord &draw) noexcept;
-  void reconcile_draws();
+  bool reconcile_draws(std::size_t limit = 50);
   [[nodiscard]] HouseEconomyReport check_invariants();
 
 private:

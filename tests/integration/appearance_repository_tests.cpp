@@ -70,7 +70,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 15);
+      REQUIRE(migrator.apply(database.connection()).current_version == 16);
     }
     context = std::make_shared<SqliteRepositoryContext>(
         Database::open_runtime(temporary.path(), 25ms));
@@ -130,15 +130,9 @@ TEST_CASE("schema v8 policy snapshots are immutable and version collision safe",
   REQUIRE(scalar(*fixture.context,
                  "SELECT count(*) FROM appearance_policy_snapshot") == 1);
   REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM scheduled_job WHERE "
-                                   "job_type LIKE 'appearance.%'") == 2);
+                                   "job_type LIKE 'appearance.%' AND "
+                                   "state='pending'") == 1);
   SqliteDurableWorkRepository durable{fixture.context};
-  const auto scan = durable.claim_due_job(100, 1'100, "worker", uuid(990));
-  REQUIRE(scan.has_value());
-  REQUIRE(scan->job_type == sanguinius::appearance_scan_job_type);
-  REQUIRE(std::get_if<sanguinius::AppearanceScanJobPayload>(&scan->payload) !=
-          nullptr);
-  REQUIRE(durable.reschedule_job(*scan, 100, 160) ==
-          sanguinius::WorkMutationStatus::applied);
   const auto purge = durable.claim_due_job(100, 1'100, "worker", uuid(991));
   REQUIRE(purge.has_value());
   REQUIRE(purge->job_type == sanguinius::appearance_purge_job_type);
@@ -159,13 +153,9 @@ TEST_CASE("schema v8 policy snapshots are immutable and version collision safe",
   fixture.repository->register_policy(next, 400);
   REQUIRE(fixture.repository->load_policy("m10-live-1").score_threshold == 60);
   REQUIRE(fixture.repository->load_policy("m9-test-2").score_threshold == 61);
-  auto scheduled = fixture.context->connection().prepare(
-      "SELECT payload_json FROM scheduled_job WHERE job_type=?");
-  scheduled.bind(1, sanguinius::appearance_scan_job_type);
-  REQUIRE(scheduled.step());
-  REQUIRE(
-      nlohmann::json::parse(scheduled.column_text(0)).at("policy_version") ==
-      "m9-test-2");
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM scheduled_job WHERE "
+                 "job_type='appearance.scan.v1' AND state='pending'") == 0);
   REQUIRE_THROWS(fixture.context->connection().execute(
       "UPDATE appearance_policy_snapshot SET schema_version=1"));
 }
@@ -728,6 +718,104 @@ TEST_CASE("restart reclaims an unprepared candidate exactly once",
       fixture.repository->scan_events(fixture.policy, 25'003, "new-instance")
           .empty());
   REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM outbox_message") == 0);
+}
+
+TEST_CASE("event scanning shares its requested bound with recovered candidates",
+          "[appearance][repository][events][restart][backpressure]") {
+  AppearanceFixture fixture;
+  SqliteDurableWorkRepository durable{fixture.context};
+  fixture.context->connection().execute(
+      "INSERT INTO chronicle_entry(entry_id,entry_type,title,body,visibility,"
+      "status,occurred_at_ms,created_at_ms,created_by_user_id,submitted_at_ms,"
+      "approved_at_ms,approved_by_user_id,source_guild_id,source_channel_id,"
+      "source_message_id,source_author_user_id,source_text,revision,source_"
+      "kind)"
+      " VALUES('00000000-0000-4000-8000-000000022000','incident','Bounded "
+      "events','A shared event for bounded recovery.','shared','canon',1000,"
+      "1000,'31',1000,1000,'30','10','20','22000','31',"
+      "'A shared event for bounded recovery.',1,'discord_message')");
+  fixture.context->connection().execute(
+      "INSERT INTO chronicle_participant(entry_id,user_id,role) VALUES("
+      "'00000000-0000-4000-8000-000000022000','31','source_author')");
+
+  for (std::size_t index = 0; index < 20; ++index) {
+    static_cast<void>(fixture.repository->simulate(
+        fixture.policy,
+        {.fixture = "owner_dry_run",
+         .idempotency_key = "bounded-recovery:" + std::to_string(index),
+         .correlation_id = "bounded-recovery",
+         .owner_user_id = 30,
+         .now_ms = 1'100 + static_cast<std::int64_t>(index),
+         .candidate_id = uuid(20'000 + index),
+         .event_id = uuid(20'100 + index)}));
+  }
+  sanguinius::test::FakePersistentIdGenerator restart_ids{{uuid(20'200)}};
+  REQUIRE(fixture.repository->abandon_prior_instance_attempts(
+              "new-instance", 2'000, restart_ids) == 0);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_candidate WHERE "
+                 "evaluation_started_at_ms IS NULL") == 20);
+
+  for (std::size_t index = 0; index < 40; ++index) {
+    REQUIRE(durable.append_event(
+        {.event_id = uuid(23'000 + index * 16),
+         .event_type = "chronicle.entry_canonized.v1",
+         .aggregate_type = "chronicle_entry",
+         .aggregate_id = uuid(22'000),
+         .actor_user_id = 31,
+         .guild_id = 10,
+         .channel_id = 20,
+         .source_message_id = std::nullopt,
+         .occurred_at_ms = 2'100 + static_cast<std::int64_t>(index),
+         .recorded_at_ms = 2'100 + static_cast<std::int64_t>(index),
+         .correlation_id = "bounded-events",
+         .causation_id = std::nullopt,
+         .idempotency_key = "bounded-events:" + std::to_string(index),
+         .payload_json = "{}"}));
+  }
+
+  const auto first = fixture.repository->scan_events(fixture.policy, 3'000,
+                                                     "new-instance", 50);
+  REQUIRE(first.size() == 50);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_candidate WHERE "
+                 "evaluation_started_at_ms IS NULL") == 10);
+  const auto second = fixture.repository->scan_events(fixture.policy, 3'001,
+                                                      "new-instance", 50);
+  REQUIRE(second.size() == 10);
+  REQUIRE(scalar(*fixture.context,
+                 "SELECT count(*) FROM appearance_candidate WHERE "
+                 "evaluation_started_at_ms IS NULL") == 0);
+}
+
+TEST_CASE("suppressed event batches retain an immediate backlog signal",
+          "[appearance][repository][events][backpressure][test]") {
+  AppearanceFixture fixture;
+  SqliteDurableWorkRepository durable{fixture.context};
+  for (std::size_t index = 0; index < 51; ++index) {
+    REQUIRE(durable.append_event(
+        {.event_id = uuid(24'000 + index),
+         .event_type = "chronicle.session_started.v1",
+         .aggregate_type = "chronicle_session",
+         .aggregate_id = uuid(25'000 + index),
+         .actor_user_id = 30,
+         .guild_id = 10,
+         .channel_id = 20,
+         .source_message_id = std::nullopt,
+         .occurred_at_ms = 3'000 + static_cast<std::int64_t>(index),
+         .recorded_at_ms = 3'000 + static_cast<std::int64_t>(index),
+         .correlation_id = "suppressed-backlog",
+         .causation_id = std::nullopt,
+         .idempotency_key = "suppressed-backlog:" + std::to_string(index),
+         .payload_json = R"({"test":true})"}));
+  }
+
+  REQUIRE(fixture.repository->scan_events(fixture.policy, 4'000, "instance", 50)
+              .empty());
+  REQUIRE(fixture.repository->event_scan_backlog());
+  REQUIRE(fixture.repository->scan_events(fixture.policy, 4'001, "instance", 50)
+              .empty());
+  REQUIRE_FALSE(fixture.repository->event_scan_backlog());
 }
 
 TEST_CASE("restart audits an unprepared candidate after it expires",

@@ -715,16 +715,19 @@ void cancel_pending_speech(SqliteConnection &connection,
   return false;
 }
 
-std::size_t suppress_active_intents(
-    SqliteConnection &connection, const std::string_view reason,
-    const std::int64_t now_ms, const std::function<std::string()> &next_id) {
+std::size_t suppress_active_intents(SqliteConnection &connection,
+                                    const std::string_view reason,
+                                    const std::int64_t now_ms,
+                                    const std::function<std::string()> &next_id,
+                                    const std::size_t limit) {
   auto query = connection.prepare(
       "SELECT intent.intent_id,intent.state,intent.state_version,"
       "intent.speech_id,COALESCE(speech.state,'') FROM "
       "voice_narration_intent intent LEFT JOIN speech_item speech ON "
       "speech.speech_id=intent.speech_id WHERE intent.state IN "
       "('pending','generating','prepared','queued') ORDER BY "
-      "intent.created_at_ms LIMIT 32");
+      "intent.created_at_ms LIMIT ?");
+  query.bind(1, static_cast<std::int64_t>(limit));
   struct ActiveIntent {
     std::string id;
     std::string state;
@@ -858,9 +861,16 @@ std::size_t SqliteVoxNarrationRepository::observe_batch(
   const std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
   Transaction transaction{connection, TransactionMode::immediate};
-  if (!request.enabled)
-    static_cast<void>(suppress_active_intents(connection, "feature_disabled",
-                                              request.now_ms, request.next_id));
+  std::size_t suppressed{};
+  if (!request.enabled) {
+    suppressed =
+        suppress_active_intents(connection, "feature_disabled", request.now_ms,
+                                request.next_id, request.limit);
+    if (suppressed != 0) {
+      transaction.commit();
+      return suppressed;
+    }
+  }
   auto cursor = connection.prepare(
       "SELECT CAST(last_event_rowid AS INTEGER) FROM voice_narration_cursor "
       "WHERE singleton=1");
@@ -1401,121 +1411,134 @@ void SqliteVoxNarrationRepository::complete_generation(
 
 std::size_t SqliteVoxNarrationRepository::reconcile(
     const std::int64_t now_ms, const std::function<std::string()> &next_id,
-    const std::function<bool(std::string_view)> &generation_is_live) {
-  if (now_ms < 0 || !next_id)
+    const std::function<bool(std::string_view)> &generation_is_live,
+    const std::size_t limit) {
+  if (now_ms < 0 || !next_id || limit == 0 || limit > 50)
     throw std::invalid_argument{"Narration reconciliation is invalid."};
   const std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
   Transaction transaction{connection, TransactionMode::immediate};
   std::size_t changed{};
-  if (quiet(connection, now_ms))
-    changed += suppress_active_intents(connection, "quiet", now_ms, next_id);
-  auto failed_counterparts = connection.prepare(
-      "SELECT intent.intent_id,intent.state_version FROM "
-      "voice_narration_intent intent JOIN outbox_message outbox ON "
-      "outbox.outbox_id=intent.counterpart_outbox_id WHERE "
-      "intent.state='pending' AND intent.counterpart_required=1 AND "
-      "outbox.state IN ('failed','dead','cancelled') LIMIT 32");
-  struct FailedCounterpart {
-    std::string id;
-    std::size_t revision{};
-  };
-  std::vector<FailedCounterpart> failed_counterpart_items;
-  while (failed_counterparts.step())
-    failed_counterpart_items.push_back(
-        {.id = failed_counterparts.column_text(0),
-         .revision =
-             static_cast<std::size_t>(failed_counterparts.column_int64(1))});
-  for (const auto &item : failed_counterpart_items) {
-    terminalize(connection, item.id, item.revision, "pending", "suppressed",
-                "counterpart_failed", now_ms, next_id());
-    ++changed;
+  const auto remaining = [&] { return limit - changed; };
+  if (quiet(connection, now_ms)) {
+    changed += suppress_active_intents(connection, "quiet", now_ms, next_id,
+                                       remaining());
   }
-  auto abandoned = connection.prepare(
-      "SELECT intent.intent_id,intent.state_version,session.state FROM "
-      "voice_narration_intent intent JOIN voice_session session ON "
-      "session.session_id=intent.session_id WHERE intent.state='pending' AND "
-      "session.state IN ('muted','leaving','inactive','failed') LIMIT 32");
-  struct Abandoned {
-    std::string id;
-    std::size_t revision{};
-    std::string session_state;
-  };
-  std::vector<Abandoned> abandoned_items;
-  while (abandoned.step())
-    abandoned_items.push_back(
-        {.id = abandoned.column_text(0),
-         .revision = static_cast<std::size_t>(abandoned.column_int64(1)),
-         .session_state = abandoned.column_text(2)});
-  for (const auto &item : abandoned_items) {
-    terminalize(connection, item.id, item.revision, "pending", "suppressed",
-                item.session_state == "muted" ? "muted" : "disconnected",
-                now_ms, next_id());
-    ++changed;
-  }
-  auto expired_leases = connection.prepare(
-      "SELECT intent_id,state_version,expires_at_ms FROM "
-      "voice_narration_intent WHERE state='generating' AND lease_until_ms<=? "
-      "LIMIT 96");
-  expired_leases.bind(1, now_ms);
-  struct ExpiredLease {
-    std::string id;
-    std::size_t revision{};
-    std::int64_t expires_at_ms{};
-  };
-  std::vector<ExpiredLease> leases;
-  while (expired_leases.step())
-    leases.push_back(
-        {.id = expired_leases.column_text(0),
-         .revision = static_cast<std::size_t>(expired_leases.column_int64(1)),
-         .expires_at_ms = expired_leases.column_int64(2)});
-  for (const auto &lease : leases) {
-    if (generation_is_live && generation_is_live(lease.id))
-      continue;
-    if (changed >= 32)
-      break;
-    if (lease.expires_at_ms <= now_ms) {
-      terminalize(connection, lease.id, lease.revision, "generating", "expired",
-                  "stale", now_ms, next_id());
-    } else {
-      auto release = connection.prepare(
-          "UPDATE voice_narration_intent SET state='pending',"
-          "state_version=state_version+1,lease_owner=NULL,lease_token=NULL,"
-          "lease_until_ms=NULL,model_status='not_requested' WHERE intent_id=? "
-          "AND state='generating' AND state_version=?");
-      release.bind(1, lease.id);
-      release.bind(2, static_cast<std::int64_t>(lease.revision));
-      release.execute();
-      if (connection.changes() == 1)
-        insert_narration_transition(connection, next_id(), lease.id,
-                                    "generating", "pending", lease.revision,
-                                    "lease_recovered", now_ms);
+  if (changed < limit) {
+    auto query = connection.prepare(
+        "SELECT intent.intent_id,intent.state_version FROM "
+        "voice_narration_intent intent JOIN outbox_message outbox ON "
+        "outbox.outbox_id=intent.counterpart_outbox_id WHERE "
+        "intent.state='pending' AND intent.counterpart_required=1 AND "
+        "outbox.state IN ('failed','dead','cancelled') LIMIT ?");
+    query.bind(1, static_cast<std::int64_t>(remaining()));
+    struct Item {
+      std::string id;
+      std::size_t revision{};
+    };
+    std::vector<Item> items;
+    while (query.step())
+      items.push_back(
+          {.id = query.column_text(0),
+           .revision = static_cast<std::size_t>(query.column_int64(1))});
+    for (const auto &item : items) {
+      terminalize(connection, item.id, item.revision, "pending", "suppressed",
+                  "counterpart_failed", now_ms, next_id());
+      ++changed;
     }
-    ++changed;
   }
-  auto query = connection.prepare(
-      "SELECT intent.intent_id,intent.state_version,speech.state,"
-      "COALESCE(speech.last_error_code,'speech_terminal') FROM "
-      "voice_narration_intent intent JOIN speech_item speech ON "
-      "speech.speech_id=intent.speech_id WHERE intent.state='queued' AND "
-      "speech.state IN ('played','failed','expired','cancelled') LIMIT 32");
-  struct Item {
-    std::string id;
-    std::size_t revision;
-    std::string state;
-    std::string reason;
-  };
-  std::vector<Item> items;
-  while (query.step())
-    items.push_back({query.column_text(0),
-                     static_cast<std::size_t>(query.column_int64(1)),
-                     query.column_text(2), query.column_text(3)});
-  for (const auto &item : items) {
-    const auto target = item.state == "played" ? "played" : item.state;
-    terminalize(connection, item.id, item.revision, "queued", target,
-                item.state == "played" ? "marker_completed" : item.reason,
-                now_ms, next_id());
-    ++changed;
+  if (changed < limit) {
+    auto query = connection.prepare(
+        "SELECT intent.intent_id,intent.state_version,session.state FROM "
+        "voice_narration_intent intent JOIN voice_session session ON "
+        "session.session_id=intent.session_id WHERE intent.state='pending' AND "
+        "session.state IN ('muted','leaving','inactive','failed') LIMIT ?");
+    query.bind(1, static_cast<std::int64_t>(remaining()));
+    struct Item {
+      std::string id;
+      std::size_t revision{};
+      std::string session_state;
+    };
+    std::vector<Item> items;
+    while (query.step())
+      items.push_back(
+          {.id = query.column_text(0),
+           .revision = static_cast<std::size_t>(query.column_int64(1)),
+           .session_state = query.column_text(2)});
+    for (const auto &item : items) {
+      terminalize(connection, item.id, item.revision, "pending", "suppressed",
+                  item.session_state == "muted" ? "muted" : "disconnected",
+                  now_ms, next_id());
+      ++changed;
+    }
+  }
+  if (changed < limit) {
+    auto query = connection.prepare(
+        "SELECT intent_id,state_version,expires_at_ms FROM "
+        "voice_narration_intent WHERE state='generating' AND lease_until_ms<=? "
+        "LIMIT ?");
+    query.bind(1, now_ms);
+    query.bind(2, static_cast<std::int64_t>(remaining()));
+    struct Item {
+      std::string id;
+      std::size_t revision{};
+      std::int64_t expires_at_ms{};
+    };
+    std::vector<Item> items;
+    while (query.step())
+      items.push_back(
+          {.id = query.column_text(0),
+           .revision = static_cast<std::size_t>(query.column_int64(1)),
+           .expires_at_ms = query.column_int64(2)});
+    for (const auto &item : items) {
+      if (generation_is_live && generation_is_live(item.id))
+        continue;
+      if (item.expires_at_ms <= now_ms) {
+        terminalize(connection, item.id, item.revision, "generating", "expired",
+                    "stale", now_ms, next_id());
+      } else {
+        auto release = connection.prepare(
+            "UPDATE voice_narration_intent SET state='pending',"
+            "state_version=state_version+1,lease_owner=NULL,lease_token=NULL,"
+            "lease_until_ms=NULL,model_status='not_requested' WHERE "
+            "intent_id=? AND state='generating' AND state_version=?");
+        release.bind(1, item.id);
+        release.bind(2, static_cast<std::int64_t>(item.revision));
+        release.execute();
+        if (connection.changes() == 1)
+          insert_narration_transition(connection, next_id(), item.id,
+                                      "generating", "pending", item.revision,
+                                      "lease_recovered", now_ms);
+      }
+      ++changed;
+    }
+  }
+  if (changed < limit) {
+    auto query = connection.prepare(
+        "SELECT intent.intent_id,intent.state_version,speech.state,"
+        "COALESCE(speech.last_error_code,'speech_terminal') FROM "
+        "voice_narration_intent intent JOIN speech_item speech ON "
+        "speech.speech_id=intent.speech_id WHERE intent.state='queued' AND "
+        "speech.state IN ('played','failed','expired','cancelled') LIMIT ?");
+    query.bind(1, static_cast<std::int64_t>(remaining()));
+    struct Item {
+      std::string id;
+      std::size_t revision;
+      std::string state;
+      std::string reason;
+    };
+    std::vector<Item> items;
+    while (query.step())
+      items.push_back({query.column_text(0),
+                       static_cast<std::size_t>(query.column_int64(1)),
+                       query.column_text(2), query.column_text(3)});
+    for (const auto &item : items) {
+      const auto target = item.state == "played" ? "played" : item.state;
+      terminalize(connection, item.id, item.revision, "queued", target,
+                  item.state == "played" ? "marker_completed" : item.reason,
+                  now_ms, next_id());
+      ++changed;
+    }
   }
   transaction.commit();
   return changed;

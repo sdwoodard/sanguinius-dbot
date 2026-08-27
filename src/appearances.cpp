@@ -526,15 +526,15 @@ bool validate_appearance_model_result(
     const AppearancePolicy &policy, const AppearanceModelResult &result,
     const std::vector<std::string> &supplied_memory_ids) noexcept {
   try {
-    const auto encoded = Json{{"serious_context", result.serious_context},
-                              {"serious_categories",
-                               result.serious_categories},
-                              {"should_speak", result.should_speak},
-                              {"text", result.text},
-                              {"tone", result.tone},
-                              {"memory_ids_used", result.memory_ids_used},
-                              {"confidence", result.confidence}}
-                             .dump();
+    const auto encoded = Json{
+        {"serious_context", result.serious_context},
+        {"serious_categories", result.serious_categories},
+        {"should_speak", result.should_speak},
+        {"text", result.text},
+        {"tone", result.tone},
+        {"memory_ids_used", result.memory_ids_used},
+        {"confidence",
+         result.confidence}}.dump();
     static_cast<void>(
         parse_appearance_model_result(policy, encoded, supplied_memory_ids));
     return true;
@@ -600,7 +600,12 @@ AiRequest appearance_ai_request(const AppearancePolicy &policy,
       .max_output_tokens = policy.maximum_output_tokens,
       .json_schema = AiRequest::JsonSchema{.name = "appearance_dry_run",
                                            .schema = schema.dump(),
-                                           .strict = true}};
+                                           .strict = true},
+      .purpose = AiPurpose::appearance,
+      .priority = AiPriority::optional,
+      .requester_user_id = std::nullopt,
+      .idempotency_key = "ai:appearance:" + candidate.candidate_id,
+  };
 }
 
 bool appearance_quiet_window_active(const AppearancePolicy &policy,
@@ -620,11 +625,9 @@ bool appearance_quiet_window_active(const AppearancePolicy &policy,
   });
 }
 
-std::optional<std::int64_t>
-appearance_quiet_deadline(const std::int64_t now_ms,
-                          const std::string_view timezone,
-                          const std::string_view kind,
-                          const std::string_view local_time) {
+std::optional<std::int64_t> appearance_quiet_deadline(
+    const std::int64_t now_ms, const std::string_view timezone,
+    const std::string_view kind, const std::string_view local_time) {
   using namespace std::chrono;
   if (now_ms < 0)
     return std::nullopt;
@@ -636,8 +639,8 @@ appearance_quiet_deadline(const std::int64_t now_ms,
   const auto local_now = zoned_time{zone, now}.get_local_time();
   const auto local_day = floor<days>(local_now);
   if (kind == "tonight") {
-    const auto deadline = zone->to_sys(local_day + days{1} + hours{10},
-                                       choose::earliest);
+    const auto deadline =
+        zone->to_sys(local_day + days{1} + hours{10}, choose::earliest);
     return duration_cast<milliseconds>(deadline.time_since_epoch()).count();
   }
   if (kind != "until" || local_time.size() != 5 || local_time[2] != ':' ||
@@ -652,8 +655,8 @@ appearance_quiet_deadline(const std::int64_t now_ms,
     return std::nullopt;
 
   for (int day_offset = 0; day_offset <= 1; ++day_offset) {
-    const auto target = local_day + days{day_offset} + hours{hour} +
-                        minutes{minute};
+    const auto target =
+        local_day + days{day_offset} + hours{hour} + minutes{minute};
     const auto info = zone->get_info(target);
     if (info.result == local_info::nonexistent) {
       if (target > local_now)
@@ -741,10 +744,10 @@ void AppearanceService::evaluate(AppearanceCandidate candidate) {
       ai_work_ == nullptr) {
     const auto status =
         evaluation.eligible_for_model ? "model_unavailable" : "not_requested";
-    static_cast<void>(repository_.record_final(
-        effective_policy, mode_, candidate, evaluation, decision_id,
-        ids_.next_id(), instance_id_, status, std::nullopt, delivery,
-        now_ms()));
+    static_cast<void>(
+        repository_.record_final(effective_policy, mode_, candidate, evaluation,
+                                 decision_id, ids_.next_id(), instance_id_,
+                                 status, std::nullopt, delivery, now_ms()));
     return;
   }
   const auto decision_event_id = ids_.next_id();
@@ -754,19 +757,20 @@ void AppearanceService::evaluate(AppearanceCandidate candidate) {
                                  prepared_at_ms))
     return;
   auto task_candidate = candidate;
-  const auto submitted = ai_work_->submit(
+  const auto submitted = ai_work_->submit_optional(
       [this, candidate = std::move(task_candidate), decision_id,
-       decision_event_id, effective_policy, evaluation,
-       delivery,
+       decision_event_id, effective_policy, evaluation, delivery,
        prepared_at_ms](const std::stop_token stop) mutable {
         std::optional<AppearanceModelResult> result;
         std::string status{"model_error"};
         try {
           result = parse_appearance_model_result(
               effective_policy,
-              ai_client_->generate(
-                  appearance_ai_request(effective_policy, candidate, persona_),
-                  stop),
+              ai_client_
+                  ->generate(appearance_ai_request(effective_policy, candidate,
+                                                   persona_),
+                             stop)
+                  .text,
               candidate.supplied_memory_ids);
           status = result->serious_context
                        ? "model_serious"
@@ -837,8 +841,7 @@ void AppearanceService::complete_model(
     static_cast<void>(repository_.complete_model(
         policy, mode_, candidate, prepared_evaluation, decision_id,
         std::move(event_id), "model_completion_failure", std::nullopt,
-        delivery_ids,
-        completion_time));
+        delivery_ids, completion_time));
   } catch (...) {
     diagnostics_.emit(
         {DiagnosticSeverity::error,
@@ -912,19 +915,13 @@ std::string AppearanceService::recent() {
 
 std::string AppearanceService::member_status_summary() {
   const auto state = repository_.control_summary(now_ms());
-  std::ostringstream output;
-  output << "kill_switch="
-         << (state.globally_disabled ? "active" : "clear")
-         << ", quiet=" << (state.quiet_until_ms ? "active" : "inactive");
-  if (state.quiet_until_ms) {
-    const std::chrono::sys_time<std::chrono::milliseconds> deadline{
-        std::chrono::milliseconds{*state.quiet_until_ms}};
-    const std::chrono::zoned_time local{
-        std::chrono::locate_zone(timezone_), deadline};
-    output << ", quiet_until="
-           << std::format("{:%Y-%m-%d %H:%M %Z}", local);
-  }
-  return bounded_response(output.str());
+  if (mode_ == AppearanceMode::off)
+    return "unavailable";
+  if (state.globally_disabled || mode_ != AppearanceMode::live)
+    return "disabled";
+  if (state.quiet_until_ms)
+    return "quiet";
+  return "ready";
 }
 
 std::string AppearanceService::status_summary() {
@@ -932,8 +929,7 @@ std::string AppearanceService::status_summary() {
   std::ostringstream output;
   output << "configured=" << appearance_mode_name(mode_)
          << ", persisted=" << appearance_mode_name(state.persisted_mode)
-         << ", kill_switch="
-         << (state.globally_disabled ? "active" : "clear")
+         << ", kill_switch=" << (state.globally_disabled ? "active" : "clear")
          << ", quiet=" << (state.quiet_until_ms ? "active" : "inactive")
          << (state.quiet_until_ms
                  ? ", quiet_until_ms=" + std::to_string(*state.quiet_until_ms)
@@ -944,8 +940,8 @@ std::string AppearanceService::status_summary() {
          << ", outbox_ambiguous=" << state.ambiguous_outbox
          << ", model_failures_1h=" << state.recent_model_failures
          << ", delivery_failures_1h=" << state.recent_delivery_failures
-         << ", feedback=" << state.feedback_more << "/"
-         << state.feedback_less << "/" << state.feedback_not_relevant
+         << ", feedback=" << state.feedback_more << "/" << state.feedback_less
+         << "/" << state.feedback_not_relevant
          << ", recommendation=" << state.recommendation;
   if (state.last_queued_at_ms)
     output << ", last_queued_ms=" << *state.last_queued_at_ms;
@@ -956,6 +952,10 @@ std::string AppearanceService::status_summary() {
   if (!state.theme_review_keys.empty())
     output << ", theme_review_count=" << state.theme_review_keys.size();
   return bounded_response(output.str());
+}
+
+bool AppearanceService::operator_disabled() {
+  return repository_.control_summary(now_ms()).globally_disabled;
 }
 
 std::string AppearanceService::set_callback_consent(
@@ -971,20 +971,21 @@ std::string AppearanceService::set_callback_consent(
                  : "Appearance callbacks are disabled.";
 }
 
-std::string AppearanceService::set_quiet(
-    const DiscordSnowflake actor_user_id,
-    const std::optional<std::int64_t> until_ms, std::string reason,
-    std::string request_value,
-    std::string idempotency_key, std::string correlation_id) {
-  const auto result = repository_.set_quiet(AppearanceQuietMutation{
-      .actor_user_id = actor_user_id,
-      .quiet_until_ms = until_ms,
-      .reason = std::move(reason),
-      .request_value = std::move(request_value),
-      .event_id = ids_.next_id(),
-      .idempotency_key = std::move(idempotency_key),
-      .correlation_id = std::move(correlation_id),
-      .now_ms = now_ms()});
+std::string
+AppearanceService::set_quiet(const DiscordSnowflake actor_user_id,
+                             const std::optional<std::int64_t> until_ms,
+                             std::string reason, std::string request_value,
+                             std::string idempotency_key,
+                             std::string correlation_id) {
+  const auto result = repository_.set_quiet(
+      AppearanceQuietMutation{.actor_user_id = actor_user_id,
+                              .quiet_until_ms = until_ms,
+                              .reason = std::move(reason),
+                              .request_value = std::move(request_value),
+                              .event_id = ids_.next_id(),
+                              .idempotency_key = std::move(idempotency_key),
+                              .correlation_id = std::move(correlation_id),
+                              .now_ms = now_ms()});
   switch (result) {
   case AppearanceMutationResult::applied:
     return until_ms ? "Server-wide appearance quiet is active."
@@ -1018,8 +1019,10 @@ std::string AppearanceService::set_global_disabled(
   if (result == AppearanceMutationResult::unchanged)
     return disabled ? "Live appearances were already globally disabled."
                     : "The global appearance kill switch was already clear.";
-  return disabled ? "Live appearances are globally disabled; unsent work was cancelled."
-                  : "The global appearance kill switch is clear. Configured mode is unchanged.";
+  return disabled ? "Live appearances are globally disabled; unsent work was "
+                    "cancelled."
+                  : "The global appearance kill switch is clear. Configured "
+                    "mode is unchanged.";
 }
 
 std::string
@@ -1030,12 +1033,13 @@ AppearanceService::feedback(const AppearanceFeedbackMutation &request) {
   prepared.now_ms = now_ms();
   if (prepared.action == AppearanceFeedbackAction::quiet_tonight ||
       prepared.control_id)
-    prepared.quiet_until_ms = appearance_quiet_deadline(
-        prepared.now_ms, timezone_, "tonight");
+    prepared.quiet_until_ms =
+        appearance_quiet_deadline(prepared.now_ms, timezone_, "tonight");
   const auto result = repository_.record_feedback(prepared);
   switch (result) {
   case AppearanceMutationResult::quiet_applied:
-    return "Feedback recorded privately. Server-wide appearance quiet is active until tomorrow at 10:00 AM.";
+    return "Feedback recorded privately. Server-wide appearance quiet is "
+           "active until tomorrow at 10:00 AM.";
   case AppearanceMutationResult::applied:
     return "Your appearance feedback was recorded privately.";
   case AppearanceMutationResult::unchanged:
@@ -1061,7 +1065,8 @@ std::string AppearanceService::trigger_owner_live_safe(
   prepared.event_id = ids_.next_id();
   auto candidate = repository_.simulate(policy_, prepared);
   decorate_runtime(candidate, policy_);
-  const auto evaluation = evaluate_appearance(policy_, mode_, candidate, now_ms());
+  const auto evaluation =
+      evaluate_appearance(policy_, mode_, candidate, now_ms());
   const auto result = AppearanceModelResult{
       .serious_context = false,
       .serious_categories = {},
@@ -1086,7 +1091,8 @@ std::string AppearanceService::trigger_owner_live_safe(
 }
 
 std::optional<VerifiedAppearanceDelivery>
-AppearanceService::verify_public_delivery(const ContextMessageSnapshot &message) {
+AppearanceService::verify_public_delivery(
+    const ContextMessageSnapshot &message) {
   return repository_.verify_public_delivery(message);
 }
 
@@ -1100,9 +1106,27 @@ bool AppearanceService::scan_events() {
   if (!state.operational || state.degraded)
     return false;
   for (auto &candidate :
-       repository_.scan_events(policy_, now_ms(), instance_id_))
+       repository_.scan_events(policy_, now_ms(), instance_id_, 50))
     evaluate(std::move(candidate));
   return true;
+}
+
+bool AppearanceService::scan_event_batch(const std::size_t limit) {
+  if (limit == 0 || limit > 50)
+    throw std::invalid_argument{"Appearance event batch is invalid."};
+  emit_failure_alerts();
+  if (mode_ == AppearanceMode::off) {
+    repository_.activate_mode(mode_, now_ms());
+    return false;
+  }
+  const auto state = runtime_state_();
+  if (!state.operational || state.degraded)
+    return false;
+  auto candidates =
+      repository_.scan_events(policy_, now_ms(), instance_id_, limit);
+  for (auto &candidate : candidates)
+    evaluate(std::move(candidate));
+  return repository_.event_scan_backlog();
 }
 
 void AppearanceService::emit_failure_alerts() noexcept {

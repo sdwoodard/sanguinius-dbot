@@ -70,17 +70,16 @@ public:
           item.state != SpeechState::pending || item.earliest_at_ms > now_ms ||
           (item.expires_at_ms && *item.expires_at_ms <= now_ms))
         continue;
-      const auto preferred =
-          !selected || item.priority > selected->priority ||
-          (item.priority == selected->priority &&
-           item.narration_rank > selected->narration_rank) ||
-          (item.priority == selected->priority &&
-           item.narration_rank == selected->narration_rank &&
-           item.earliest_at_ms < selected->earliest_at_ms) ||
-          (item.priority == selected->priority &&
-           item.narration_rank == selected->narration_rank &&
-           item.earliest_at_ms == selected->earliest_at_ms &&
-           item.created_at_ms < selected->created_at_ms);
+      const auto preferred = !selected || item.priority > selected->priority ||
+                             (item.priority == selected->priority &&
+                              item.narration_rank > selected->narration_rank) ||
+                             (item.priority == selected->priority &&
+                              item.narration_rank == selected->narration_rank &&
+                              item.earliest_at_ms < selected->earliest_at_ms) ||
+                             (item.priority == selected->priority &&
+                              item.narration_rank == selected->narration_rank &&
+                              item.earliest_at_ms == selected->earliest_at_ms &&
+                              item.created_at_ms < selected->created_at_ms);
       if (preferred)
         selected = &item;
     }
@@ -192,13 +191,16 @@ public:
     return {.accepted = true, .replay = false, .usage = {}};
   }
 
-  SpeechMutationStatus
-  complete_usage(const TtsUsageCompletion &) override {
+  SpeechMutationStatus complete_usage(const TtsUsageCompletion &) override {
     return SpeechMutationStatus::applied;
   }
 
-  std::optional<TtsCacheMetadata>
-  cache_metadata(std::string_view, std::int64_t) override {
+  SpeechMutationStatus release_usage(std::string_view) override {
+    return SpeechMutationStatus::applied;
+  }
+
+  std::optional<TtsCacheMetadata> cache_metadata(std::string_view,
+                                                 std::int64_t) override {
     return std::nullopt;
   }
 
@@ -315,6 +317,8 @@ public:
   }
   TtsCacheMutationResult purge() override {
     const std::scoped_lock lock{mutex_};
+    if (purge_fails_)
+      throw std::runtime_error{"Injected TTS cache purge failure."};
     auto result = TtsCacheMutationResult{.removed_keys = purge_removed_keys_};
     for (const auto &key : purge_removed_keys_)
       entries_.erase(key);
@@ -336,16 +340,18 @@ public:
     const std::scoped_lock lock{mutex_};
     purge_removed_keys_ = std::move(keys);
   }
+  void fail_purge() {
+    const std::scoped_lock lock{mutex_};
+    purge_fails_ = true;
+  }
   void block_writes() {
     const std::scoped_lock lock{mutex_};
     block_writes_ = true;
     write_entered_ = false;
   }
-  [[nodiscard]] bool
-  wait_for_write(std::chrono::milliseconds timeout) const {
+  [[nodiscard]] bool wait_for_write(std::chrono::milliseconds timeout) const {
     std::unique_lock lock{mutex_};
-    return changed_.wait_for(lock, timeout,
-                             [this] { return write_entered_; });
+    return changed_.wait_for(lock, timeout, [this] { return write_entered_; });
   }
   void release_writes() {
     const std::scoped_lock lock{mutex_};
@@ -365,6 +371,7 @@ private:
   TtsCacheHealth health_;
   bool block_writes_{};
   bool write_entered_{};
+  bool purge_fails_{};
 };
 
 } // namespace sanguinius::test

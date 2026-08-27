@@ -89,6 +89,7 @@ struct TarotHistoryPage {
   std::vector<TarotHistoryEntry> entries;
   std::size_t offset{};
   std::size_t total{};
+  std::optional<std::string> previous_custom_id;
   std::optional<std::string> next_custom_id;
 };
 

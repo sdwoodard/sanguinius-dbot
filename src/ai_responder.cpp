@@ -64,8 +64,7 @@ std::optional<std::string> prompt_after_bot_mention(std::string_view content,
   return std::string{content.substr(prompt_start)};
 }
 
-AiResponder::AiResponder(const AiClient &client,
-                         AiWorkService &work,
+AiResponder::AiResponder(const AiClient &client, AiWorkService &work,
                          DiscordConversation &conversation,
                          DiscordTextDelivery &delivery,
                          Diagnostics &diagnostics, std::string persona,
@@ -73,8 +72,7 @@ AiResponder::AiResponder(const AiClient &client,
                          const FeatureConfiguration features)
     : client_{client}, conversation_{conversation}, delivery_{delivery},
       diagnostics_{diagnostics}, compiler_{std::move(persona)},
-      relationships_{relationships}, features_{features},
-      work_{work} {}
+      relationships_{relationships}, features_{features}, work_{work} {}
 
 AiResponder::~AiResponder() { stop(); }
 
@@ -90,7 +88,7 @@ bool AiResponder::handles(const IncomingMessage &message) const {
 
 SubmitResult AiResponder::enqueue(IncomingMessage message) {
   return work_.submit([this, message = std::move(message)](
-                                 const std::stop_token stop_token) {
+                          const std::stop_token stop_token) {
     try {
       respond(message, stop_token);
     } catch (const OperationCancelled &) {
@@ -112,9 +110,7 @@ SubmitResult AiResponder::enqueue(IncomingMessage message) {
   });
 }
 
-QueueSnapshot AiResponder::queue_snapshot() const {
-  return work_.snapshot();
-}
+QueueSnapshot AiResponder::queue_snapshot() const { return work_.snapshot(); }
 
 void AiResponder::respond(const IncomingMessage &message,
                           const std::stop_token stop_token) const {
@@ -144,28 +140,30 @@ void AiResponder::respond(const IncomingMessage &message,
   }
 
   const auto current_request =
-      prompt_after_bot_mention(message.content, message.bot_user_id).value_or("");
+      prompt_after_bot_mention(message.content, message.bot_user_id)
+          .value_or("");
   PreparedPromptContext social;
   if (relationships_ != nullptr) {
     social = relationships_->prepare_prompt(
         message, current_request, replied ? replied->content : std::string{});
-    if (social.status == PromptPreparationStatus::duplicate) return;
+    if (social.status == PromptPreparationStatus::duplicate)
+      return;
   }
   const auto fail_attempt =
       [this, &message, &social](const std::string_view outcome,
-                               const std::string_view error_code) noexcept {
-        if (!social.attempt_id || relationships_ == nullptr) return;
+                                const std::string_view error_code) noexcept {
+        if (!social.attempt_id || relationships_ == nullptr)
+          return;
         try {
-          static_cast<void>(relationships_->fail_prompt(
-              *social.attempt_id, outcome, error_code));
+          static_cast<void>(relationships_->fail_prompt(*social.attempt_id,
+                                                        outcome, error_code));
         } catch (const std::exception &error) {
           diagnostics_.emit({DiagnosticSeverity::error, "ai.prompt_attempt",
                              error.what(), message.correlation_id});
         } catch (...) {
-          diagnostics_.emit(
-              {DiagnosticSeverity::error, "ai.prompt_attempt",
-               "Unknown prompt-attempt finalization failure.",
-               message.correlation_id});
+          diagnostics_.emit({DiagnosticSeverity::error, "ai.prompt_attempt",
+                             "Unknown prompt-attempt finalization failure.",
+                             message.correlation_id});
         }
       };
   AiRequest request;
@@ -184,7 +182,7 @@ void AiResponder::respond(const IncomingMessage &message,
   }
   std::string response;
   try {
-    response = client_.generate(request, stop_token);
+    response = client_.generate(request, stop_token).text;
   } catch (const OperationCancelled &) {
     fail_attempt("cancelled", "shutdown");
     throw;
@@ -204,7 +202,8 @@ void AiResponder::respond(const IncomingMessage &message,
       fail_attempt("model_failed", "finalization_failed");
       throw;
     }
-    if (finalized != PromptFinalizationStatus::applied) return;
+    if (finalized != PromptFinalizationStatus::applied)
+      return;
   }
   response = limited(response, maximum_discord_reply_size);
   delivery_.reply(reply_to(message, std::move(response)));

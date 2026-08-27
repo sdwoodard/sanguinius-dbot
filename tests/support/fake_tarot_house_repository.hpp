@@ -3,6 +3,9 @@
 #include "sanguinius/tarot_house.hpp"
 #include "sanguinius/tarot_integration.hpp"
 
+#include <algorithm>
+#include <atomic>
+#include <cstddef>
 #include <functional>
 #include <optional>
 #include <string>
@@ -137,9 +140,13 @@ public:
     return observed_results;
   }
   [[nodiscard]] std::vector<HouseMutationResult>
-  reconcile_draws(std::int64_t, std::function<std::string()>) override {
+  reconcile_draws(std::int64_t, std::function<std::string()>,
+                  std::size_t limit) override {
     ++reconcile_calls;
-    return reconciled_results;
+    return {reconciled_results.begin(),
+            reconciled_results.begin() +
+                static_cast<std::ptrdiff_t>(
+                    std::min(limit, reconciled_results.size()))};
   }
   [[nodiscard]] std::vector<HouseMutationResult>
   resolve_due(std::int64_t, bool, std::function<std::string()>) override {
@@ -190,6 +197,19 @@ public:
     ++history_calls;
     return history_result;
   }
+  [[nodiscard]] HouseHistoryPage begin_history(const DiscordSnowflake &,
+                                               std::string cursor_id,
+                                               std::int64_t) override {
+    ++history_calls;
+    return history_page(std::move(cursor_id), 0);
+  }
+  [[nodiscard]] HouseHistoryPage load_history_page(const DiscordSnowflake &,
+                                                   std::string_view cursor_id,
+                                                   std::size_t page,
+                                                   std::int64_t) override {
+    ++history_calls;
+    return history_page(std::string{cursor_id}, page);
+  }
   [[nodiscard]] TarotPlayerRecord record(const DiscordSnowflake &) override {
     ++record_calls;
     return player_record;
@@ -210,7 +230,7 @@ public:
   std::size_t play_calls{};
   std::size_t resolve_calls{};
   std::size_t observe_draw_calls{};
-  std::size_t reconcile_calls{};
+  std::atomic_size_t reconcile_calls{};
   std::size_t resolve_due_calls{};
   std::size_t deadline_calls{};
   std::size_t cleanup_calls{};
@@ -244,6 +264,21 @@ public:
   TarotPlayerRecord player_record;
   HouseEconomyReport economy_result;
   TarotPlayerProjectionReport projection_result;
+
+private:
+  [[nodiscard]] HouseHistoryPage history_page(std::string cursor_id,
+                                              const std::size_t page) const {
+    const auto first =
+        std::min(page * tarot_house_history_page_size, history_result.size());
+    const auto last =
+        std::min(first + tarot_house_history_page_size, history_result.size());
+    return {.cursor_id = std::move(cursor_id),
+            .page = page,
+            .total = history_result.size(),
+            .wagers = std::vector<HouseWagerRecord>(
+                history_result.begin() + static_cast<std::ptrdiff_t>(first),
+                history_result.begin() + static_cast<std::ptrdiff_t>(last))};
+  }
 };
 
 class FakeTarotIntegrationRepository final : public TarotIntegrationRepository {
@@ -252,9 +287,14 @@ public:
   [[nodiscard]] TarotIntegrationReport
   scan(std::int64_t, std::size_t, std::function<std::string()>,
        const TarotIntegrationSinkPolicy sink_policy = {}) override {
-    ++scan_calls;
     last_sink_policy = sink_policy;
+    ++scan_calls;
     return report;
+  }
+  [[nodiscard]] std::size_t suppress_disabled(std::int64_t,
+                                              std::size_t) override {
+    ++suppress_disabled_calls;
+    return suppress_disabled_result;
   }
   [[nodiscard]] bool retry(const std::string_view source_event_id,
                            std::int64_t) override {
@@ -265,7 +305,9 @@ public:
   [[nodiscard]] TarotIntegrationReport inspect() override { return report; }
 
   std::size_t schedule_calls{};
-  std::size_t scan_calls{};
+  std::atomic_size_t scan_calls{};
+  std::atomic_size_t suppress_disabled_calls{};
+  std::size_t suppress_disabled_result{};
   std::size_t retry_calls{};
   std::string last_retry_reference;
   bool retry_result{};

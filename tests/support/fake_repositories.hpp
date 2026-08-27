@@ -19,6 +19,11 @@ struct RecordedStop {
   ApplicationStopReason reason{ApplicationStopReason::clean_shutdown};
 };
 
+struct RecordedHeartbeat {
+  std::string instance_id;
+  std::int64_t heartbeat_at_ms{};
+};
+
 class FakeApplicationInstanceRepository final
     : public ApplicationInstanceRepository {
 public:
@@ -40,6 +45,12 @@ public:
     stops_.push_back({instance_id, stopped_at_ms, reason});
   }
 
+  void record_heartbeat(const std::string &instance_id,
+                        const std::int64_t heartbeat_at_ms) override {
+    std::scoped_lock lock{mutex_};
+    heartbeats_.push_back({instance_id, heartbeat_at_ms});
+  }
+
   [[nodiscard]] std::vector<ApplicationInstanceRecord> starts() const {
     std::scoped_lock lock{mutex_};
     return starts_;
@@ -50,12 +61,18 @@ public:
     return stops_;
   }
 
+  [[nodiscard]] std::vector<RecordedHeartbeat> heartbeats() const {
+    std::scoped_lock lock{mutex_};
+    return heartbeats_;
+  }
+
   void fail_start(bool value = true) { fail_start_ = value; }
   void fail_stop(bool value = true) { fail_stop_ = value; }
 
 private:
   mutable std::mutex mutex_;
   std::vector<ApplicationInstanceRecord> starts_;
+  std::vector<RecordedHeartbeat> heartbeats_;
   std::vector<RecordedStop> stops_;
   bool fail_start_{false};
   bool fail_stop_{false};
@@ -121,12 +138,12 @@ public:
     return changed_.wait_for(lock, timeout, [this] { return entered_; });
   }
 
-  [[nodiscard]] bool wait_until_entered_count(
-      const std::size_t count,
-      const std::chrono::milliseconds timeout) const {
+  [[nodiscard]] bool
+  wait_until_entered_count(const std::size_t count,
+                           const std::chrono::milliseconds timeout) const {
     std::unique_lock lock{mutex_};
-    return changed_.wait_for(
-        lock, timeout, [this, count] { return entered_count_ >= count; });
+    return changed_.wait_for(lock, timeout,
+                             [this, count] { return entered_count_ >= count; });
   }
 
 private:

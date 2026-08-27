@@ -15,18 +15,20 @@
 #include "sanguinius/id_generator.hpp"
 #include "sanguinius/message_log.hpp"
 #include "sanguinius/persistent_id.hpp"
-#include "sanguinius/repositories.hpp"
-#include "sanguinius/relationships.hpp"
 #include "sanguinius/random.hpp"
+#include "sanguinius/relationships.hpp"
+#include "sanguinius/repositories.hpp"
+#include "sanguinius/retention.hpp"
+#include "sanguinius/safety_controls.hpp"
 #include "sanguinius/server_scope_policy.hpp"
 #include "sanguinius/speech_service.hpp"
 #include "sanguinius/tarot.hpp"
 #include "sanguinius/tarot_house.hpp"
 #include "sanguinius/tarot_integration.hpp"
-#include "sanguinius/wagers.hpp"
+#include "sanguinius/voice_input.hpp"
 #include "sanguinius/vox.hpp"
 #include "sanguinius/vox_narration.hpp"
-#include "sanguinius/voice_input.hpp"
+#include "sanguinius/wagers.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -100,6 +102,8 @@ struct ApplicationDependencies {
   std::unique_ptr<TextToSpeechClient> text_to_speech;
   std::unique_ptr<AudioNormalizer> audio_normalizer;
   std::unique_ptr<TtsCache> tts_cache;
+  std::unique_ptr<RuntimeFeatureControlRepository> runtime_feature_controls;
+  std::unique_ptr<RetentionRepository> retention;
 };
 
 class Application {

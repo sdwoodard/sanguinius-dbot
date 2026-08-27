@@ -71,7 +71,7 @@ public:
       auto database = Database::open_migration(temporary.path());
       const Migrator migrator{
           persistence::production_migrations(), {"test", "revision"}, clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 15);
+      REQUIRE(migrator.apply(database.connection()).current_version == 16);
     }
     open_runtime();
     SqliteCoreIdentityRepository identities{context};
@@ -905,6 +905,9 @@ TEST_CASE("participant history uses target-bound expiring five-item snapshots",
        .cursor_id = std::nullopt,
        .next_id = fixture.ids()});
   REQUIRE(first.wagers.size() == 5);
+  REQUIRE(first.page == 0);
+  REQUIRE(first.total == 6);
+  REQUIRE_FALSE(first.previous_cursor_id.has_value());
   REQUIRE(first.next_cursor_id.has_value());
   const auto wrong_user = fixture.wagers->history(
       {.invocation = fixture.call(WagerFixture::target, "history-wrong", 3'001),
@@ -920,6 +923,9 @@ TEST_CASE("participant history uses target-bound expiring five-item snapshots",
        .next_id = fixture.ids()});
   REQUIRE(second.status == WagerMutationStatus::applied);
   REQUIRE(second.wagers.size() == 1);
+  REQUIRE(second.page == 1);
+  REQUIRE(second.total == 6);
+  REQUIRE(second.previous_cursor_id.has_value());
   REQUIRE_FALSE(second.next_cursor_id.has_value());
   const auto expired = fixture.wagers->history(
       {.invocation =

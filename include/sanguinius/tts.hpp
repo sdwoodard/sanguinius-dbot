@@ -33,8 +33,10 @@ enum class TtsFailureCategory {
   transport,
   timeout,
   rate_limited,
+  authentication,
   provider_rejected,
   provider_unavailable,
+  circuit_open,
   invalid_media,
   oversized_media,
   decoder_failed,
@@ -101,6 +103,12 @@ public:
   virtual ~TextToSpeechClient() = default;
   [[nodiscard]] virtual SynthesizedAudio
   synthesize(const TtsRequest &request, std::stop_token stop_token) const = 0;
+  virtual void provider_response_validated() const {}
+  virtual void
+  provider_response_rejected(TtsFailureCategory /*category*/) const {}
+  [[nodiscard]] virtual std::string provider_circuit_state() const {
+    return "closed";
+  }
 };
 
 class AudioNormalizer {
@@ -113,10 +121,10 @@ public:
 };
 
 [[nodiscard]] NormalizedTtsText normalize_tts_text(std::string_view input);
-[[nodiscard]] std::int64_t estimated_tts_cost_micro_usd(
-    std::size_t scalar_count);
-[[nodiscard]] bool wav_media_signature(std::span<const std::byte> bytes)
-    noexcept;
+[[nodiscard]] std::int64_t
+estimated_tts_cost_micro_usd(std::size_t scalar_count);
+[[nodiscard]] bool
+wav_media_signature(std::span<const std::byte> bytes) noexcept;
 [[nodiscard]] std::string tts_cache_key(const NormalizedTtsText &text,
                                         const TtsRequest &request);
 [[nodiscard]] std::string sha256_hex(std::span<const std::byte> bytes);

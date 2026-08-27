@@ -58,7 +58,9 @@ public:
     return abandoned_windows;
   }
   [[nodiscard]] VoiceListeningRepositoryHealth health(std::int64_t) override {
-    return {};
+    auto result = VoiceListeningRepositoryHealth{};
+    result.kill_switch = kill_switch.load();
+    return result;
   }
 
   [[nodiscard]] bool wait_for_kill_switch_changes(

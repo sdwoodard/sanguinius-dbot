@@ -26,7 +26,8 @@ inline constexpr std::string_view appearance_scan_job_type{
 inline constexpr std::string_view appearance_purge_job_type{
     "appearance.purge.v1"};
 inline constexpr std::int64_t appearance_maximum_purge_interval_ms{60'000};
-inline constexpr std::string_view appearance_feedback_component_prefix{"sga:1:"};
+inline constexpr std::string_view appearance_feedback_component_prefix{
+    "sga:1:"};
 
 enum class AppearanceCandidateType {
   conversation,
@@ -302,7 +303,8 @@ public:
            const AppearanceSimulationRequest &request) = 0;
   [[nodiscard]] virtual std::vector<AppearanceCandidate>
   scan_events(const AppearancePolicy &policy, std::int64_t now_ms,
-              std::string_view instance_id) = 0;
+              std::string_view instance_id, std::size_t limit = 50) = 0;
+  [[nodiscard]] virtual bool event_scan_backlog() = 0;
   [[nodiscard]] virtual bool
   record_final(const AppearancePolicy &policy, AppearanceMode mode,
                const AppearanceCandidate &candidate,
@@ -318,15 +320,13 @@ public:
                 const AppearanceEvaluation &evaluation, std::string decision_id,
                 std::string event_id, std::string_view instance_id,
                 std::int64_t now_ms) = 0;
-  [[nodiscard]] virtual bool
-  complete_model(const AppearancePolicy &policy, AppearanceMode mode,
-                 const AppearanceCandidate &candidate,
-                 const AppearanceEvaluation &fresh_evaluation,
-                 std::string_view decision_id, std::string event_id,
-                 std::string model_status,
-                 std::optional<AppearanceModelResult> result,
-                 const AppearanceDeliveryIds &delivery_ids,
-                 std::int64_t now_ms) = 0;
+  [[nodiscard]] virtual bool complete_model(
+      const AppearancePolicy &policy, AppearanceMode mode,
+      const AppearanceCandidate &candidate,
+      const AppearanceEvaluation &fresh_evaluation,
+      std::string_view decision_id, std::string event_id,
+      std::string model_status, std::optional<AppearanceModelResult> result,
+      const AppearanceDeliveryIds &delivery_ids, std::int64_t now_ms) = 0;
   [[nodiscard]] virtual AppearanceMutationResult
   set_quiet(const AppearanceQuietMutation &) {
     return AppearanceMutationResult::invalid;
@@ -334,8 +334,7 @@ public:
   [[nodiscard]] virtual AppearanceMutationResult
   set_global_disabled(DiscordSnowflake actor_user_id, bool disabled,
                       std::int64_t now_ms, std::string event_id,
-                      std::string idempotency_key,
-                      std::string correlation_id) {
+                      std::string idempotency_key, std::string correlation_id) {
     static_cast<void>(actor_user_id);
     static_cast<void>(disabled);
     static_cast<void>(now_ms);
@@ -348,8 +347,9 @@ public:
   record_feedback(const AppearanceFeedbackMutation &) {
     return AppearanceMutationResult::invalid;
   }
-  [[nodiscard]] virtual AppearanceControlSummary
-  control_summary(std::int64_t) { return {}; }
+  [[nodiscard]] virtual AppearanceControlSummary control_summary(std::int64_t) {
+    return {};
+  }
   [[nodiscard]] virtual std::vector<AppearanceFailureAlert>
   claim_failure_alerts(std::int64_t) {
     return {};
@@ -385,6 +385,7 @@ public:
   [[nodiscard]] std::string recent();
   [[nodiscard]] std::string member_status_summary();
   [[nodiscard]] std::string status_summary();
+  [[nodiscard]] bool operator_disabled();
   [[nodiscard]] std::string set_callback_consent(DiscordSnowflake user_id,
                                                  bool enabled,
                                                  std::string idempotency_key,
@@ -396,17 +397,18 @@ public:
                                       std::string idempotency_key,
                                       std::string correlation_id);
   [[nodiscard]] std::optional<std::int64_t>
-  quiet_deadline(std::string_view kind,
-                 std::string_view local_time = {}) const;
-  [[nodiscard]] std::string set_global_disabled(
-      DiscordSnowflake actor_user_id, bool disabled,
-      std::string idempotency_key, std::string correlation_id);
+  quiet_deadline(std::string_view kind, std::string_view local_time = {}) const;
+  [[nodiscard]] std::string set_global_disabled(DiscordSnowflake actor_user_id,
+                                                bool disabled,
+                                                std::string idempotency_key,
+                                                std::string correlation_id);
   [[nodiscard]] std::string feedback(const AppearanceFeedbackMutation &request);
   [[nodiscard]] std::string
   trigger_owner_live_safe(const AppearanceSimulationRequest &request);
   [[nodiscard]] std::optional<VerifiedAppearanceDelivery>
   verify_public_delivery(const ContextMessageSnapshot &message);
   [[nodiscard]] bool scan_events();
+  [[nodiscard]] bool scan_event_batch(std::size_t limit = 50);
   void purge();
   [[nodiscard]] std::int64_t purge_interval_ms() const noexcept;
 

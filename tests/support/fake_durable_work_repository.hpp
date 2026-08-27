@@ -282,6 +282,23 @@ public:
     return WorkMutationStatus::applied;
   }
 
+  [[nodiscard]] WorkMutationStatus
+  cancel_claimed_job(const ClaimedScheduledJob &job,
+                     const std::int64_t) override {
+    const std::scoped_lock lock{mutex_};
+    auto *row = find_job(job.job_id);
+    if (row == nullptr)
+      return WorkMutationStatus::not_found;
+    if (!current_claim(*row, job.lease_token))
+      return WorkMutationStatus::stale_claim;
+    row->state = ScheduledJobState::cancelled;
+    row->lease_owner.clear();
+    row->lease_token.clear();
+    row->lease_until_ms = 0;
+    changed_.notify_all();
+    return WorkMutationStatus::applied;
+  }
+
   [[nodiscard]] std::optional<ClaimedOutboxMessage>
   claim_due_outbox(const std::int64_t now_ms, const std::int64_t lease_until_ms,
                    std::string lease_owner, std::string lease_token,

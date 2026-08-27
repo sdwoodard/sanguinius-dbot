@@ -381,7 +381,10 @@ TEST_CASE("authorized wager history exposes actionable exact details within "
                    "target submitted target as winner."},
       .evidence = std::vector<std::string>(10, std::string(1'000, 'e')),
       .evidence_total_count = 10,
+      .previous_cursor_id = std::nullopt,
       .next_cursor_id = std::nullopt,
+      .page = 0,
+      .total = 1,
       .controls = {},
       .exact = true,
   };

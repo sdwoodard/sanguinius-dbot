@@ -94,16 +94,23 @@ TEST_CASE("Chronicle accepts only verifier-backed delivered bot appearances",
       .content = "The exact delivered public appearance.",
       .occurred_at_ms = 500};
 
-  sanguinius::ChronicleService unverified{repository, clock, ids, {10, 20, 30},
-                                           {}, [] {}, [] {}};
+  sanguinius::ChronicleService unverified{repository, clock, ids,  {10, 20, 30},
+                                          {},         [] {}, [] {}};
   REQUIRE(unverified.canonize_message(interaction).code ==
           sanguinius::ChronicleResultCode::unauthorized);
   REQUIRE(repository.proposal_count() == 0);
 
-  const std::string decision_id{
-      "00000000-0000-4000-8000-000000009901"};
+  const std::string decision_id{"00000000-0000-4000-8000-000000009901"};
   sanguinius::ChronicleService verified{
-      repository, clock, ids, {10, 20, 30}, {}, [] {}, [] {}, 64, [] {},
+      repository,
+      clock,
+      ids,
+      {10, 20, 30},
+      {},
+      [] {},
+      [] {},
+      64,
+      [] {},
       [&](const sanguinius::ContextMessageSnapshot &message) {
         REQUIRE(message.content == interaction.context_message->content);
         return std::optional<std::pair<std::string, bool>>{
@@ -153,6 +160,10 @@ TEST_CASE(
   const auto rendered = sanguinius::render_chronicle_proposal(proposal);
   REQUIRE(rendered.content.find("TEST DATA") != std::string::npos);
   REQUIRE(rendered.embed.has_value());
+  REQUIRE(rendered.buttons.size() == 3);
+  REQUIRE(rendered.buttons[0].style == sanguinius::ButtonStyle::secondary);
+  REQUIRE(rendered.buttons[1].style == sanguinius::ButtonStyle::primary);
+  REQUIRE(rendered.buttons[2].style == sanguinius::ButtonStyle::danger);
   const auto &provenance = rendered.embed->description;
   REQUIRE(provenance.find("author: `32`") != std::string::npos);
   REQUIRE(provenance.find("message `61`") != std::string::npos);

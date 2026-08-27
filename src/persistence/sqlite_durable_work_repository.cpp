@@ -8,6 +8,8 @@
 #include "sanguinius/persistence/transaction.hpp"
 #include "sanguinius/persistent_id.hpp"
 
+#include "notice_retention.hpp"
+
 #include <nlohmann/json.hpp>
 #include <sqlite3.h>
 
@@ -220,8 +222,11 @@ void add_trace(Json &value, const std::string_view correlation_id,
     Json encoded{{"custom_id", button.custom_id},
                  {"label", button.label},
                  {"disabled", button.disabled}};
-    if (button.style != ButtonStyle::primary)
-      encoded["style"] = "secondary";
+    if (button.style != ButtonStyle::primary) {
+      encoded["style"] = button.style == ButtonStyle::secondary ? "secondary"
+                         : button.style == ButtonStyle::success ? "success"
+                                                                : "danger";
+    }
     buttons.push_back(std::move(encoded));
   }
   Json mentions = Json::array();
@@ -230,10 +235,19 @@ void add_trace(Json &value, const std::string_view correlation_id,
   }
   Json embed = nullptr;
   if (payload.request.message.embed.has_value()) {
+    Json fields = Json::array();
+    for (const auto &field : payload.request.message.embed->fields) {
+      fields.push_back({{"name", field.name},
+                        {"value", field.value},
+                        {"inline", field.inline_field}});
+    }
     embed = {{"color", payload.request.message.embed->color},
              {"title", payload.request.message.embed->title},
              {"url", payload.request.message.embed->url},
-             {"description", payload.request.message.embed->description}};
+             {"description", payload.request.message.embed->description},
+             {"fields", std::move(fields)},
+             {"footer", payload.request.message.embed->footer},
+             {"timestamp_ms", payload.request.message.embed->timestamp_ms}};
   }
   Json result{{"payload_version", 1},
               {"guild_id", payload.request.guild_id.str()},
@@ -261,16 +275,30 @@ void add_trace(Json &value, const std::string_view correlation_id,
         .url = embed.at("url").get<std::string>(),
         .description = embed.at("description").get<std::string>(),
     };
+    for (const auto &field : embed.value("fields", Json::array())) {
+      message.embed->fields.push_back(EmbedPayload::Field{
+          .name = field.at("name").get<std::string>(),
+          .value = field.at("value").get<std::string>(),
+          .inline_field = field.value("inline", false),
+      });
+    }
+    message.embed->footer = embed.value("footer", std::string{});
+    if (embed.contains("timestamp_ms") && !embed.at("timestamp_ms").is_null())
+      message.embed->timestamp_ms =
+          embed.at("timestamp_ms").get<std::int64_t>();
   }
   for (const auto &button : value.at("buttons")) {
     const auto style = button.value("style", std::string{"primary"});
-    if (style != "primary" && style != "secondary")
+    if (style != "primary" && style != "secondary" && style != "success" &&
+        style != "danger")
       throw std::runtime_error{"Unsupported public button style."};
     message.buttons.push_back(ButtonPayload{
         .custom_id = button.at("custom_id").get<std::string>(),
         .label = button.at("label").get<std::string>(),
         .disabled = button.at("disabled").get<bool>(),
         .style = style == "secondary" ? ButtonStyle::secondary
+                 : style == "success" ? ButtonStyle::success
+                 : style == "danger"  ? ButtonStyle::danger
                                       : ButtonStyle::primary,
     });
   }
@@ -605,10 +633,8 @@ decode_tarot_house_weekly_offer(const Json &value) {
     if (kind == "tarot.house-weekly-offer.v1")
       return decode_tarot_house_weekly_offer(value);
     if (kind == "vox.connect_timeout.v1" ||
-        kind == "vox.reconnect_timeout.v1" ||
-        kind == "vox.leave_timeout.v1" ||
-        kind == "vox.empty_timeout.v1" ||
-        kind == "vox.mute_expiry.v1")
+        kind == "vox.reconnect_timeout.v1" || kind == "vox.leave_timeout.v1" ||
+        kind == "vox.empty_timeout.v1" || kind == "vox.mute_expiry.v1")
       return decode_vox_timeout(value);
     if (kind == vox_tts_purge_job_type && value.is_object() &&
         value.value("payload_version", 0) == 1)
@@ -778,6 +804,7 @@ decode_tarot_house_weekly_offer(const Json &value) {
     payload.erase("token_id");
     payload["created_at_ms"] = 0;
     payload["expires_at_ms"] = expires_at - created_at;
+    detail::normalize_retained_notice_for_replay(payload);
   }
   return payload;
 }
@@ -1256,7 +1283,7 @@ std::string encode_tarot_house_weekly_offer_payload(
     const std::string_view correlation_id,
     const std::optional<std::string> &causation_event_id) {
   return encode_tarot_house_weekly_offer(payload, correlation_id,
-                                          causation_event_id)
+                                         causation_event_id)
       .dump();
 }
 
@@ -1674,6 +1701,26 @@ SqliteDurableWorkRepository::cancel_job(const std::string_view job_id,
   return query.column_text(0) == "cancelled"
              ? WorkMutationStatus::unchanged
              : WorkMutationStatus::invalid_state;
+}
+
+WorkMutationStatus
+SqliteDurableWorkRepository::cancel_claimed_job(const ClaimedScheduledJob &job,
+                                                const std::int64_t now_ms) {
+  const std::scoped_lock lock{context_->mutex()};
+  auto update = context_->connection().prepare(
+      "UPDATE scheduled_job SET state='cancelled',"
+      "updated_at_ms=max(?,updated_at_ms),terminal_at_ms=max(?,created_at_ms),"
+      "lease_owner=NULL,lease_token=NULL,lease_until_ms=NULL "
+      "WHERE job_id=? AND state='claimed' AND lease_owner=? AND lease_token=?");
+  update.bind(1, now_ms);
+  update.bind(2, now_ms);
+  update.bind(3, job.job_id);
+  update.bind(4, job.lease_owner);
+  update.bind(5, job.lease_token);
+  update.execute();
+  if (context_->connection().changes() != 0)
+    return WorkMutationStatus::applied;
+  return stale_job_status(context_->connection(), job.job_id);
 }
 
 std::optional<ClaimedOutboxMessage>

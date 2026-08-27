@@ -59,7 +59,7 @@ TEST_CASE("DPP translates Chronicle context commands and typed options",
   const auto translated =
       sanguinius::dpp_adapter_detail::translate_command_catalog(
           sanguinius::command_catalog(false, true), 42);
-  REQUIRE(translated.size() == 4);
+  REQUIRE(translated.size() == 6);
   const auto context =
       std::find_if(translated.begin(), translated.end(),
                    [](const dpp::slashcommand &command) {
@@ -108,9 +108,9 @@ TEST_CASE("DPP translates Chronicle context commands and typed options",
       title->options.begin(), title->options.end(),
       [](const dpp::command_option &option) { return option.name == "list"; });
   REQUIRE(title_list != title->options.end());
-  REQUIRE(title_list->options.size() == 2);
-  REQUIRE(title_list->options[1].name == "page");
-  REQUIRE(title_list->options[1].type == dpp::co_string);
+  REQUIRE(title_list->options.size() == 1);
+  REQUIRE(title_list->options[0].name == "recipient");
+  REQUIRE(title_list->options[0].type == dpp::co_user);
 }
 
 TEST_CASE("DPP translates owner appearance controls as one nested group",
@@ -130,7 +130,7 @@ TEST_CASE("DPP translates owner appearance controls as one nested group",
                    });
   REQUIRE(appearance != admin->options.end());
   REQUIRE(appearance->type == dpp::co_sub_command_group);
-  REQUIRE(appearance->options.size() == 6);
+  REQUIRE(appearance->options.size() == 4);
   REQUIRE(appearance->options[0].name == "simulate");
   REQUIRE(appearance->options[0].options.size() == 1);
   REQUIRE(appearance->options[0].options[0].choices.size() == 13);
@@ -154,24 +154,20 @@ TEST_CASE("DPP voice catalog and intent are independently feature gated",
                                            &dpp::command_option::name);
   REQUIRE(vox_admin != admin->options.end());
   REQUIRE(vox_admin->type == dpp::co_sub_command_group);
-  REQUIRE(vox_admin->options.size() == 7);
-  REQUIRE(vox_admin->options[5].name == "listening-disable");
-  REQUIRE(vox_admin->options[6].name == "listening-enable");
+  REQUIRE(vox_admin->options.size() == 5);
 
   const auto safety_translated =
       sanguinius::dpp_adapter_detail::translate_command_catalog(
           sanguinius::command_catalog(false, false, false, true), 42);
-  const auto safety_admin =
-      std::ranges::find(safety_translated, std::string{"sang-admin"},
-                        &dpp::slashcommand::name);
+  const auto safety_admin = std::ranges::find(
+      safety_translated, std::string{"sang-admin"}, &dpp::slashcommand::name);
   REQUIRE(safety_admin != safety_translated.end());
-  const auto safety_vox =
-      std::ranges::find(safety_admin->options, std::string{"vox"},
-                        &dpp::command_option::name);
+  const auto safety_vox = std::ranges::find(
+      safety_admin->options, std::string{"safety"}, &dpp::command_option::name);
   REQUIRE(safety_vox != safety_admin->options.end());
   REQUIRE(safety_vox->options.size() == 2);
-  REQUIRE(safety_vox->options[0].name == "listening-disable");
-  REQUIRE(safety_vox->options[1].name == "listening-enable");
+  REQUIRE(safety_vox->options[0].name == "status");
+  REQUIRE(safety_vox->options[1].name == "set");
 
   sanguinius::DppClusterHost text_only{"test-token", false};
   REQUIRE((text_only.intents() & dpp::i_guild_voice_states) == 0U);
@@ -256,8 +252,8 @@ TEST_CASE("DPP voice-ready translation and binding replacement fail closed",
   REQUIRE(chunks == std::vector<std::size_t>{11'520, 11'520, 4});
   REQUIRE(std::ranges::all_of(chunks,
                               [](const auto bytes) { return bytes % 4 == 0; }));
-  REQUIRE(sanguinius::dpp_voice_gateway_detail::pcm_chunk_sizes(23'043)
-              .empty());
+  REQUIRE(
+      sanguinius::dpp_voice_gateway_detail::pcm_chunk_sizes(23'043).empty());
 
   const auto undeaf = nlohmann::json::parse(
       sanguinius::dpp_voice_gateway_detail::voice_state_update_payload(
@@ -362,10 +358,10 @@ TEST_CASE(
                                        &dpp::slashcommand::name);
   REQUIRE(admin != translated.end());
   REQUIRE(admin->options.size() == 1);
-  REQUIRE(admin->options[0].name == "appearance");
+  REQUIRE(admin->options[0].name == "safety");
   REQUIRE(admin->options[0].options.size() == 2);
-  REQUIRE(admin->options[0].options[0].name == "disable");
-  REQUIRE(admin->options[0].options[1].name == "enable");
+  REQUIRE(admin->options[0].options[0].name == "status");
+  REQUIRE(admin->options[0].options[1].name == "set");
 }
 
 TEST_CASE(

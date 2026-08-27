@@ -3,6 +3,8 @@
 #include "sanguinius/persistence/transaction.hpp"
 #include "sanguinius/persistent_id.hpp"
 
+#include "notice_retention.hpp"
+
 #include <nlohmann/json.hpp>
 #include <sqlite3.h>
 
@@ -55,12 +57,13 @@ void validate_notice_content(const PendingNoticeContent &content) {
 encode_notice_content(const PendingNoticeContent &content) {
   auto actions = nlohmann::json::array();
   for (const auto &action : content.actions) {
-    actions.push_back({{"custom_id", action.custom_id},
-                       {"label", action.label}});
+    actions.push_back(
+        {{"custom_id", action.custom_id}, {"label", action.label}});
   }
   return nlohmann::json{{"title", content.title},
                         {"body", content.body},
-                        {"actions", std::move(actions)}}.dump();
+                        {"actions", std::move(actions)}}
+      .dump();
 }
 
 [[nodiscard]] PendingNoticeContent
@@ -295,14 +298,31 @@ void SqliteApplicationInstanceRepository::record_start(
   auto statement = context_->connection().prepare(
       "INSERT INTO application_instance "
       "(instance_id, application_version, git_revision, hostname, process_id, "
-      " started_at_ms) VALUES (?, ?, ?, ?, ?, ?)");
+      " started_at_ms, heartbeat_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)");
   statement.bind(1, record.instance_id);
   statement.bind(2, record.application_version);
   statement.bind(3, record.git_revision);
   statement.bind(4, record.hostname);
   statement.bind(5, record.process_id);
   statement.bind(6, record.started_at_ms);
+  statement.bind(7, record.started_at_ms);
   statement.execute();
+}
+
+void SqliteApplicationInstanceRepository::record_heartbeat(
+    const std::string &instance_id, const std::int64_t heartbeat_at_ms) {
+  const std::scoped_lock lock{context_->mutex()};
+  if (!valid_uuid_v4(instance_id))
+    throw std::invalid_argument{"Application instance ID is invalid."};
+  validate_timestamp(heartbeat_at_ms);
+  auto statement = context_->connection().prepare(
+      "UPDATE application_instance SET heartbeat_at_ms=max(heartbeat_at_ms,?) "
+      "WHERE instance_id=? AND stopped_at_ms IS NULL");
+  statement.bind(1, heartbeat_at_ms);
+  statement.bind(2, instance_id);
+  statement.execute();
+  if (context_->connection().changes() != 1)
+    throw std::runtime_error{"Active application heartbeat target is missing."};
 }
 
 void SqliteApplicationInstanceRepository::record_stop(
@@ -542,11 +562,13 @@ CreatePendingNoticeResult SqlitePendingNoticeRepository::create_with_token(
   existing.bind(1, request.notice_idempotency_key);
   if (existing.step()) {
     auto notice = notice_record(existing);
+    const auto stored_payload = nlohmann::json::parse(existing.column_text(3));
+    const auto requested_payload = nlohmann::json::parse(payload);
     const auto token_id = existing.column_text(9);
     const bool matches =
         notice.target_user_id == request.target_user_id &&
         notice.notice_type == request.notice_type &&
-        notice.content == request.content &&
+        detail::retained_notice_matches(stored_payload, requested_payload) &&
         notice.expires_at_ms ==
             std::optional<std::int64_t>{request.expires_at_ms} &&
         existing.column_text(10) == request.target_user_id.str() &&

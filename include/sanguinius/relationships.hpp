@@ -71,9 +71,10 @@ apply_relationship_delta(RelationshipDimensions current,
 applied_relationship_delta(RelationshipDimensions old_values,
                            RelationshipDimensions new_values) noexcept;
 [[nodiscard]] QualitativeBand qualitative_band(int value) noexcept;
-[[nodiscard]] std::string_view qualitative_band_name(QualitativeBand band) noexcept;
-[[nodiscard]] std::string relationship_style_hint(
-    const RelationshipDimensions &dimensions);
+[[nodiscard]] std::string_view
+qualitative_band_name(QualitativeBand band) noexcept;
+[[nodiscard]] std::string
+relationship_style_hint(const RelationshipDimensions &dimensions);
 
 struct MemoryCandidate {
   std::string memory_id;
@@ -199,9 +200,11 @@ public:
   [[nodiscard]] virtual PromptFinalizationStatus
   fail_prompt_attempt(const FailPromptAttemptRequest &request) = 0;
   virtual std::size_t recover_prompt_attempts(std::string_view instance_id,
-                                              std::int64_t now_ms) = 0;
-  virtual std::size_t synchronize_chronicle_sources(
-      PersistentIdGenerator &ids, std::int64_t now_ms) = 0;
+                                              std::int64_t now_ms,
+                                              std::size_t limit = 50) = 0;
+  virtual std::size_t synchronize_chronicle_sources(PersistentIdGenerator &ids,
+                                                    std::int64_t now_ms,
+                                                    std::size_t limit = 50) = 0;
   [[nodiscard]] virtual RelationshipProfile
   profile(const DiscordSnowflake &viewer, const DiscordSnowflake &target,
           bool public_view, std::int64_t now_ms) = 0;
@@ -226,12 +229,14 @@ public:
   [[nodiscard]] PromptFinalizationStatus
   fail_prompt(std::string_view attempt_id, std::string_view outcome,
               std::string_view error_code);
-  [[nodiscard]] InteractionMessage profile(const IncomingInteraction &interaction);
+  [[nodiscard]] InteractionMessage
+  profile(const IncomingInteraction &interaction);
   [[nodiscard]] InteractionMessage
   set_memory_callbacks(const IncomingInteraction &interaction);
-  std::size_t recover();
+  std::size_t recover(std::size_t limit = 50);
   [[nodiscard]] ProjectionCheckResult check_projection();
-  [[nodiscard]] bool in_feature_scope(const IncomingMessage &message) const noexcept;
+  [[nodiscard]] bool
+  in_feature_scope(const IncomingMessage &message) const noexcept;
 
 private:
   RelationshipRepository &repository_;

@@ -158,12 +158,11 @@ struct VoxTimeoutJobPayload {
 
 using DurablePayload =
     std::variant<std::monostate, NoticeOutboxPayload, PublicOutboxPayload,
-                 PublicEditOutboxPayload,
-                 MemoryExpiryJobPayload, SessionSummaryJobPayload,
-                 SessionContextPurgeJobPayload, AnniversaryScanJobPayload,
-                 AppearanceScanJobPayload, AppearancePurgeJobPayload,
-                 WagerDeadlineJobPayload, HouseDeadlineJobPayload,
-                 HouseOfferExpiryJobPayload,
+                 PublicEditOutboxPayload, MemoryExpiryJobPayload,
+                 SessionSummaryJobPayload, SessionContextPurgeJobPayload,
+                 AnniversaryScanJobPayload, AppearanceScanJobPayload,
+                 AppearancePurgeJobPayload, WagerDeadlineJobPayload,
+                 HouseDeadlineJobPayload, HouseOfferExpiryJobPayload,
                  TarotIntegrationScanJobPayload,
                  TarotHouseWeeklyOfferJobPayload, VoxTimeoutJobPayload>;
 // Appearance jobs carry only the policy version; excerpts and generated prose
@@ -294,6 +293,8 @@ public:
            bool retryable) = 0;
   [[nodiscard]] virtual WorkMutationStatus cancel_job(std::string_view job_id,
                                                       std::int64_t now_ms) = 0;
+  [[nodiscard]] virtual WorkMutationStatus
+  cancel_claimed_job(const ClaimedScheduledJob &job, std::int64_t now_ms) = 0;
 
   [[nodiscard]] virtual std::optional<ClaimedOutboxMessage>
   claim_due_outbox(std::int64_t now_ms, std::int64_t lease_until_ms,

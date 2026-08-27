@@ -93,42 +93,42 @@ TEST_CASE("voice interaction privacy overwrite is coalesced and sent last",
   }
 }
 
-TEST_CASE("command catalog version fourteen is deterministic and feature gated",
+TEST_CASE("command catalog version fifteen is deterministic and feature gated",
           "[interaction][commands]") {
   const auto public_catalog = sanguinius::command_catalog(false);
-  REQUIRE(public_catalog.version == 14);
-  REQUIRE(public_catalog.commands.size() == 2);
-  REQUIRE(public_catalog.commands[0].name == "sanguinius");
-  REQUIRE(public_catalog.commands[0].subcommands.size() == 5);
-  REQUIRE(public_catalog.commands[0].subcommand_groups.size() == 1);
-  REQUIRE(public_catalog.commands[0].subcommand_groups[0].name == "quiet");
-  REQUIRE(public_catalog.commands[0].subcommand_groups[0].subcommands.size() ==
+  REQUIRE(public_catalog.version == 15);
+  REQUIRE(public_catalog.commands.size() == 4);
+  REQUIRE(public_catalog.commands[0].name == "help");
+  REQUIRE(public_catalog.commands[1].name == "repo");
+  REQUIRE(public_catalog.commands[2].name == "sanguinius");
+  REQUIRE(public_catalog.commands[2].subcommands.size() == 5);
+  REQUIRE(public_catalog.commands[2].subcommand_groups.size() == 1);
+  REQUIRE(public_catalog.commands[2].subcommand_groups[0].name == "quiet");
+  REQUIRE(public_catalog.commands[2].subcommand_groups[0].subcommands.size() ==
           4);
-  REQUIRE(public_catalog.commands[1].name == "sang-admin");
-  REQUIRE(public_catalog.commands[1].subcommands.empty());
-  REQUIRE(public_catalog.commands[1].subcommand_groups.size() == 1);
+  REQUIRE(public_catalog.commands[3].name == "sang-admin");
+  REQUIRE(public_catalog.commands[3].subcommands.empty());
+  REQUIRE(public_catalog.commands[3].subcommand_groups.size() == 1);
   const auto &safety =
-      public_catalog.commands[1].subcommand_groups[0].subcommands;
+      public_catalog.commands[3].subcommand_groups[0].subcommands;
   REQUIRE(safety.size() == 2);
-  REQUIRE(safety[0].name == "disable");
-  REQUIRE(safety[1].name == "enable");
+  REQUIRE(safety[0].name == "status");
+  REQUIRE(safety[1].name == "set");
 
   const auto admin_catalog = sanguinius::command_catalog(true);
-  REQUIRE(admin_catalog.commands.size() == 2);
-  REQUIRE(admin_catalog.commands[1].name == "sang-admin");
-  REQUIRE(admin_catalog.commands[1].subcommands.size() == 6);
-  REQUIRE(admin_catalog.commands[1].subcommand_groups.size() == 1);
-  REQUIRE(admin_catalog.commands[1].subcommand_groups[0].name == "appearance");
-  REQUIRE(admin_catalog.commands[1].subcommand_groups[0].subcommands.size() ==
-          6);
+  REQUIRE(admin_catalog.commands.size() == 4);
+  REQUIRE(admin_catalog.commands[3].name == "sang-admin");
+  REQUIRE(admin_catalog.commands[3].subcommands.size() == 6);
+  REQUIRE(admin_catalog.commands[3].subcommand_groups.size() == 2);
+  REQUIRE(admin_catalog.commands[3].subcommand_groups[1].name == "appearance");
+  REQUIRE(admin_catalog.commands[3].subcommand_groups[1].subcommands.size() ==
+          4);
   const auto &appearance =
-      admin_catalog.commands[1].subcommand_groups[0].subcommands;
+      admin_catalog.commands[3].subcommand_groups[1].subcommands;
   REQUIRE(appearance[0].name == "simulate");
   REQUIRE(appearance[1].name == "preview");
   REQUIRE(appearance[2].name == "recent");
   REQUIRE(appearance[3].name == "trigger");
-  REQUIRE(appearance[4].name == "disable");
-  REQUIRE(appearance[5].name == "enable");
   for (const auto &subcommand : appearance)
     REQUIRE(subcommand.name != "force");
   REQUIRE(sanguinius::canonical_command_snapshot(admin_catalog) ==
@@ -138,29 +138,29 @@ TEST_CASE("command catalog version fourteen is deterministic and feature gated",
           sanguinius::canonical_command_snapshot(admin_catalog));
 
   const auto chronicle_catalog = sanguinius::command_catalog(false, true);
-  REQUIRE(chronicle_catalog.commands.size() == 4);
-  REQUIRE(chronicle_catalog.commands[1].name == "chronicle");
-  REQUIRE(chronicle_catalog.commands[1].subcommands.size() == 6);
-  REQUIRE(chronicle_catalog.commands[2].kind ==
+  REQUIRE(chronicle_catalog.commands.size() == 6);
+  REQUIRE(chronicle_catalog.commands[3].name == "chronicle");
+  REQUIRE(chronicle_catalog.commands[3].subcommands.size() == 6);
+  REQUIRE(chronicle_catalog.commands[4].kind ==
           sanguinius::ApplicationCommandKind::message_context);
-  REQUIRE(chronicle_catalog.commands[2].name == "Canonize in the Chronicle");
-  REQUIRE(chronicle_catalog.commands[3].name == "sang-admin");
+  REQUIRE(chronicle_catalog.commands[4].name == "Canonize in the Chronicle");
+  REQUIRE(chronicle_catalog.commands[5].name == "sang-admin");
 
   const auto tarot_catalog = sanguinius::command_catalog(true, false, true);
-  REQUIRE(tarot_catalog.version == 14);
-  REQUIRE(tarot_catalog.commands.size() == 3);
-  REQUIRE(tarot_catalog.commands[1].name == "tarot");
-  REQUIRE(tarot_catalog.commands[1].subcommands.size() == 15);
+  REQUIRE(tarot_catalog.version == 15);
+  REQUIRE(tarot_catalog.commands.size() == 5);
+  REQUIRE(tarot_catalog.commands[3].name == "tarot");
+  REQUIRE(tarot_catalog.commands[3].subcommands.size() == 15);
   const auto &standings_visibility =
-      tarot_catalog.commands[1].subcommands[3].options[0];
+      tarot_catalog.commands[3].subcommands[3].options[0];
   REQUIRE(standings_visibility.choices[0].name == "Public");
   REQUIRE(standings_visibility.choices[0].value == "public");
   const auto &grace_visibility =
-      tarot_catalog.commands[1].subcommands[4].options[0];
+      tarot_catalog.commands[3].subcommands[4].options[0];
   REQUIRE(grace_visibility.choices[0].name == "Public flavor");
-  REQUIRE(tarot_catalog.commands[2].name == "sang-admin");
-  REQUIRE(tarot_catalog.commands[2].subcommand_groups.size() == 2);
-  const auto &tarot_admin = tarot_catalog.commands[2].subcommand_groups[1];
+  REQUIRE(tarot_catalog.commands[4].name == "sang-admin");
+  REQUIRE(tarot_catalog.commands[4].subcommand_groups.size() == 3);
+  const auto &tarot_admin = tarot_catalog.commands[4].subcommand_groups[2];
   REQUIRE(tarot_admin.name == "tarot");
   REQUIRE(tarot_admin.subcommands.size() == 14);
   REQUIRE(tarot_admin.subcommands[0].options[0].kind ==
@@ -169,55 +169,49 @@ TEST_CASE("command catalog version fourteen is deterministic and feature gated",
           sanguinius::minimum_tarot_adjustment);
   REQUIRE(tarot_admin.subcommands[0].options[0].maximum_integer ==
           sanguinius::maximum_tarot_adjustment);
-  REQUIRE(tarot_catalog.commands[1].subcommands[8].name == "wager");
-  REQUIRE(tarot_catalog.commands[1].subcommands[8].options[0].kind ==
+  REQUIRE(tarot_catalog.commands[3].subcommands[8].name == "wager");
+  REQUIRE(tarot_catalog.commands[3].subcommands[8].options[0].kind ==
           sanguinius::CommandOptionKind::user);
-  REQUIRE(tarot_catalog.commands[1].subcommands[9].name == "wagers");
-  REQUIRE(tarot_catalog.commands[1].subcommands[14].name == "disputes");
+  REQUIRE(tarot_catalog.commands[3].subcommands[9].name == "wagers");
+  REQUIRE(tarot_catalog.commands[3].subcommands[14].name == "disputes");
 
   const auto vox_catalog =
       sanguinius::command_catalog(true, false, false, true);
-  REQUIRE(vox_catalog.commands.size() == 3);
-  REQUIRE(vox_catalog.commands[1].name == "vox");
-  REQUIRE(vox_catalog.commands[1].subcommands.size() == 8);
-  REQUIRE(vox_catalog.commands[1].subcommands[0].name == "summon");
-  REQUIRE(vox_catalog.commands[1].subcommands[1].name == "status");
-  REQUIRE(vox_catalog.commands[1].subcommands[2].name == "leave");
-  REQUIRE(vox_catalog.commands[1].subcommands[3].name == "say");
-  REQUIRE(vox_catalog.commands[1].subcommands[4].name == "mute");
-  REQUIRE(vox_catalog.commands[1].subcommands[5].name == "voice");
-  REQUIRE(vox_catalog.commands[1].subcommands[6].name == "listen-start");
-  REQUIRE(vox_catalog.commands[1].subcommands[7].name == "listen-stop");
-  REQUIRE(vox_catalog.commands[2].subcommand_groups.size() == 2);
-  REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands.size() ==
-          7);
-  REQUIRE(vox_catalog.commands[2].subcommand_groups[1].name == "vox");
-  REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands[0].name ==
+  REQUIRE(vox_catalog.commands.size() == 5);
+  REQUIRE(vox_catalog.commands[3].name == "vox");
+  REQUIRE(vox_catalog.commands[3].subcommands.size() == 8);
+  REQUIRE(vox_catalog.commands[3].subcommands[0].name == "summon");
+  REQUIRE(vox_catalog.commands[3].subcommands[1].name == "status");
+  REQUIRE(vox_catalog.commands[3].subcommands[2].name == "leave");
+  REQUIRE(vox_catalog.commands[3].subcommands[3].name == "say");
+  REQUIRE(vox_catalog.commands[3].subcommands[4].name == "mute");
+  REQUIRE(vox_catalog.commands[3].subcommands[5].name == "voice");
+  REQUIRE(vox_catalog.commands[3].subcommands[6].name == "listen-start");
+  REQUIRE(vox_catalog.commands[3].subcommands[7].name == "listen-stop");
+  REQUIRE(vox_catalog.commands[4].subcommand_groups.size() == 3);
+  REQUIRE(vox_catalog.commands[4].subcommand_groups[2].subcommands.size() == 5);
+  REQUIRE(vox_catalog.commands[4].subcommand_groups[2].name == "vox");
+  REQUIRE(vox_catalog.commands[4].subcommand_groups[2].subcommands[0].name ==
           "disconnect");
-  REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands[1].name ==
+  REQUIRE(vox_catalog.commands[4].subcommand_groups[2].subcommands[1].name ==
           "speech-test");
-  REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands[2].name ==
+  REQUIRE(vox_catalog.commands[4].subcommand_groups[2].subcommands[2].name ==
           "narration-preview");
-  REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands[3].name ==
+  REQUIRE(vox_catalog.commands[4].subcommand_groups[2].subcommands[3].name ==
           "narration-enqueue");
-  REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands[4].name ==
+  REQUIRE(vox_catalog.commands[4].subcommand_groups[2].subcommands[4].name ==
           "narration-recent");
-  REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands[5].name ==
-          "listening-disable");
-  REQUIRE(vox_catalog.commands[2].subcommand_groups[1].subcommands[6].name ==
-          "listening-enable");
   const auto vox_safety_catalog =
       sanguinius::command_catalog(false, false, false, true);
-  REQUIRE(vox_safety_catalog.commands.size() == 3);
-  REQUIRE(vox_safety_catalog.commands[2].subcommand_groups.size() == 2);
-  const auto &vox_safety =
-      vox_safety_catalog.commands[2].subcommand_groups[1];
-  REQUIRE(vox_safety.name == "vox");
+  REQUIRE(vox_safety_catalog.commands.size() == 5);
+  REQUIRE(vox_safety_catalog.commands[4].subcommand_groups.size() == 1);
+  const auto &vox_safety = vox_safety_catalog.commands[4].subcommand_groups[0];
+  REQUIRE(vox_safety.name == "safety");
   REQUIRE(vox_safety.subcommands.size() == 2);
-  REQUIRE(vox_safety.subcommands[0].name == "listening-disable");
-  REQUIRE(vox_safety.subcommands[1].name == "listening-enable");
-  REQUIRE(tarot_catalog.commands[1].subcommand_groups.size() == 1);
-  REQUIRE(tarot_catalog.commands[1].subcommand_groups[0].name == "house");
+  REQUIRE(vox_safety.subcommands[0].name == "status");
+  REQUIRE(vox_safety.subcommands[1].name == "set");
+  REQUIRE(tarot_catalog.commands[3].subcommand_groups.size() == 1);
+  REQUIRE(tarot_catalog.commands[3].subcommand_groups[0].name == "house");
   REQUIRE(tarot_admin.subcommands[5].name == "house-offer");
   REQUIRE(tarot_admin.subcommands[8].name == "house-cleanup");
   REQUIRE(tarot_admin.subcommands[11].name == "wager-role");

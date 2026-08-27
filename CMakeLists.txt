@@ -130,6 +130,7 @@ sanguinius_embed_migrations(
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0013_vox_tts.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0014_vox_narration.sql"
     "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0015_voice_input.sql"
+    "${CMAKE_CURRENT_SOURCE_DIR}/migrations/0016_cross_feature_reliability.sql"
 )
 
 function(sanguinius_enable_warnings target)
@@ -147,6 +148,8 @@ function(sanguinius_enable_warnings target)
 endfunction()
 
 add_library(sanguinius_core STATIC
+    src/ai_client.cpp
+    src/ai_generation.cpp
     src/ai_responder.cpp
     src/ai_work_service.cpp
     src/appearance_policy.cpp
@@ -159,6 +162,7 @@ add_library(sanguinius_core STATIC
     src/clock.cpp
     src/command_registry.cpp
     src/config.cpp
+    src/cross_feature_orchestrator.cpp
     src/diagnostics.cpp
     src/durable_work.cpp
     src/durable_work_controls.cpp
@@ -175,9 +179,14 @@ add_library(sanguinius_core STATIC
     src/outbox.cpp
     src/pending_notice.cpp
     src/persistent_id.cpp
+    src/presentation.cpp
+    src/provider_circuit.cpp
     src/prompt_compiler.cpp
     src/random.cpp
+    src/retention.cpp
     src/relationships.cpp
+    src/safety_controls.cpp
+    src/sanguinius_overview.cpp
     src/repositories.cpp
     src/scheduler.cpp
     src/server_scope_policy.cpp
@@ -220,13 +229,17 @@ add_library(sanguinius_persistence STATIC
     src/persistence/database.cpp
     src/persistence/migrator.cpp
     src/persistence/sqlite.cpp
+    src/persistence/sqlite_ai_generation_repository.cpp
+    src/persistence/sqlite_provider_circuit_repository.cpp
     src/persistence/sqlite_chronicle_repository.cpp
     src/persistence/sqlite_chronicle_session_repository.cpp
     src/persistence/sqlite_appearance_repository.cpp
     src/persistence/sqlite_durable_work_repository.cpp
     src/persistence/sqlite_relationship_repository.cpp
+    src/persistence/sqlite_retention_repository.cpp
     src/persistence/sqlite_speech_repository.cpp
     src/persistence/sqlite_repositories.cpp
+    src/persistence/sqlite_safety_control_repository.cpp
     src/persistence/sqlite_tarot_repository.cpp
     src/persistence/sqlite_tarot_catalog_repository.cpp
     src/persistence/sqlite_tarot_draw_repository.cpp
@@ -327,6 +340,7 @@ if(BUILD_TESTING)
         tests/unit/interaction_core_tests.cpp
         tests/unit/mention_parse_tests.cpp
         tests/unit/message_logger_tests.cpp
+        tests/unit/m18_reliability_tests.cpp
         tests/unit/owner_admin_tests.cpp
         tests/unit/relationship_tests.cpp
         tests/unit/server_scope_policy_tests.cpp
@@ -354,6 +368,7 @@ if(BUILD_TESTING)
         tests/integration/database_cli_tests.cpp
         tests/integration/durable_work_tests.cpp
         tests/integration/migration_tests.cpp
+        tests/integration/m18_reliability_repository_tests.cpp
         tests/integration/repository_tests.cpp
         tests/integration/relationship_repository_tests.cpp
         tests/integration/speech_repository_tests.cpp
@@ -381,6 +396,7 @@ if(BUILD_TESTING)
 
     add_executable(sanguinius_runtime_tests
         tests/runtime/dpp_command_registration_tests.cpp
+        tests/runtime/openai_runtime_tests.cpp
         tests/runtime/tts_runtime_tests.cpp
         tests/runtime/transcription_runtime_tests.cpp
     )
@@ -409,6 +425,8 @@ if(BUILD_TESTING)
         --unset=SANGUINIUS_LOG_FILE
         --unset=SANGUINIUS_COMMAND_PREFIX
         --unset=SANGUINIUS_OPENAI_MODEL
+        --unset=SANGUINIUS_OPENAI_INPUT_MICRO_USD_PER_MILLION_TOKENS
+        --unset=SANGUINIUS_OPENAI_OUTPUT_MICRO_USD_PER_MILLION_TOKENS
         --unset=SANGUINIUS_PERSONA_FILE
         --unset=SANGUINIUS_APPEARANCE_POLICY_FILE
         --unset=SANGUINIUS_TAROT_DECK_FILE
@@ -473,6 +491,7 @@ if(BUILD_TESTING)
             SANGUINIUS_PRIMARY_CHANNEL_ID=9223372036854775808
             SANGUINIUS_OWNER_USER_ID=123456789012345678
             SANGUINIUS_DATABASE_FILE=DATABASE_PATH_SENTINEL
+            SANGUINIUS_TTS_CACHE_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/check-config-tts-cache
             SANGUINIUS_PERSONA_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/persona.txt
             SANGUINIUS_APPEARANCE_POLICY_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/appearance-policy-v2.json
             SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS=1
@@ -514,6 +533,7 @@ if(BUILD_TESTING)
             SANGUINIUS_OWNER_USER_ID=30
             SANGUINIUS_DATABASE_FILE=${CMAKE_CURRENT_BINARY_DIR}/startup-test.sqlite3
             SANGUINIUS_LOG_FILE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt/LOG_PATH_SECRET_SENTINEL/messages.log
+            SANGUINIUS_TTS_CACHE_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/startup-path-redaction-tts-cache
             SANGUINIUS_PERSONA_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/persona.txt
             SANGUINIUS_APPEARANCE_POLICY_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/appearance-policy-v2.json
             "$<TARGET_FILE:sanguinius>"
@@ -536,6 +556,7 @@ if(BUILD_TESTING)
             SANGUINIUS_OWNER_USER_ID=30
             SANGUINIUS_DATABASE_FILE=${CMAKE_CURRENT_BINARY_DIR}/missing-startup-test.sqlite3
             SANGUINIUS_LOG_FILE=${CMAKE_CURRENT_BINARY_DIR}/messages.log
+            SANGUINIUS_TTS_CACHE_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/startup-missing-tts-cache
             SANGUINIUS_PERSONA_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/persona.txt
             SANGUINIUS_APPEARANCE_POLICY_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/appearance-policy-v2.json
             "$<TARGET_FILE:sanguinius>"

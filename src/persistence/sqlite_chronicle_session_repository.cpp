@@ -1,7 +1,6 @@
 #include "sanguinius/persistence/sqlite_chronicle_session_repository.hpp"
 
 #include "sqlite_durable_work_writes.hpp"
-#include "sqlite_relationship_writes.hpp"
 
 #include "sanguinius/chronicle.hpp"
 #include "sanguinius/pending_notice.hpp"
@@ -301,10 +300,11 @@ struct SummaryReviewDeliveryIds {
   std::string_view notice_outbox_id;
 };
 
-void cancel_summary_review_delivery(
-    SqliteConnection &connection, const std::string_view session_id,
-    const std::string_view draft_id,
-    const std::optional<std::string> &notice_id, const std::int64_t now_ms) {
+void cancel_summary_review_delivery(SqliteConnection &connection,
+                                    const std::string_view session_id,
+                                    const std::string_view draft_id,
+                                    const std::optional<std::string> &notice_id,
+                                    const std::int64_t now_ms) {
   auto cancel_controls = connection.prepare(
       "UPDATE interaction_token SET state='cancelled' WHERE "
       "entity_type='chronicle_summary_draft' AND entity_id=? AND "
@@ -328,7 +328,8 @@ void cancel_summary_review_delivery(
     auto cancel_public = connection.prepare(
         "UPDATE outbox_message SET state='cancelled',lease_owner=NULL,"
         "lease_token=NULL,lease_until_ms=NULL,submission_started_at_ms=NULL,"
-        "terminal_at_ms=max(?,created_at_ms),updated_at_ms=max(?,updated_at_ms) "
+        "terminal_at_ms=max(?,created_at_ms),updated_at_ms=max(?,updated_at_ms)"
+        " "
         "WHERE kind=? AND aggregate_type='pending_notice' AND aggregate_id=? "
         "AND (state IN ('pending','failed') OR (state='claimed' AND "
         "submission_started_at_ms IS NULL))");
@@ -385,10 +386,9 @@ void enqueue_summary_review(
                               std::string{summary} + "\nReference: `" +
                               std::string{draft_id} + "`, revision " +
                               std::to_string(draft_revision) + ".",
-                      .actions =
-                          {{edit_action_id(ids.edit_token_id), "Edit"},
-                           {action_id(ids.approve_token_id), "Approve"},
-                           {action_id(ids.reject_token_id), "Reject"}},
+                      .actions = {{edit_action_id(ids.edit_token_id), "Edit"},
+                                  {action_id(ids.approve_token_id), "Approve"},
+                                  {action_id(ids.reject_token_id), "Reject"}},
                   },
               .source_aggregate_type = "chronicle_session",
               .source_aggregate_id = std::string{session_id},
@@ -413,8 +413,8 @@ void enqueue_summary_review(
       .target_user_id = owner,
       .available_at_ms = now_ms,
       .max_attempts = 5,
-      .idempotency_key = "outbox:session-review:" + std::string{session_id} +
-                         revision_suffix,
+      .idempotency_key =
+          "outbox:session-review:" + std::string{session_id} + revision_suffix,
       .provider_nonce =
           discord_nonce_from_uuid(std::string{ids.notice_outbox_id}),
       .created_at_ms = now_ms,
@@ -425,30 +425,30 @@ void enqueue_summary_review(
                                         causation_event_id)))
     throw std::runtime_error{"Chronicle summary notice conflict."};
 
-  const auto insert_action_token =
-      [&](const std::string_view token_id, const std::string_view kind,
-          const std::string_view action) {
-        auto token = connection.prepare(
-            "INSERT INTO interaction_token(token_id,token_version,"
-            "interaction_kind,action,entity_type,entity_id,expected_user_id,"
-            "guild_id,channel_id,state,expires_at_ms,idempotency_key,"
-            "created_at_ms,expected_entity_revision) "
-            "VALUES (?,1,?,?,?,?,?,?,?,'active',?,?,?,?)");
-        token.bind(1, token_id);
-        token.bind(2, kind);
-        token.bind(3, action);
-        token.bind(4, "chronicle_summary_draft");
-        token.bind(5, draft_id);
-        token.bind(6, owner.str());
-        token.bind(7, guild.str());
-        token.bind(8, channel.str());
-        token.bind(9, now_ms + review_lifetime);
-        token.bind(10, "token:" + std::string{action} + ":" +
-                           std::string{session_id} + revision_suffix);
-        token.bind(11, now_ms);
-        token.bind(12, static_cast<std::int64_t>(draft_revision));
-        token.execute();
-      };
+  const auto insert_action_token = [&](const std::string_view token_id,
+                                       const std::string_view kind,
+                                       const std::string_view action) {
+    auto token = connection.prepare(
+        "INSERT INTO interaction_token(token_id,token_version,"
+        "interaction_kind,action,entity_type,entity_id,expected_user_id,"
+        "guild_id,channel_id,state,expires_at_ms,idempotency_key,"
+        "created_at_ms,expected_entity_revision) "
+        "VALUES (?,1,?,?,?,?,?,?,?,'active',?,?,?,?)");
+    token.bind(1, token_id);
+    token.bind(2, kind);
+    token.bind(3, action);
+    token.bind(4, "chronicle_summary_draft");
+    token.bind(5, draft_id);
+    token.bind(6, owner.str());
+    token.bind(7, guild.str());
+    token.bind(8, channel.str());
+    token.bind(9, now_ms + review_lifetime);
+    token.bind(10, "token:" + std::string{action} + ":" +
+                       std::string{session_id} + revision_suffix);
+    token.bind(11, now_ms);
+    token.bind(12, static_cast<std::int64_t>(draft_revision));
+    token.execute();
+  };
   insert_action_token(ids.edit_token_id, "modal", "chronicle.summary.edit");
   insert_action_token(ids.approve_token_id, "button",
                       "chronicle.summary.approve");
@@ -915,13 +915,6 @@ WorkMutationStatus SqliteChronicleSessionRepository::complete_summary_job(
   require_uuid(request.approve_token_id);
   require_uuid(request.reject_token_id);
   require_uuid(request.notice_outbox_id);
-  std::unordered_set<std::uint64_t> relationship_users;
-  for (const auto &ids : request.relationship_event_ids) {
-    require_uuid(ids.relationship_event_id);
-    if (!ids.participant_user_id.is_set() ||
-        !relationship_users.insert(ids.participant_user_id.value()).second)
-      throw std::invalid_argument{"Invalid session relationship event IDs."};
-  }
   const std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
   Transaction transaction{connection, TransactionMode::immediate};
@@ -968,10 +961,9 @@ WorkMutationStatus SqliteChronicleSessionRepository::complete_summary_job(
     transaction.commit();
     return WorkMutationStatus::invalid_state;
   }
-  const auto transition_at_ms =
-      std::max({request.now_ms, session.column_int64(4),
-                session.column_int64(5), draft.column_int64(2),
-                draft.column_int64(3)});
+  const auto transition_at_ms = std::max(
+      {request.now_ms, session.column_int64(4), session.column_int64(5),
+       draft.column_int64(2), draft.column_int64(3)});
 
   const bool valid_candidate =
       request.candidate.has_value() &&
@@ -1080,19 +1072,19 @@ WorkMutationStatus SqliteChronicleSessionRepository::complete_summary_job(
   const auto summary = draft_row.column_text(1);
   const auto draft_revision =
       static_cast<std::size_t>(draft_row.column_int64(2));
-  enqueue_summary_review(
-      connection,
-      SummaryReviewDeliveryIds{
-          .notice_id = request.notice_id,
-          .notice_token_id = request.notice_token_id,
-          .edit_token_id = request.edit_token_id,
-          .approve_token_id = request.approve_token_id,
-          .reject_token_id = request.reject_token_id,
-          .notice_outbox_id = request.notice_outbox_id,
-      },
-      payload->session_id, payload->draft_id, guild, channel,
-      request.owner_user_id, chapter_title, summary, draft_revision,
-      transition_at_ms, request.job.correlation_id, request.event_id, true);
+  enqueue_summary_review(connection,
+                         SummaryReviewDeliveryIds{
+                             .notice_id = request.notice_id,
+                             .notice_token_id = request.notice_token_id,
+                             .edit_token_id = request.edit_token_id,
+                             .approve_token_id = request.approve_token_id,
+                             .reject_token_id = request.reject_token_id,
+                             .notice_outbox_id = request.notice_outbox_id,
+                         },
+                         payload->session_id, payload->draft_id, guild, channel,
+                         request.owner_user_id, chapter_title, summary,
+                         draft_revision, transition_at_ms,
+                         request.job.correlation_id, request.event_id, true);
 
   if (!detail::insert_event_uncommitted(
           connection,
@@ -1105,21 +1097,6 @@ WorkMutationStatus SqliteChronicleSessionRepository::complete_summary_job(
                           {"source", valid_candidate ? "model" : "fallback"}},
                      request.job.causation_event_id)))
     throw std::runtime_error{"Chronicle summary completion event conflict."};
-  for (const auto participant : validation.opted_in_participants) {
-    const auto ids =
-        std::find_if(request.relationship_event_ids.begin(),
-                     request.relationship_event_ids.end(),
-                     [participant](const auto &candidate) {
-                       return candidate.participant_user_id == participant;
-                     });
-    if (ids == request.relationship_event_ids.end())
-      throw std::invalid_argument{"Missing session relationship event ID."};
-    static_cast<void>(detail::insert_relationship_event_uncommitted(
-        connection, ids->relationship_event_id, request.event_id,
-        "chronicle.session_completed.v1", "session.completed", participant,
-        relationship_policy(RelationshipSourceKind::session_completed),
-        transition_at_ms, transition_at_ms));
-  }
   complete_claim(connection, request.job, transition_at_ms);
   transaction.commit();
   return WorkMutationStatus::applied;
@@ -1379,9 +1356,8 @@ SessionMutationResult SqliteChronicleSessionRepository::decide_summary(
   const auto summary = row.column_text(4);
   const auto occurred_at =
       row.column_is_null(5) ? request.now_ms : row.column_int64(5);
-  const auto transition_at_ms =
-      std::max({request.now_ms, occurred_at, row.column_int64(7),
-                row.column_int64(8)});
+  const auto transition_at_ms = std::max(
+      {request.now_ms, occurred_at, row.column_int64(7), row.column_int64(8)});
   const auto review_notice_id = optional_text(row, 9);
   if (request.approve) {
     auto insert = connection.prepare(
@@ -1485,11 +1461,11 @@ SessionMutationResult SqliteChronicleSessionRepository::decide_summary(
   cancel_purge.execute();
   if (request.control_token_id) {
     auto use_control = connection.prepare(
-      "UPDATE interaction_token SET state='used',used_at_ms=? WHERE "
-      "token_id=? "
-      "AND entity_type='chronicle_summary_draft' AND entity_id=? AND "
-      "expected_user_id=? AND guild_id=? AND channel_id=? AND "
-      "expected_entity_revision=? AND state='active'");
+        "UPDATE interaction_token SET state='used',used_at_ms=? WHERE "
+        "token_id=? "
+        "AND entity_type='chronicle_summary_draft' AND entity_id=? AND "
+        "expected_user_id=? AND guild_id=? AND channel_id=? AND "
+        "expected_entity_revision=? AND state='active'");
     use_control.bind(1, transition_at_ms);
     use_control.bind(2, *request.control_token_id);
     use_control.bind(3, request.draft_id);
@@ -1679,7 +1655,6 @@ TitleMutationResult SqliteChronicleSessionRepository::mutate_title(
   require_uuid(request.award_entry_id);
   require_uuid(request.event_id);
   require_uuid(request.outbox_id);
-  require_uuid(request.relationship_event_id);
   require_key(request.idempotency_key);
   require_context(request.guild_id, request.channel_id, request.actor_user_id,
                   request.now_ms);
@@ -1863,13 +1838,6 @@ TitleMutationResult SqliteChronicleSessionRepository::mutate_title(
                  request.idempotency_key,
                  Json{{"recipient_user_id", recipient.str()},
                       {"revision", revision + 1}})));
-  if (request.action == TitleAction::approve) {
-    static_cast<void>(detail::insert_relationship_event_uncommitted(
-        connection, request.relationship_event_id, request.event_id, event_type,
-        "title.awarded", recipient,
-        relationship_policy(RelationshipSourceKind::title_awarded),
-        request.now_ms, request.now_ms));
-  }
   transaction.commit();
   return {.code = ChronicleSessionResultCode::updated,
           .grant = ChronicleTitleGrant{.grant_id = request.grant_id,
@@ -1906,6 +1874,7 @@ ChronicleTitlePage SqliteChronicleSessionRepository::list_titles(
   if (!count.step())
     throw std::runtime_error{"Chronicle title count failed."};
   ChronicleTitlePage result{
+      .cursor_id = {},
       .page = page,
       .total = static_cast<std::size_t>(count.column_int64(0)),
       .grants = {},
@@ -1927,6 +1896,110 @@ ChronicleTitlePage SqliteChronicleSessionRepository::list_titles(
   query.bind(1, target.str());
   query.bind(2, static_cast<std::int64_t>(chronicle_title_page_size));
   query.bind(3, static_cast<std::int64_t>(page * chronicle_title_page_size));
+  while (query.step()) {
+    result.grants.push_back(ChronicleTitleGrant{
+        .grant_id = query.column_text(0),
+        .recipient_user_id = DiscordSnowflake::parse(query.column_text(1)),
+        .title = query.column_text(2),
+        .description = query.column_text(3),
+        .provenance = title_provenance(query.column_text(4)),
+        .state = title_state(query.column_text(5)),
+        .featured = query.column_int64(6) != 0,
+        .revision = static_cast<std::size_t>(query.column_int64(7)),
+    });
+  }
+  return result;
+}
+
+ChronicleTitlePage SqliteChronicleSessionRepository::begin_title_list(
+    const DiscordSnowflake &viewer, const DiscordSnowflake &target,
+    const bool owner_view, std::string cursor_id, const std::int64_t now_ms) {
+  require_uuid(cursor_id);
+  if (!viewer.is_set() || !target.is_set() || now_ms < 0 ||
+      now_ms > std::numeric_limits<std::int64_t>::max() -
+                   chronicle_search_cursor_lifetime_ms)
+    throw std::invalid_argument{"Invalid Chronicle title snapshot."};
+  std::unique_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  Transaction transaction{connection, TransactionMode::immediate};
+  const bool all_states = owner_view || viewer == target;
+  auto query = connection.prepare(
+      all_states
+          ? "SELECT g.grant_id FROM chronicle_title_grant g WHERE "
+            "g.recipient_user_id=? ORDER BY g.proposed_at_ms DESC,"
+            "g.grant_id DESC LIMIT 50"
+          : "SELECT g.grant_id FROM chronicle_title_grant g WHERE "
+            "g.recipient_user_id=? AND g.state='active' ORDER BY "
+            "g.featured DESC,g.proposed_at_ms DESC,g.grant_id DESC LIMIT 50");
+  query.bind(1, target.str());
+  std::vector<std::string> grants;
+  while (query.step())
+    grants.push_back(query.column_text(0));
+  auto snapshot = connection.prepare(
+      "INSERT INTO interaction_list_snapshot(snapshot_id,snapshot_kind,"
+      "viewer_user_id,subject_user_id,owner_view,item_count,created_at_ms,"
+      "expires_at_ms) VALUES(?,'chronicle_titles',?,?,?,?,?,?)");
+  snapshot.bind(1, cursor_id);
+  snapshot.bind(2, viewer.str());
+  snapshot.bind(3, target.str());
+  snapshot.bind(4, owner_view ? 1 : 0);
+  snapshot.bind(5, static_cast<std::int64_t>(grants.size()));
+  snapshot.bind(6, now_ms);
+  snapshot.bind(7, now_ms + chronicle_search_cursor_lifetime_ms);
+  snapshot.execute();
+  for (std::size_t position = 0; position < grants.size(); ++position) {
+    auto item = connection.prepare(
+        "INSERT INTO interaction_list_snapshot_item(snapshot_id,position,"
+        "item_id) VALUES(?,?,?)");
+    item.bind(1, cursor_id);
+    item.bind(2, static_cast<std::int64_t>(position));
+    item.bind(3, grants[position]);
+    item.execute();
+  }
+  transaction.commit();
+  lock.unlock();
+  return load_title_page(viewer, cursor_id, 0, now_ms);
+}
+
+ChronicleTitlePage SqliteChronicleSessionRepository::load_title_page(
+    const DiscordSnowflake &viewer, const std::string_view cursor_id,
+    const std::size_t page, const std::int64_t now_ms) {
+  require_uuid(cursor_id);
+  if (!viewer.is_set() || now_ms < 0 ||
+      page >= chronicle_search_maximum_items / chronicle_title_page_size)
+    throw std::invalid_argument{"Invalid Chronicle title page."};
+  const std::scoped_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  auto cursor = connection.prepare(
+      "SELECT item_count FROM interaction_list_snapshot WHERE snapshot_id=? "
+      "AND snapshot_kind='chronicle_titles' AND viewer_user_id=? AND "
+      "expires_at_ms>?");
+  cursor.bind(1, cursor_id);
+  cursor.bind(2, viewer.str());
+  cursor.bind(3, now_ms);
+  if (!cursor.step())
+    return {};
+  ChronicleTitlePage result{
+      .cursor_id = std::string{cursor_id},
+      .page = page,
+      .total = static_cast<std::size_t>(cursor.column_int64(0)),
+      .grants = {}};
+  const auto first = page * chronicle_title_page_size;
+  auto query = connection.prepare(
+      "SELECT g.grant_id,g.recipient_user_id,d.title,d.description,"
+      "d.provenance,g.state,g.featured,g.revision FROM "
+      "interaction_list_snapshot_item i JOIN interaction_list_snapshot s ON "
+      "s.snapshot_id=i.snapshot_id JOIN chronicle_title_grant g ON "
+      "g.grant_id=i.item_id JOIN chronicle_title_definition d ON "
+      "d.definition_id=g.definition_id WHERE i.snapshot_id=? AND "
+      "s.viewer_user_id=? AND s.expires_at_ms>? AND i.position>=? AND "
+      "i.position<? AND (s.owner_view=1 OR s.viewer_user_id=s.subject_user_id "
+      "OR g.state='active') ORDER BY i.position");
+  query.bind(1, cursor_id);
+  query.bind(2, viewer.str());
+  query.bind(3, now_ms);
+  query.bind(4, static_cast<std::int64_t>(first));
+  query.bind(5, static_cast<std::int64_t>(first + chronicle_title_page_size));
   while (query.step()) {
     result.grants.push_back(ChronicleTitleGrant{
         .grant_id = query.column_text(0),

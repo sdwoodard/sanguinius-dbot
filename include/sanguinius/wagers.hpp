@@ -237,7 +237,10 @@ struct WagerHistoryResult {
   std::vector<std::string> outcomes;
   std::vector<std::string> evidence;
   std::size_t evidence_total_count{};
+  std::optional<std::string> previous_cursor_id;
   std::optional<std::string> next_cursor_id;
+  std::size_t page{};
+  std::size_t total{};
   std::vector<WagerMutationResult::Control> controls;
   bool exact{};
 };

@@ -131,9 +131,9 @@ private:
 [[nodiscard]] bool disable_process_core_dumps() noexcept;
 
 struct TranscriptionUsagePolicy {
-  std::size_t rolling_day_windows{10};
-  std::int64_t rolling_day_micro_usd{50'000};
-  std::int64_t calendar_month_micro_usd{1'000'000};
+  std::size_t rolling_day_windows{50};
+  std::int64_t rolling_day_micro_usd{250'000};
+  std::int64_t calendar_month_micro_usd{5'000'000};
 };
 
 struct VoiceListeningConfiguration {
@@ -289,6 +289,7 @@ struct VoiceListeningHealth {
   QueueSnapshot transcription_queue;
   std::size_t callback_drops{};
   std::size_t volatile_transcript_drafts{};
+  std::string provider_circuit_state{"closed"};
   std::optional<std::string> last_failure_category;
 };
 

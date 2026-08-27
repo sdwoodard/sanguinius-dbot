@@ -1,5 +1,7 @@
 #include "sanguinius/chronicle.hpp"
 
+#include "sanguinius/presentation.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -132,11 +134,13 @@ proposal_preview(const ProposalResult &result) {
         .buttons = {ButtonPayload{.custom_id = make_chronicle_component(
                                       chronicle_component_prefix,
                                       result.actions->submit_token_id),
-                                  .label = "Approve"},
+                                  .label = "Approve",
+                                  .style = ButtonStyle::primary},
                     ButtonPayload{.custom_id = make_chronicle_component(
                                       chronicle_component_prefix,
                                       result.actions->retract_token_id),
-                                  .label = "Decline"}},
+                                  .label = "Decline",
+                                  .style = ButtonStyle::secondary}},
         .allowed_user_mentions = {},
     };
   }
@@ -151,15 +155,18 @@ proposal_preview(const ProposalResult &result) {
       .buttons = {ButtonPayload{.custom_id = make_chronicle_component(
                                     chronicle_modal_prefix,
                                     result.actions->edit_token_id),
-                                .label = "Edit"},
+                                .label = "Edit",
+                                .style = ButtonStyle::secondary},
                   ButtonPayload{.custom_id = make_chronicle_component(
                                     chronicle_component_prefix,
                                     result.actions->submit_token_id),
-                                .label = "Submit"},
+                                .label = "Submit",
+                                .style = ButtonStyle::primary},
                   ButtonPayload{.custom_id = make_chronicle_component(
                                     chronicle_component_prefix,
                                     result.actions->retract_token_id),
-                                .label = "Retract"}},
+                                .label = "Retract",
+                                .style = ButtonStyle::danger}},
       .allowed_user_mentions = {},
   };
 }
@@ -775,11 +782,10 @@ ChronicleService::canonize_message(const IncomingInteraction &interaction) {
       .body = concise_source_body(source),
       .type = ChronicleEntryType::quote,
       .visibility = ChronicleVisibility::shared,
-      .owner_test =
-          verified_appearance
-              ? verified_appearance->second
-              : controls_.test_mode &&
-                    interaction.user_id == scope_.owner_user_id,
+      .owner_test = verified_appearance
+                        ? verified_appearance->second
+                        : controls_.test_mode &&
+                              interaction.user_id == scope_.owner_user_id,
       .appearance_decision_id =
           verified_appearance
               ? std::optional<std::string>{verified_appearance->first}
@@ -806,8 +812,9 @@ ChronicleService::canonize_message(const IncomingInteraction &interaction) {
 }
 
 ProposalResult ChronicleService::propose_voice_transcript(
-    const IncomingInteraction &interaction, const std::string_view voice_window_id,
-    std::string title, std::string body) {
+    const IncomingInteraction &interaction,
+    const std::string_view voice_window_id, std::string title,
+    std::string body) {
   if (interaction.guild_id != scope_.guild_id ||
       interaction.channel_id != scope_.primary_channel_id ||
       !interaction.user_id.is_set() ||
@@ -869,9 +876,9 @@ ProposalResult ChronicleService::propose_voice_transcript(
                        preview_lifetime)
                        .count(),
       .notice_expires_at_ms =
-          now_ms + std::chrono::duration_cast<std::chrono::milliseconds>(
-                       notice_lifetime)
-                       .count(),
+          now_ms +
+          std::chrono::duration_cast<std::chrono::milliseconds>(notice_lifetime)
+              .count(),
       .renewal_dispatches = std::move(renewal_dispatches),
   });
   if (result.wake_outbox && outbox_wakeup_)
@@ -1090,9 +1097,8 @@ ChronicleService::complete_expiry(const ClaimedScheduledJob &job) {
 
 InteractionMessage
 ChronicleService::begin_memory_preview(const IncomingInteraction &interaction) {
-  const bool base_fields =
-      exact_modal_fields(interaction,
-                         {"text", "visibility", "sensitivity", "expiry"});
+  const bool base_fields = exact_modal_fields(
+      interaction, {"text", "visibility", "sensitivity", "expiry"});
   const bool tagged_fields = exact_modal_fields(
       interaction, {"text", "tags", "visibility", "sensitivity", "expiry"});
   if (!base_fields && !tagged_fields) {
@@ -1170,7 +1176,8 @@ ChronicleService::begin_memory_preview(const IncomingInteraction &interaction) {
   if (!tags.empty()) {
     tag_line = "\nTopic tags: `";
     for (std::size_t index = 0; index < tags.size(); ++index) {
-      if (index != 0) tag_line += "`, `";
+      if (index != 0)
+        tag_line += "`, `";
       tag_line += tags[index];
     }
     tag_line += "`.";
@@ -1184,10 +1191,12 @@ ChronicleService::begin_memory_preview(const IncomingInteraction &interaction) {
       .embed = std::nullopt,
       .buttons = {ButtonPayload{.custom_id = make_chronicle_component(
                                     memory_draft_component_prefix, confirm),
-                                .label = "Confirm"},
+                                .label = "Confirm",
+                                .style = ButtonStyle::primary},
                   ButtonPayload{.custom_id = make_chronicle_component(
                                     memory_draft_component_prefix, cancel),
-                                .label = "Cancel"}},
+                                .label = "Cancel",
+                                .style = ButtonStyle::danger}},
       .allowed_user_mentions = {},
   };
 }
@@ -1308,6 +1317,7 @@ ChronicleService::forget(const IncomingInteraction &interaction) {
         .custom_id =
             make_chronicle_component(memory_draft_component_prefix, token),
         .label = "Retract " + item.entity_id.substr(0, 8),
+        .style = ButtonStyle::danger,
     });
   }
   volatile_actions_.put_group(std::move(actions));
@@ -1325,7 +1335,8 @@ ModalPayload ChronicleService::remember_modal() {
                                    .style =
                                        ModalFieldPayload::Style::paragraph},
                  ModalFieldPayload{.custom_id = "tags",
-                                   .label = "Optional topic tags, comma-separated",
+                                   .label =
+                                       "Optional topic tags, comma-separated",
                                    .maximum_length = 164,
                                    .required = false},
                  ModalFieldPayload{.custom_id = "visibility",

@@ -6,20 +6,21 @@ Chronicle, a persistent original Emperor's Tarot and Fate economy, and
 persistent unsolicited appearances with off, dry-run, and conservatively
 budgeted live modes, plus feature-flagged output-only Discord voice sessions
 with owner-requested, budgeted TTS, approved static fallbacks, and optional
-post-commit Chronicle, Tarot, and appearance narration. It
-preserves two public prefix commands, answers messages that begin with a bot
-mention through the OpenAI Responses API, and writes every visible guild
-message-create event to an append-only text log. Typed configuration fixes the
-bot's feature boundary to one guild, one primary text channel, and one owner.
+post-commit Chronicle, Tarot, and appearance narration. It exposes member help
+and repository information through root slash commands, answers messages that
+begin with a bot mention through the OpenAI Responses API, and writes every
+visible guild message-create event to an append-only text log. Typed
+configuration fixes the bot's feature boundary to one guild, one primary text
+channel, and one owner.
 
 ## Commands
 
 | Command | Description |
 | --- | --- |
-| `!help` | List the supported commands. |
-| `!repo` | Link to this source repository. |
+| `/help [topic]` | Show an ephemeral, feature-aware member command guide. Owner, admin, debug, and test operations are always omitted. |
+| `/repo` | Show the source repository ephemerally. |
 
-The configured guild receives command catalog version 14. Chronicle, Tarot,
+The configured guild receives command catalog version 15. Chronicle, Tarot,
 and Vox
 commands are registered only when their corresponding feature flag is enabled;
 owner commands remain separately gated:
@@ -75,8 +76,9 @@ owner commands remain separately gated:
 | `/sang-admin vox narration-preview reference:<event UUID>` | Owner-only ephemeral inspection of one fresh, public-safe narration projection. It performs no TTS and consumes no session budget. |
 | `/sang-admin vox narration-enqueue reference:<event UUID>` | Owner-only, test-mode-gated durable observation of an explicitly test-tagged fresh event; every ordinary visibility, counterpart, mute, quiet, budget, expiry, and deduplication gate still applies. |
 | `/sang-admin vox narration-recent` | Owner-only last-ten sanitized narration states and reasons, without generated line content. |
-| `/sang-admin vox listening-disable\|listening-enable` | Owner-only durable kill switch. Disable latches before persistence, immediately disarms and scrubs capture, restores self-deaf mode or forces disconnect, and discards late provider results. If transport safety cannot be confirmed, listening becomes unavailable and TTS remains blocked until recovery. |
 | `/vox leave` | Ephemerally dismisses the active session for its summoner or the configured owner. |
+| `/sang-admin safety status` | Owner-only, public-safe view of the appearances, text AI, TTS, Vox-output, and voice-input operator kills. This safety group remains registered when the broader admin catalog is disabled. |
+| `/sang-admin safety set target:<appearances\|text-ai\|tts\|vox-output\|voice-input> mode:<enabled\|disabled>` | Owner-only durable safety control. Disable preempts the corresponding work; enable clears only the operator kill and cannot bypass configuration, budget, capability, or circuit state. |
 | `/sang-admin health` | Ephemeral owner-only health; registered only when admin commands are enabled. |
 | `/sang-admin work-recent` | Ephemeral owner-only inspection of the ten most recent redacted event/job/outbox summaries. |
 | `/sang-admin work-dead` | Ephemeral owner-only inspection of the ten most recent dead jobs and failed/dead outbox rows. |
@@ -88,8 +90,6 @@ owner commands remain separately gated:
 | `/sang-admin appearance preview reference:<uuid>` | Owner-only ephemeral inspection of a stored decision, including gates, score components, model status, shortened memory references, and any retained preview. Available in `off`. |
 | `/sang-admin appearance recent` | Owner-only ephemeral inspection of the ten latest redacted decisions, with full references accepted by `preview`, and the appearance-public-outbox invariant. Available in `off`. |
 | `/sang-admin appearance trigger fixture:owner_live_safe` | Owner-only, admin/test-mode-gated, visibly tagged one-person live delivery through the normal transaction and outbox. Configured mode must be `live`. |
-| `/sang-admin appearance disable` | Owner-only persistent global kill switch; cancels appearance rows that have never been submitted. Available without test mode or the full admin-control catalog. |
-| `/sang-admin appearance enable` | Owner-only clearing of the global kill switch; it never overrides configured `off` or `dry_run`. |
 | `/sang-admin tarot adjust amount:<integer> reason:<text>` | Owner-only, admin/test-mode-gated balanced adjustment of the owner's account. |
 | `/sang-admin tarot reverse transaction:<uuid> reason:<text>` | Owner-only, admin/test-mode-gated exact reversal of one eligible unreversed `TEST_ADJUSTMENT`; wager transfers require terminal wager cleanup. |
 | `/sang-admin tarot wager-role reference:<uuid> role:<creator\|target\|judge\|owner>` | Owner-only, test-mode-gated selection of one simulated role for a self-wager. |
@@ -112,8 +112,12 @@ not treated as commands.
 When owner administration is explicitly enabled, the transitional
 `!sang-admin health` command continues to provide a public but strictly
 redacted health snapshot in the configured primary channel. It is not listed
-by `!help` and is silent for other users or channels. Prefer the ephemeral
+by `/help` and is silent for other users or channels. Prefer the ephemeral
 slash-command form for routine use.
+
+The retired exact messages `!help` and `!repo` are silent and have no redirect
+aliases. They are excluded from unsolicited-appearance observation. The
+leading-mention AI behavior and append-only message log remain unchanged.
 
 Feature interactions are accepted only in the configured guild and primary
 channel. Ordinary slash responses are ephemeral. Discord cannot proactively
@@ -393,16 +397,23 @@ export OPENAI_API_KEY='your-api-key'
 The default model is `gpt-5.6-luna`, selected for low API cost. It does not have
 a free API tier. Review its [current model pricing and rate
 limits](https://developers.openai.com/api/docs/models/gpt-5.6-luna) and set usage
-limits in the OpenAI platform before running the bot.
+limits in the OpenAI platform before running the bot. The example configuration
+records the [official standard short-context
+rates](https://developers.openai.com/api/docs/pricing) verified on
+2026-08-27—$0.20 input and $1.20 output per million tokens. Re-audit whenever
+the model, service tier, region, or context class changes. Process defaults
+remain zero so an omitted rate always fails closed.
 
-Optional settings are:
+Runtime settings are:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SANGUINIUS_LOG_FILE` | `logs/messages.log` | Message log path. |
-| `SANGUINIUS_COMMAND_PREFIX` | `!` | Command prefix (1–8 non-space characters). |
+| `SANGUINIUS_COMMAND_PREFIX` | `!` | Prefix (1–8 non-space characters) retained only for the emergency `!sang-admin health` fallback. |
 | `SANGUINIUS_OPENAI_API_KEY_FILE` | Set by start script | OpenAI API key file. |
 | `SANGUINIUS_OPENAI_MODEL` | `gpt-5.6-luna` | Responses API model. |
+| `SANGUINIUS_OPENAI_INPUT_MICRO_USD_PER_MILLION_TOKENS` | `0` | Audited model input rate. Must be explicitly set above zero for text generation; unknown/unpriced models fail closed. |
+| `SANGUINIUS_OPENAI_OUTPUT_MICRO_USD_PER_MILLION_TOKENS` | `0` | Audited model output rate. Must be explicitly set above zero for text generation; prompts and responses are never stored in budget rows. |
 | `SANGUINIUS_PERSONA_FILE` | `config/persona.txt` | Plaintext persona instructions. |
 | `SANGUINIUS_APPEARANCE_POLICY_FILE` | `config/appearance-policy-v2.json` | Strict versioned appearance policy with the `tarot_event` candidate family. Paths are redacted in configuration output. |
 | `SANGUINIUS_TAROT_DECK_FILE` | `config/emperor-tarot-v1.json` | Strict versioned original deck catalog. Configuration output reports only its origin and version. |
@@ -410,7 +421,7 @@ Optional settings are:
 | `SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS` | `10` | Discord REST timeout, from 1 through 300 seconds. |
 | `SANGUINIUS_TIMEZONE` | `America/New_York` | IANA time zone used for the daily 10:00 Chronicle anniversary scan. |
 | `SANGUINIUS_DATABASE_FILE` | `state/sanguinius.sqlite3` | SQLite state file. Production should use an absolute path outside release directories. |
-| `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Register the full owner diagnostic/test catalog and enable transitional prefix health. Owner-only appearance kill-switch commands and, when Vox is registered, voice-listening kill-switch commands remain available when this is `false`. |
+| `SANGUINIUS_ADMIN_COMMANDS_ENABLED` | `false` | Register the full owner diagnostic/test catalog and enable transitional prefix health. Unified owner-only `/sang-admin safety` controls remain available when this is `false`. |
 | `SANGUINIUS_TEST_MODE` | `false` | Enable auditable, self-targeted durable-work test controls. |
 | `SANGUINIUS_CHRONICLE_ENABLED` | `false` | Register and enable the Living Chronicle context/slash flows. Durable memory expiry remains safe while UI access is disabled. |
 | `SANGUINIUS_TAROT_ENABLED` | `false` | Register and enable Fate balance, history, standings, recovery, peer wagers, and owner test-ledger controls. |
@@ -431,7 +442,7 @@ Optional settings are:
 | `SANGUINIUS_TAROT_HOUSE_ENABLED` | `true` | Enable deck draws, House play, and the persisted Friday offer schedule when Tarot is enabled. |
 | `SANGUINIUS_TAROT_HOUSE_EXPOSURE_CAP` | `100` | Maximum non-test profit collateral reserved by open House offers and funded House wagers. |
 | `SANGUINIUS_TAROT_HOUSE_PROFIT_CAP` | `20` | Maximum integral profit promised by any one House wager. |
-| `SANGUINIUS_TAROT_INTEGRATION_ENABLED` | `true` | Enable idempotent post-settlement integration observations and derived effects. |
+| `SANGUINIUS_TAROT_INTEGRATION_ENABLED` | `true` | Enable idempotent post-settlement integration observations and derived effects. While disabled, new observations are terminally audited as `integration_disabled` and are not replayed if the feature is later enabled. |
 | `SANGUINIUS_APPEARANCES_MODE` | `off` | Appearance engine mode: `off`, inspection-only `dry_run`, or conservatively budgeted `live`. |
 | `SANGUINIUS_VOX_ENABLED` | `false` | Register output-only Vox commands/callbacks and the Guild Voice States intent. Disabled startup still closes stale persisted sessions. |
 | `SANGUINIUS_VOX_NARRATION_ENABLED` | `false` | Enable post-commit Chronicle, Tarot, appearance, and contextual boundary narration. Requires Vox output. Disabled observations are durably suppressed rather than backlogged; direct `/vox say` and approved static controls remain available. |
@@ -440,16 +451,16 @@ Optional settings are:
 | `SANGUINIUS_TRANSCRIPTION_PROVIDER` | `disabled` | `disabled` or `openai`; disabled preserves all text/TTS behavior. |
 | `SANGUINIUS_TRANSCRIPTION_MODEL` | `gpt-transcribe` | The only Milestone 17 model. Any other value reports voice input unavailable; there is no fallback. |
 | `SANGUINIUS_TRANSCRIPTION_REQUEST_TIMEOUT_MS` | `30000` | Lowerable transcription request deadline, 1–30,000 ms. |
-| `SANGUINIUS_VOICE_INPUT_ROLLING_DAY_WINDOWS` | `10` | Lowerable accepted-window ceiling per rolling 24 hours. |
-| `SANGUINIUS_VOICE_INPUT_ROLLING_DAY_MICRO_USD` / `SANGUINIUS_VOICE_INPUT_MONTHLY_MICRO_USD` | `50000` / `1000000` | Lowerable estimated-cost ceilings ($0.05 rolling day and $1 UTC month), reserving 75 micro-USD/requested second. |
+| `SANGUINIUS_VOICE_INPUT_ROLLING_DAY_WINDOWS` | `50` | Lowerable accepted-window ceiling per rolling 24 hours. |
+| `SANGUINIUS_VOICE_INPUT_ROLLING_DAY_MICRO_USD` / `SANGUINIUS_VOICE_INPUT_MONTHLY_MICRO_USD` | `250000` / `5000000` | Lowerable estimated-cost ceilings ($0.25 rolling day and $5 UTC month), reserving 75 micro-USD/requested second. |
 | `SANGUINIUS_TTS_PROVIDER` | `disabled` | `disabled` or the fixed OpenAI speech adapter. Disabled keeps approved static/text fallback available. |
 | `SANGUINIUS_TTS_MODEL` / `SANGUINIUS_TTS_VOICE` | `tts-1` / `onyx` | Exact allowed production pair; other values fail configuration. |
 | `SANGUINIUS_TTS_CACHE_DIRECTORY` | `/var/cache/sanguinius/tts` | Absolute cache path outside releases, state, and backups. |
 | `SANGUINIUS_FFMPEG_PATH` / `SANGUINIUS_FFPROBE_PATH` | `/usr/bin/ffmpeg` / `/usr/bin/ffprobe` | Absolute tested FFmpeg 9 executables. |
 | `SANGUINIUS_TTS_FALLBACK_DIRECTORY` | `/usr/local/share/sanguinius/vox` | Absolute directory containing the approved `fallbacks-v1.json` and normalized PCM clips. |
 | `SANGUINIUS_TTS_MAXIMUM_TEXT_SCALARS` | `350` | Lowerable direct-speech input ceiling. |
-| `SANGUINIUS_TTS_ROLLING_DAY_ATTEMPTS` | `20` | Lowerable rolling 24-hour provider-attempt ceiling. |
-| `SANGUINIUS_TTS_ROLLING_DAY_MICRO_USD` / `SANGUINIUS_TTS_MONTHLY_MICRO_USD` | `100000` / `2000000` | Lowerable estimated-cost ceilings ($0.10 rolling day and $2 UTC month). |
+| `SANGUINIUS_TTS_ROLLING_DAY_ATTEMPTS` | `100` | Lowerable rolling 24-hour provider-attempt ceiling. |
+| `SANGUINIUS_TTS_ROLLING_DAY_MICRO_USD` / `SANGUINIUS_TTS_MONTHLY_MICRO_USD` | `500000` / `10000000` | Lowerable estimated-cost ceilings ($0.50 rolling day and $10 UTC month). |
 | `SANGUINIUS_TTS_CACHE_MAXIMUM_MIB` / `SANGUINIUS_TTS_CACHE_MAXIMUM_DAYS` | `128` / `30` | Lowerable cache size and age ceilings. |
 | `SANGUINIUS_TTS_MAXIMUM_DURATION_SECONDS` | `20` | Lowerable decoded-duration ceiling. |
 | `SANGUINIUS_TTS_CONNECT_TIMEOUT_MS` / `SANGUINIUS_TTS_REQUEST_TIMEOUT_MS` | `5000` / `30000` | Lowerable verified-HTTPS connect and total synthesis deadlines. |
@@ -473,9 +484,9 @@ use, and during shutdown. Discord must confirm private transcript delivery;
 failed or unknown receipts are followed by a sequenced transcript-free edit,
 and shutdown keeps that redaction path open until it resolves. If neither the
 ended-status edit nor its replacement can be confirmed, listening becomes
-unavailable and TTS remains excluded until repair or restart. `/sang-admin vox
-listening-disable` is the immediate
-durable kill switch even when the broader admin catalog is disabled. Stop and
+unavailable and TTS remains excluded until repair or restart. `/sang-admin
+safety set target:voice-input mode:disabled` is the immediate durable kill
+switch even when the broader admin catalog is disabled. Stop and
 disable preempt capture before Discord acknowledgement or worker admission;
 their audit work uses a dedicated privacy queue. A durable provider-attempt
 marker is committed before entering the network client so restart cannot
@@ -514,6 +525,8 @@ credentials, or contact the network:
 ./build/release/sanguinius db relationships rebuild --confirm
 ./build/release/sanguinius db tarot check
 ./build/release/sanguinius db tarot rebuild --confirm
+./build/release/sanguinius db invariants check
+./build/release/sanguinius db invariants rebuild --confirm-rebuildable-projections
 ./build/release/sanguinius db backup /restricted/backup/sanguinius.sqlite3
 ```
 
@@ -537,6 +550,18 @@ peer-plus-House funded obligations. It also verifies House transfer shapes,
 exposure, and combined escrow reconciliation. Health reports only open-funded
 counts, escrow/obligation totals, House exposure, dispute count, and redacted
 invariant counts—never terms, evidence, member balances, or ledger identifiers.
+`db invariants check` is the schema-v16 read-only umbrella for these domain
+checks plus SQLite/FK integrity, durable work, consumer lag/receipts, Chronicle
+FTS, complete appearance public-outbox target/provenance/payload validation,
+public-delivery dependency order, Vox speech/narration, voice kill-switch and
+listening-window transition audit chains, active-window consent/privacy gates,
+recomputed AI charges/budgets, provider-circuit and runtime-control transition
+chains, and immutable list snapshots.
+It reports and rejects undrained relationship, House, Tarot-integration,
+appearance, and Vox-narration consumer checkpoints independently.
+Its guarded rebuild refuses a recently active
+instance and changes only Chronicle FTS, relationship projections, and Tarot
+player integration projections before rerunning the umbrella check.
 
 Migration `0001_core_foundation` contains only shared identity and
 configuration state: migration history, application instances, Discord users,
@@ -684,6 +709,37 @@ indexes, and every later Tarot/appearance trigger. Catalog v14 adds bounded
 listen/stop and owner kill controls. The feature-off M17 binary can keep schema
 v15; a binary rollback restores the checksum-verified schema-v14 backup and
 catalog v13 together. Never reverse schema 15 in place.
+
+Migration `0016_cross_feature_reliability` adds the prompt-free text-generation
+budget ledger, persistent OpenAI/TTS/transcription circuits, durable text-AI,
+TTS, and Vox-output operator controls, generic invoker-bound list snapshots,
+and retention-run accounting. The list snapshot stores only stable Chronicle
+title or House-wager identifiers for five-item Previous/Next pages; the
+retention job removes it after the 15-minute interaction lifetime plus the
+24-hour replay buffer. A single
+bounded cross-feature orchestrator now wakes the accepted relationship, House,
+Tarot, appearance, and Vox consumers in dependency order while retaining their
+existing durable receipts and cursors. It also owns 60-second recovery passes;
+one consumer failure is contained and does not prevent later consumers from
+running; owner health reports each consumer as ready, backlogged, or degraded.
+A daily 04:00 UTC retention job tombstones or redacts only terminal,
+age-eligible payloads, including every terminal durable-work copy of sealed
+notice prose. Notice tombstones retain a content fingerprint so an exact
+idempotent retry still replays safely while conflicting content is rejected.
+Each run records bounded per-category counts, including TTS-cache removals or
+safe cache-failure counts; cache failures do not block database retention, and
+an atomic database-cleanup failure is recorded as a failed run. It also removes
+terminal speech rows after 30 days, terminal AI/TTS/transcription usage after
+13 months, and expired/orphaned TTS cache entries even while Vox is configured
+off. It never purges Chronicle canon, the
+event journal, relationship history, the Tarot ledger/wagers, delivery
+provenance, safety transitions, active/unknown work, or raw voice audio.
+Catalog v15 retires
+`!help`/`!repo`, adds root `/help` and `/repo`, and consolidates operator kills
+under `/sang-admin safety`. Schema v16 is forward-only: preserve the v16 copy
+and redacted diagnostics, restore the checksum-verified v15 backup, activate
+accepted M17 `2e11130`, and restore catalog v14. Never reverse schema 16 in
+place.
 
 The readable SQL for each ordered migration is
 embedded independently with its SHA-256
@@ -843,9 +899,9 @@ durable work are recovered on the next startup.
 
 The application enforces owner health requests through one reusable server
 scope policy: configured guild, then primary channel, then owner identity.
-Rejected requests generate no Discord response. Existing `!help`, `!repo`, and
-leading-mention behavior deliberately retains its triggering-channel behavior
-during the staged interaction migration.
+Rejected requests generate no Discord response. The retired exact `!help` and
+`!repo` messages are silent; leading mentions retain their configured scope and
+deterministic safety checks.
 
 ## Architecture
 
@@ -856,6 +912,38 @@ and concrete core repositories. `sanguinius_runtime` contains the D++ gateway
 and OpenAI adapters plus the production composition root. Tests use temporary
 SQLite files and deterministic fakes, so ordinary CTest runs need no Discord or
 OpenAI credentials and make no network calls.
+
+Cross-feature work is driven by `event_journal` and the accepted feature-owned
+observation rows, source keys, and cursors. Gateway/post-commit paths submit an
+O(1) wake hint only. The orchestrator coalesces wakes, limits each consumer to
+50 records per pass, self-wakes while backlog remains, and runs a recovery pass
+every 60 seconds. Raw message observation is similarly normalized once before
+identity, Chronicle-session context, and appearance-activity evaluation.
+
+All text-model work passes through transactional admission before reaching a
+two-call provider boundary. The policy caps estimated text cost at $1.25 per
+rolling 24 hours and $25 per UTC month, 300 accepted generations per rolling
+day, 30 direct requests per user per ten minutes, 16,000 UTF-8 input bytes, and
+500 output tokens. Direct, explicit-feature, and optional prose use bounded
+4:2:1 lanes with 16 of 64 queue slots reserved for direct work. Unknown or
+unpriced models fail closed. Provider records contain only safe categories,
+bounded request/correlation identifiers, timing, and usage—not prompts,
+responses, transcripts, headers, or provider bodies. Three retryable failures
+within five minutes open a five-minute persistent circuit; authentication and
+configuration failures remain open until corrected and restarted. Cancelled or
+crashed half-open probes are durably returned to an immediately retryable open
+state so one abandoned probe cannot disable a provider permanently.
+Admission reserves the full 16,000-input-token ceiling so provider framing is
+also covered, then finalizes successful attempts downward from reported usage.
+The durable sent fence is written by the provider adapter at its final
+pre-transfer boundary; local validation, cancellation, or setup failure before
+that callback releases the reservation. OpenAI text responses are bounded to
+one MiB during receipt before parsing.
+An open TTS circuit is reported as degraded and releases its known-unsent usage
+reservation, so it consumes neither a provider attempt nor estimated spend.
+TTS success resets its circuit only after media normalization succeeds, and an
+operator TTS kill interrupts active provider work before its audio can be
+cached or played; approved static/text fallbacks remain available.
 
 ## Message log
 

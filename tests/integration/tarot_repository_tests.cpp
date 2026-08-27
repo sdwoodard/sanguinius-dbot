@@ -80,7 +80,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 15);
+      REQUIRE(migrator.apply(database.connection()).current_version == 16);
     }
     context = std::make_shared<SqliteRepositoryContext>(
         Database::open_runtime(temporary.path()));
@@ -1186,7 +1186,7 @@ TEST_CASE(
     }
   }
   std::vector<std::string> snapshot_tokens;
-  for (std::size_t index = 0; index < 9; ++index)
+  for (std::size_t index = 0; index < 10; ++index)
     snapshot_tokens.push_back(uuid(2'001 + index));
   const auto bounded_history = fixture.repository->create_history_snapshot(
       {.invocation = fixture.call("property-history", 3'000),
@@ -1837,7 +1837,7 @@ TEST_CASE(
   REQUIRE(fixture.repository->balance(31) == 100);
 
   std::vector<std::string> page_tokens;
-  for (std::size_t index = 0; index < 9; ++index)
+  for (std::size_t index = 0; index < 10; ++index)
     page_tokens.push_back(uuid(60 + index));
   const auto history = fixture.repository->create_history_snapshot(
       {.invocation = fixture.call("history", 400),
@@ -1862,7 +1862,7 @@ TEST_CASE(
     REQUIRE(result.status == TarotMutationStatus::applied);
   }
   page_tokens.clear();
-  for (std::size_t index = 0; index < 9; ++index)
+  for (std::size_t index = 0; index < 10; ++index)
     page_tokens.push_back(uuid(160 + index));
   const auto paged = fixture.repository->create_history_snapshot(
       {.invocation = fixture.call("history-paged", 600),
@@ -1871,20 +1871,23 @@ TEST_CASE(
   REQUIRE(paged.total == 7);
   REQUIRE(paged.entries.size() == 5);
   REQUIRE(paged.next_custom_id ==
-          std::string{sanguinius::tarot_component_prefix} + uuid(160));
+          std::string{sanguinius::tarot_component_prefix} + uuid(161));
   const auto second = fixture.repository->history_page(
-      {.invocation = fixture.call("history-next", 601), .token_id = uuid(160)});
+      {.invocation = fixture.call("history-next", 601), .token_id = uuid(161)});
   REQUIRE(second.status == sanguinius::TarotPageStatus::available);
   REQUIRE(second.offset == 5);
   REQUIRE(second.entries.size() == 2);
+  REQUIRE(second.previous_custom_id ==
+          std::string{sanguinius::tarot_component_prefix} + uuid(160));
+  REQUIRE_FALSE(second.next_custom_id);
   const auto wrong_user = fixture.repository->history_page(
       {.invocation = fixture.call("history-wrong-user", 601, 31),
-       .token_id = uuid(160)});
+       .token_id = uuid(161)});
   REQUIRE(wrong_user.status == sanguinius::TarotPageStatus::wrong_user);
   auto wrong_scope_call = fixture.call("history-wrong-scope", 601);
   wrong_scope_call.channel_id = 21;
   const auto wrong_scope = fixture.repository->history_page(
-      {.invocation = wrong_scope_call, .token_id = uuid(160)});
+      {.invocation = wrong_scope_call, .token_id = uuid(161)});
   REQUIRE(wrong_scope.status == sanguinius::TarotPageStatus::wrong_scope);
   const auto expired = fixture.repository->history_page(
       {.invocation = fixture.call(

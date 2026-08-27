@@ -119,9 +119,9 @@ enum class SpeechMutationStatus {
 };
 
 struct TtsUsagePolicy {
-  std::int64_t rolling_day_micro_usd{100'000};
-  std::int64_t calendar_month_micro_usd{2'000'000};
-  std::size_t rolling_day_attempts{20};
+  std::int64_t rolling_day_micro_usd{500'000};
+  std::int64_t calendar_month_micro_usd{10'000'000};
+  std::size_t rolling_day_attempts{100};
 };
 
 struct TtsUsageSummary {
@@ -201,8 +201,8 @@ public:
   cancel_session(std::string_view voice_session_id, std::int64_t now_ms,
                  std::string_view reason, bool include_interactive,
                  bool preserve_event_narration = false) = 0;
-  [[nodiscard]] virtual std::size_t
-  recover(std::int64_t now_ms, std::string_view reason) = 0;
+  [[nodiscard]] virtual std::size_t recover(std::int64_t now_ms,
+                                            std::string_view reason) = 0;
   virtual void ensure_purge_schedule(std::int64_t now_ms,
                                      std::string job_id) = 0;
   [[nodiscard]] virtual std::size_t purge_retained(std::int64_t now_ms) = 0;
@@ -210,6 +210,8 @@ public:
   reserve_usage(const TtsUsageReservationRequest &request) = 0;
   [[nodiscard]] virtual SpeechMutationStatus
   complete_usage(const TtsUsageCompletion &completion) = 0;
+  [[nodiscard]] virtual SpeechMutationStatus
+  release_usage(std::string_view attempt_id) = 0;
   [[nodiscard]] virtual std::optional<TtsCacheMetadata>
   cache_metadata(std::string_view cache_key, std::int64_t accessed_at_ms) = 0;
   virtual void put_cache_metadata(const TtsCacheMetadata &metadata) = 0;
@@ -224,7 +226,8 @@ public:
   health(std::int64_t now_ms, std::int64_t calendar_month_start_ms) = 0;
 };
 
-[[nodiscard]] const char *speech_priority_name(SpeechPriority priority) noexcept;
+[[nodiscard]] const char *
+speech_priority_name(SpeechPriority priority) noexcept;
 [[nodiscard]] const char *speech_state_name(SpeechState state) noexcept;
 [[nodiscard]] bool speech_transition_allowed(SpeechState from,
                                              SpeechState to) noexcept;

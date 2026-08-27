@@ -24,8 +24,8 @@ public:
   ChronicleSummaryValidationContext summary_context(std::string_view) override {
     return summary_context_result;
   }
-  WorkMutationStatus complete_summary_job(
-      const SummaryJobCompletionRequest &request) override {
+  WorkMutationStatus
+  complete_summary_job(const SummaryJobCompletionRequest &request) override {
     last_summary_completion = request;
     return summary_completion_result;
   }
@@ -35,32 +35,55 @@ public:
   }
   SessionMutationResult edit_summary(const SummaryEditRequest &) override {
     return {.code = ChronicleSessionResultCode::updated,
-            .session = std::nullopt, .wake_scheduler = false,
+            .session = std::nullopt,
+            .wake_scheduler = false,
             .wake_outbox = false};
   }
-  SessionMutationResult decide_summary(const SummaryDecisionRequest &) override {
+  SessionMutationResult
+  decide_summary(const SummaryDecisionRequest &) override {
     return {.code = ChronicleSessionResultCode::updated,
-            .session = std::nullopt, .wake_scheduler = false,
+            .session = std::nullopt,
+            .wake_scheduler = false,
             .wake_outbox = false};
   }
-  std::optional<SummaryControlResolution> resolve_summary_control(
-      std::string_view, const DiscordSnowflake &, const DiscordSnowflake &,
-      const DiscordSnowflake &, InteractionKind, std::string_view,
-      std::int64_t) override {
+  std::optional<SummaryControlResolution>
+  resolve_summary_control(std::string_view, const DiscordSnowflake &,
+                          const DiscordSnowflake &, const DiscordSnowflake &,
+                          InteractionKind, std::string_view,
+                          std::int64_t) override {
     return std::nullopt;
   }
   TitleMutationResult propose_title(const ProposeTitleRequest &) override {
     return {.code = ChronicleSessionResultCode::created,
-            .grant = proposed_title, .wake_outbox = false};
+            .grant = proposed_title,
+            .wake_outbox = false};
   }
   TitleMutationResult mutate_title(const TitleMutationRequest &) override {
     return {.code = ChronicleSessionResultCode::updated,
-            .grant = std::nullopt, .wake_outbox = false};
+            .grant = std::nullopt,
+            .wake_outbox = false};
   }
   ChronicleTitlePage list_titles(const DiscordSnowflake &,
                                  const DiscordSnowflake &, bool,
                                  std::size_t page) override {
     auto result = title_page;
+    result.page = page;
+    return result;
+  }
+  ChronicleTitlePage begin_title_list(const DiscordSnowflake &,
+                                      const DiscordSnowflake &, bool,
+                                      std::string cursor_id,
+                                      std::int64_t) override {
+    auto result = title_page;
+    result.cursor_id = std::move(cursor_id);
+    result.page = 0;
+    return result;
+  }
+  ChronicleTitlePage load_title_page(const DiscordSnowflake &,
+                                     std::string_view cursor_id,
+                                     std::size_t page, std::int64_t) override {
+    auto result = title_page;
+    result.cursor_id = std::string{cursor_id};
     result.page = page;
     return result;
   }
@@ -76,20 +99,22 @@ public:
                                   std::size_t, std::int64_t) override {
     return search_result;
   }
-  ChronicleSearchPage advance_search(
-      const DiscordSnowflake &, const DiscordSnowflake &,
-      const DiscordSnowflake &, std::string_view, std::string,
-      std::int64_t) override {
+  ChronicleSearchPage advance_search(const DiscordSnowflake &,
+                                     const DiscordSnowflake &,
+                                     const DiscordSnowflake &, std::string_view,
+                                     std::string, std::int64_t) override {
     return search_result;
   }
   bool set_anniversary_reminders(const DiscordSnowflake &, bool,
                                  std::int64_t) override {
     return true;
   }
-  AnniversaryScanResult run_anniversary_scan(
-      const ClaimedScheduledJob &, std::string_view, bool, std::int64_t,
-      PersistentIdGenerator &) override {
-    return {.status = WorkMutationStatus::applied, .wake_outbox = false,
+  AnniversaryScanResult run_anniversary_scan(const ClaimedScheduledJob &,
+                                             std::string_view, bool,
+                                             std::int64_t,
+                                             PersistentIdGenerator &) override {
+    return {.status = WorkMutationStatus::applied,
+            .wake_outbox = false,
             .next_due_at_ms = std::nullopt};
   }
   bool queue_anniversary_scan(const ScheduledJobEnqueue &,
@@ -99,14 +124,16 @@ public:
     return false;
   }
 
-  SessionMutationResult start_result{
-      .code = ChronicleSessionResultCode::created,
-      .session = std::nullopt, .wake_scheduler = false,
-      .wake_outbox = false};
-  SessionMutationResult close_result{
-      .code = ChronicleSessionResultCode::updated,
-      .session = std::nullopt, .wake_scheduler = false,
-      .wake_outbox = false};
+  SessionMutationResult start_result{.code =
+                                         ChronicleSessionResultCode::created,
+                                     .session = std::nullopt,
+                                     .wake_scheduler = false,
+                                     .wake_outbox = false};
+  SessionMutationResult close_result{.code =
+                                         ChronicleSessionResultCode::updated,
+                                     .session = std::nullopt,
+                                     .wake_scheduler = false,
+                                     .wake_outbox = false};
   std::optional<ChronicleSession> status_result;
   ChronicleSummaryValidationContext summary_context_result;
   WorkMutationStatus summary_completion_result{WorkMutationStatus::applied};

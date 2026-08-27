@@ -56,7 +56,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 15);
+      REQUIRE(migrator.apply(database.connection()).current_version == 16);
     }
     context = std::make_shared<SqliteRepositoryContext>(
         Database::open_runtime(temporary.path(), 25ms));
@@ -401,10 +401,6 @@ TEST_CASE(
           .candidate = candidate,
           .failure_category = std::nullopt,
           .title_ids = {{.definition_id = uuid(114), .grant_id = uuid(115)}},
-          .relationship_event_ids = {{.participant_user_id = 31,
-                                      .relationship_event_id = uuid(140)},
-                                     {.participant_user_id = 32,
-                                      .relationship_event_id = uuid(157)}},
           .event_id = uuid(116),
           .notice_id = uuid(117),
           .notice_token_id = uuid(118),
@@ -416,8 +412,9 @@ TEST_CASE(
           .now_ms = 220});
   REQUIRE(completion == WorkMutationStatus::applied);
   REQUIRE(fixture.sessions->status(10)->state == ChronicleSessionState::closed);
-  REQUIRE(fixture.scalar("SELECT count(*) FROM outbox_message WHERE outbox_id='" +
-                         uuid(122) + "' AND state='pending'") == 1);
+  REQUIRE(
+      fixture.scalar("SELECT count(*) FROM outbox_message WHERE outbox_id='" +
+                     uuid(122) + "' AND state='pending'") == 1);
 
   const auto approve_control = fixture.sessions->resolve_summary_control(
       uuid(120), 30, 10, 20, InteractionKind::button, "summary:decision:one",
@@ -447,17 +444,19 @@ TEST_CASE(
   const auto edited = fixture.sessions->edit_summary(edit_request);
   REQUIRE(edited.code == ChronicleSessionResultCode::updated);
   REQUIRE(edited.wake_outbox);
-  REQUIRE(fixture.scalar("SELECT count(*) FROM outbox_message WHERE outbox_id='" +
-                         uuid(122) + "' AND state='cancelled'") == 1);
-  REQUIRE(fixture.scalar("SELECT count(*) FROM outbox_message WHERE outbox_id='" +
-                         uuid(3'005) + "' AND state='pending'") == 1);
+  REQUIRE(
+      fixture.scalar("SELECT count(*) FROM outbox_message WHERE outbox_id='" +
+                     uuid(122) + "' AND state='cancelled'") == 1);
+  REQUIRE(
+      fixture.scalar("SELECT count(*) FROM outbox_message WHERE outbox_id='" +
+                     uuid(3'005) + "' AND state='pending'") == 1);
   const auto claimed_review = fixture.durable->claim_due_outbox(
       226, 1'000, "instance", uuid(3'006), false);
   REQUIRE(claimed_review);
   REQUIRE(claimed_review->outbox_id == uuid(3'005));
   const auto replayed_edit_control = fixture.sessions->resolve_summary_control(
-      uuid(119), 30, 10, 20, InteractionKind::modal_submit,
-      "summary:edit:one", 226);
+      uuid(119), 30, 10, 20, InteractionKind::modal_submit, "summary:edit:one",
+      226);
   REQUIRE(replayed_edit_control);
   REQUIRE(replayed_edit_control->draft_id == draft_id);
   REQUIRE(replayed_edit_control->action == "chronicle.summary.edit");
@@ -468,11 +467,10 @@ TEST_CASE(
       uuid(119), 30, 10, 20, InteractionKind::modal_submit,
       "summary:edit:stale", 226));
   REQUIRE_FALSE(fixture.sessions->resolve_summary_control(
-      uuid(120), 30, 10, 20, InteractionKind::button,
-      "summary:decision:stale", 226));
+      uuid(120), 30, 10, 20, InteractionKind::button, "summary:decision:stale",
+      226));
   const auto refreshed_control = fixture.sessions->resolve_summary_control(
-      uuid(3'003), 30, 10, 20, InteractionKind::button,
-      "summary:decision:one",
+      uuid(3'003), 30, 10, 20, InteractionKind::button, "summary:decision:one",
       226);
   REQUIRE(refreshed_control);
   REQUIRE(refreshed_control->expected_revision == 3);
@@ -495,20 +493,19 @@ TEST_CASE(
        .now_ms = 230});
   REQUIRE(approved.code == ChronicleSessionResultCode::updated);
   REQUIRE(approved.wake_outbox);
-  REQUIRE(fixture.scalar("SELECT count(*) FROM outbox_message WHERE outbox_id='" +
-                         uuid(3'005) + "' AND state='cancelled'") == 1);
+  REQUIRE(
+      fixture.scalar("SELECT count(*) FROM outbox_message WHERE outbox_id='" +
+                     uuid(3'005) + "' AND state='cancelled'") == 1);
   REQUIRE(fixture.scalar("SELECT count(*) FROM chronicle_session_context") ==
           0);
   REQUIRE_FALSE(fixture.sessions->resolve_summary_control(
       uuid(3'004), 30, 10, 20, InteractionKind::button,
-      "summary:decision:other",
-      231));
+      "summary:decision:other", 231));
   REQUIRE_FALSE(fixture.sessions->resolve_summary_control(
       uuid(120), 30, 10, 20, InteractionKind::button,
       "summary:approve:different-interaction", 231));
   const auto replayed_control = fixture.sessions->resolve_summary_control(
-      uuid(3'003), 30, 10, 20, InteractionKind::button,
-      "summary:approve:one",
+      uuid(3'003), 30, 10, 20, InteractionKind::button, "summary:approve:one",
       231);
   REQUIRE(replayed_control);
   REQUIRE(fixture.sessions
@@ -539,7 +536,6 @@ TEST_CASE(
                                       .award_entry_id = uuid(126),
                                       .event_id = uuid(127),
                                       .outbox_id = uuid(128),
-                                      .relationship_event_id = uuid(129),
                                       .idempotency_key = "title:approve:one",
                                       .correlation_id = "title",
                                       .now_ms = 240});
@@ -567,6 +563,10 @@ TEST_CASE(
           sanguinius::ChronicleResultCode::invalid_state);
   REQUIRE(generic_title_retraction.entry->status ==
           sanguinius::ChronicleEntryStatus::canon);
+  SqliteRelationshipRepository relationships{fixture.context};
+  sanguinius::test::FakePersistentIdGenerator recovery_ids;
+  REQUIRE(fixture.scalar("SELECT count(*) FROM relationship_event") == 0);
+  REQUIRE(relationships.synchronize_chronicle_sources(recovery_ids, 241) == 3);
   REQUIRE(fixture.scalar(
               "SELECT count(*) FROM relationship_event WHERE "
               "subject_user_id='31' AND reason_code='session.completed'") == 1);
@@ -577,9 +577,6 @@ TEST_CASE(
                          "subject_user_id='31'") == 1);
   REQUIRE(fixture.scalar("SELECT esteem FROM relationship_state WHERE "
                          "subject_user_id='31'") == 1);
-  SqliteRelationshipRepository relationships{fixture.context};
-  sanguinius::test::FakePersistentIdGenerator recovery_ids;
-  REQUIRE(relationships.synchronize_chronicle_sources(recovery_ids, 241) == 0);
   const auto profile = relationships.profile(31, 31, false, 241);
   REQUIRE(profile.featured_title == "Keeper of the Hour");
   REQUIRE(profile.latest_session_summary.has_value());
@@ -618,7 +615,6 @@ TEST_CASE(
                                       .award_entry_id = uuid(145),
                                       .event_id = uuid(146),
                                       .outbox_id = uuid(147),
-                                      .relationship_event_id = uuid(148),
                                       .idempotency_key = "title:approve:two",
                                       .correlation_id = "title-two",
                                       .now_ms = 242});
@@ -635,7 +631,6 @@ TEST_CASE(
                                       .award_entry_id = uuid(149),
                                       .event_id = uuid(150),
                                       .outbox_id = uuid(151),
-                                      .relationship_event_id = uuid(152),
                                       .idempotency_key = "title:feature:two",
                                       .correlation_id = "title-two",
                                       .now_ms = 243});
@@ -655,7 +650,6 @@ TEST_CASE(
                                       .award_entry_id = uuid(153),
                                       .event_id = uuid(154),
                                       .outbox_id = uuid(155),
-                                      .relationship_event_id = uuid(156),
                                       .idempotency_key = "title:revoke:two",
                                       .correlation_id = "title-two",
                                       .now_ms = 244});
@@ -691,7 +685,6 @@ TEST_CASE(
                                       .award_entry_id = uuid(163),
                                       .event_id = uuid(164),
                                       .outbox_id = uuid(165),
-                                      .relationship_event_id = uuid(166),
                                       .idempotency_key = "title:approve:three",
                                       .correlation_id = "title-three",
                                       .now_ms = 246});
@@ -724,6 +717,25 @@ TEST_CASE(
           sanguinius::chronicle_title_page_size);
   REQUIRE(second_title_page.total == 6);
   REQUIRE(second_title_page.grants.size() == 1);
+  const auto title_snapshot =
+      fixture.sessions->begin_title_list(31, 31, false, uuid(180), 248);
+  REQUIRE(title_snapshot.cursor_id == uuid(180));
+  REQUIRE(title_snapshot.page == 0);
+  REQUIRE(title_snapshot.total == 6);
+  REQUIRE(title_snapshot.grants.size() ==
+          sanguinius::chronicle_title_page_size);
+  const auto title_snapshot_second =
+      fixture.sessions->load_title_page(31, uuid(180), 1, 249);
+  REQUIRE(title_snapshot_second.page == 1);
+  REQUIRE(title_snapshot_second.total == 6);
+  REQUIRE(title_snapshot_second.grants.size() == 1);
+  REQUIRE(fixture.sessions->load_title_page(30, uuid(180), 1, 249)
+              .cursor_id.empty());
+  REQUIRE(fixture.sessions
+              ->load_title_page(
+                  31, uuid(180), 1,
+                  248 + sanguinius::chronicle_search_cursor_lifetime_ms)
+              .cursor_id.empty());
 
   auto memory = fixture.context->connection().prepare(
       "INSERT INTO memory(memory_id,memory_type,text,visibility,sensitivity,"
@@ -1109,10 +1121,6 @@ TEST_CASE("session summary review tolerates backward wall clock movement",
                .candidate = std::nullopt,
                .failure_category = "model_failed",
                .title_ids = {},
-               .relationship_event_ids = {{.participant_user_id = 31,
-                                           .relationship_event_id = uuid(4'008)},
-                                          {.participant_user_id = 32,
-                                           .relationship_event_id = uuid(4'009)}},
                .event_id = uuid(4'010),
                .notice_id = uuid(4'011),
                .notice_token_id = uuid(4'012),
@@ -1279,26 +1287,22 @@ TEST_CASE("failed model summaries retain an editable deterministic fallback",
   const auto job =
       fixture.durable->claim_due_job(200, 1'000, "instance", uuid(707));
   REQUIRE(job);
-  REQUIRE(fixture.sessions->complete_summary_job(
-              {.job = *job,
-               .generation_context =
-                   fixture.sessions->summary_context(session_id),
-               .candidate = std::nullopt,
-               .failure_category = "refusal",
-               .title_ids = {},
-               .relationship_event_ids = {{.participant_user_id = 31,
-                                           .relationship_event_id = uuid(708)},
-                                          {.participant_user_id = 32,
-                                           .relationship_event_id = uuid(709)}},
-               .event_id = uuid(710),
-               .notice_id = uuid(711),
-               .notice_token_id = uuid(712),
-               .edit_token_id = uuid(713),
-               .approve_token_id = uuid(714),
-               .reject_token_id = uuid(715),
-               .notice_outbox_id = uuid(716),
-               .owner_user_id = 30,
-               .now_ms = 220}) == WorkMutationStatus::applied);
+  REQUIRE(
+      fixture.sessions->complete_summary_job(
+          {.job = *job,
+           .generation_context = fixture.sessions->summary_context(session_id),
+           .candidate = std::nullopt,
+           .failure_category = "refusal",
+           .title_ids = {},
+           .event_id = uuid(710),
+           .notice_id = uuid(711),
+           .notice_token_id = uuid(712),
+           .edit_token_id = uuid(713),
+           .approve_token_id = uuid(714),
+           .reject_token_id = uuid(715),
+           .notice_outbox_id = uuid(716),
+           .owner_user_id = 30,
+           .now_ms = 220}) == WorkMutationStatus::applied);
   REQUIRE(fixture.scalar(
               "SELECT count(*) FROM chronicle_summary_draft WHERE "
               "source='fallback' AND model_failure_category='refusal' AND "
@@ -1344,9 +1348,10 @@ TEST_CASE("failed model summaries retain an editable deterministic fallback",
               "SELECT count(*) FROM chronicle_entry WHERE "
               "entry_type='session_summary' AND status='canon' AND "
               "body='The owner supplied this bounded fallback summary.'") == 1);
-  REQUIRE(fixture.scalar(
-              "SELECT count(*) FROM outbox_message WHERE kind='notice.pending.v1' "
-              "AND state='cancelled'") == 2);
+  REQUIRE(
+      fixture.scalar(
+          "SELECT count(*) FROM outbox_message WHERE kind='notice.pending.v1' "
+          "AND state='cancelled'") == 2);
   REQUIRE(fixture.scalar("SELECT count(*) FROM pending_notice") == 0);
 }
 
@@ -1381,7 +1386,8 @@ TEST_CASE("summary completion rejects context changed during generation",
                        .now_ms = 200})
               .code == ChronicleSessionResultCode::updated);
   const auto generated_from = fixture.sessions->summary_context(session_id);
-  REQUIRE(generated_from.shared_entry_ids == std::vector<std::string>{entry_id});
+  REQUIRE(generated_from.shared_entry_ids ==
+          std::vector<std::string>{entry_id});
   const auto job =
       fixture.durable->claim_due_job(200, 1'000, "instance", uuid(767));
   REQUIRE(job);
@@ -1402,10 +1408,6 @@ TEST_CASE("summary completion rejects context changed during generation",
                .candidate = stale_candidate,
                .failure_category = std::nullopt,
                .title_ids = {},
-               .relationship_event_ids = {{.participant_user_id = 31,
-                                           .relationship_event_id = uuid(768)},
-                                          {.participant_user_id = 32,
-                                           .relationship_event_id = uuid(769)}},
                .event_id = uuid(770),
                .notice_id = uuid(771),
                .notice_token_id = uuid(772),
@@ -1415,7 +1417,8 @@ TEST_CASE("summary completion rejects context changed during generation",
                .notice_outbox_id = uuid(776),
                .owner_user_id = 30,
                .now_ms = 222}) == WorkMutationStatus::invalid_state);
-  REQUIRE(fixture.sessions->status(10)->state == ChronicleSessionState::closing);
+  REQUIRE(fixture.sessions->status(10)->state ==
+          ChronicleSessionState::closing);
   REQUIRE(fixture.scalar("SELECT count(*) FROM outbox_message") == 0);
   REQUIRE(fixture.scalar("SELECT count(*) FROM scheduled_job WHERE job_id='" +
                          uuid(764) + "' AND state='claimed'") == 1);
@@ -1433,10 +1436,6 @@ TEST_CASE("summary completion rejects context changed during generation",
                .candidate = std::nullopt,
                .failure_category = "context_changed",
                .title_ids = {},
-               .relationship_event_ids = {{.participant_user_id = 31,
-                                           .relationship_event_id = uuid(778)},
-                                          {.participant_user_id = 32,
-                                           .relationship_event_id = uuid(779)}},
                .event_id = uuid(780),
                .notice_id = uuid(781),
                .notice_token_id = uuid(782),
@@ -1491,7 +1490,6 @@ TEST_CASE("summary completion fences the pending draft revision",
                .candidate = std::nullopt,
                .failure_category = "model_failed",
                .title_ids = {},
-               .relationship_event_ids = {},
                .event_id = uuid(738),
                .notice_id = uuid(739),
                .notice_token_id = uuid(740),
@@ -1599,7 +1597,6 @@ TEST_CASE("concurrent session close and title approval keep one winner",
          .award_entry_id = uuid(base),
          .event_id = uuid(base + 1),
          .outbox_id = uuid(base + 2),
-         .relationship_event_id = uuid(base + 3),
          .idempotency_key = "title:concurrent:" + std::to_string(index),
          .correlation_id = "concurrent",
          .now_ms = 220});
@@ -1616,6 +1613,11 @@ TEST_CASE("concurrent session close and title approval keep one winner",
                              &sanguinius::TitleMutationResult::code) == 1);
   REQUIRE(fixture.scalar("SELECT count(*) FROM chronicle_entry WHERE "
                          "entry_type='title_award'") == 1);
+  REQUIRE(fixture.scalar("SELECT count(*) FROM relationship_event WHERE "
+                         "reason_code='title.awarded'") == 0);
+  SqliteRelationshipRepository relationships{fixture.context};
+  sanguinius::test::FakePersistentIdGenerator recovery_ids;
+  REQUIRE(relationships.synchronize_chronicle_sources(recovery_ids, 221) == 1);
   REQUIRE(fixture.scalar("SELECT count(*) FROM relationship_event WHERE "
                          "reason_code='title.awarded'") == 1);
 }

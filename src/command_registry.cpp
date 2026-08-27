@@ -15,6 +15,33 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
       .commands =
           {
               CommandDefinition{
+                  .name = "help",
+                  .description =
+                      "Discover Sanguinius commands and privacy controls.",
+                  .subcommands = {},
+                  .kind = ApplicationCommandKind::chat_input,
+                  .subcommand_groups = {},
+                  .options = {{CommandOptionKind::string,
+                               "topic",
+                               "Optional command family.",
+                               false,
+                               3,
+                               10,
+                               {{"All commands", "all"},
+                                {"Sanguinius", "sanguinius"},
+                                {"Chronicle", "chronicle"},
+                                {"Tarot", "tarot"},
+                                {"Vox", "vox"}}}},
+              },
+              CommandDefinition{
+                  .name = "repo",
+                  .description = "Open the Sanguinius source repository.",
+                  .subcommands = {},
+                  .kind = ApplicationCommandKind::chat_input,
+                  .subcommand_groups = {},
+                  .options = {},
+              },
+              CommandDefinition{
                   .name = "sanguinius",
                   .description = "Consult Sanguinius.",
                   .subcommands =
@@ -164,60 +191,79 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
                             {"start", "Open a Chronicle session."},
                             {"status", "Show the active or latest session."},
                             {"close", "Close the active Chronicle session."},
-                            {"edit",
-                             "Edit a pending chapter draft.",
-                             {{CommandOptionKind::string, "reference",
-                               "Full draft reference.", true, 36, 36},
-                              {CommandOptionKind::string, "revision",
-                               "Expected draft revision.", true, 1, 20},
-                              {CommandOptionKind::string, "title",
-                               "Chapter title.", true, 1, 100},
-                              {CommandOptionKind::string, "summary",
-                               "Chapter summary.", true, 1, 1000}}},
-                            {"approve",
-                             "Approve a pending chapter draft.",
-                             {{CommandOptionKind::string, "reference",
-                               "Full draft reference.", true, 36, 36},
-                              {CommandOptionKind::string, "revision",
-                               "Expected draft revision.", true, 1, 20}}},
-                            {"reject",
-                             "Reject a pending chapter draft.",
-                             {{CommandOptionKind::string, "reference",
-                               "Full draft reference.", true, 36, 36},
-                              {CommandOptionKind::string, "revision",
-                               "Expected draft revision.", true, 1, 20}}},
+                            CommandSubcommandDefinition{
+                                .name = "edit",
+                                .description = "Edit a pending chapter draft.",
+                                .options =
+                                    {{CommandOptionKind::string, "reference",
+                                      "Full draft reference.", true, 36, 36},
+                                     {CommandOptionKind::string, "revision",
+                                      "Expected draft revision.", true, 1, 20},
+                                     {CommandOptionKind::string,
+                                      "title", "Chapter title.", true, 1, 100},
+                                     {CommandOptionKind::string, "summary",
+                                      "Chapter summary.", true, 1, 1000}},
+                                .audience = CommandAudience::owner_admin},
+                            CommandSubcommandDefinition{
+                                .name = "approve",
+                                .description =
+                                    "Approve a pending chapter draft.",
+                                .options =
+                                    {{CommandOptionKind::string, "reference",
+                                      "Full draft reference.", true, 36, 36},
+                                     {CommandOptionKind::string, "revision",
+                                      "Expected draft revision.", true, 1, 20}},
+                                .audience = CommandAudience::owner_admin},
+                            CommandSubcommandDefinition{
+                                .name = "reject",
+                                .description =
+                                    "Reject a pending chapter draft.",
+                                .options =
+                                    {{CommandOptionKind::string, "reference",
+                                      "Full draft reference.", true, 36, 36},
+                                     {CommandOptionKind::string, "revision",
+                                      "Expected draft revision.", true, 1, 20}},
+                                .audience = CommandAudience::owner_admin},
                         }},
                 CommandSubcommandGroupDefinition{
                     .name = "title",
                     .description = "Manage Chronicle titles.",
                     .subcommands =
                         {
-                            {"propose",
-                             "Propose an owner-curated title.",
-                             {{CommandOptionKind::user, "recipient",
-                               "Title recipient.", true},
-                              {CommandOptionKind::string, "title",
-                               "Title wording.", true, 1, 100},
-                              {CommandOptionKind::string, "description",
-                               "Why it was earned.", true, 1, 500}}},
+                            CommandSubcommandDefinition{
+                                .name = "propose",
+                                .description =
+                                    "Propose an owner-curated title.",
+                                .options =
+                                    {{CommandOptionKind::user, "recipient",
+                                      "Title recipient.", true},
+                                     {CommandOptionKind::string, "title",
+                                      "Title wording.", true, 1, 100},
+                                     {CommandOptionKind::string, "description",
+                                      "Why it was earned.", true, 1, 500}},
+                                .audience = CommandAudience::owner_admin},
                             {"list",
                              "List visible title grants.",
                              {{CommandOptionKind::user, "recipient",
-                               "Optional title recipient.", false},
-                              {CommandOptionKind::string, "page",
-                               "Optional result page.", false, 1, 3}}},
-                            {"approve",
-                             "Activate a proposed title.",
-                             {{CommandOptionKind::string, "reference",
-                               "Full grant reference.", true, 36, 36},
-                              {CommandOptionKind::string, "revision",
-                               "Expected grant revision.", true, 1, 20}}},
-                            {"reject",
-                             "Reject a proposed title.",
-                             {{CommandOptionKind::string, "reference",
-                               "Full grant reference.", true, 36, 36},
-                              {CommandOptionKind::string, "revision",
-                               "Expected grant revision.", true, 1, 20}}},
+                               "Optional title recipient.", false}}},
+                            CommandSubcommandDefinition{
+                                .name = "approve",
+                                .description = "Activate a proposed title.",
+                                .options =
+                                    {{CommandOptionKind::string, "reference",
+                                      "Full grant reference.", true, 36, 36},
+                                     {CommandOptionKind::string, "revision",
+                                      "Expected grant revision.", true, 1, 20}},
+                                .audience = CommandAudience::owner_admin},
+                            CommandSubcommandDefinition{
+                                .name = "reject",
+                                .description = "Reject a proposed title.",
+                                .options =
+                                    {{CommandOptionKind::string, "reference",
+                                      "Full grant reference.", true, 36, 36},
+                                     {CommandOptionKind::string, "revision",
+                                      "Expected grant revision.", true, 1, 20}},
+                                .audience = CommandAudience::owner_admin},
                             {"feature",
                              "Choose an active featured title.",
                              {{CommandOptionKind::string, "reference",
@@ -422,48 +468,50 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
     catalog.commands.push_back(CommandDefinition{
         .name = "vox",
         .description = "Join or dismiss Vox Sanguinius in voice.",
-        .subcommands = {{"summon", "Summon Vox to your current voice channel."},
-                        {"status", "Show the current public-safe Vox status."},
-                        {"leave", "Dismiss Vox if you summoned the session."},
-                        {"say",
-                         "Queue a short owner-requested line for Vox.",
-                         {{CommandOptionKind::string, "text", "Text to speak.",
-                           true, 1, 350}}},
-                        {"mute",
-                         "Mute or unmute automatic Vox speech.",
-                         {{CommandOptionKind::string,
-                           "duration",
-                           "Mute duration or off.",
-                           true,
-                           2,
-                           7,
-                           {{"15 minutes", "15m"},
-                            {"1 hour", "1h"},
-                            {"4 hours", "4h"},
-                            {"This session", "session"},
-                            {"Off", "off"}}}}},
-                        {"voice",
-                         "Inspect or select the configured Vox voice.",
-                         {{CommandOptionKind::string,
-                           "voice",
-                           "Allowed voice (owner-only to change).",
-                           false,
-                           4,
-                           4,
-                           {{"Onyx", "onyx"}}}}},
-                        {"listen-start",
-                         "Start one short, publicly indicated listening window.",
-                         {{CommandOptionKind::string,
-                           "duration",
-                           "Listening duration in seconds.",
-                           true,
-                           1,
-                           2,
-                           {{"5 seconds", "5"},
-                            {"10 seconds", "10"},
-                            {"15 seconds", "15"}}}}},
-                        {"listen-stop",
-                         "Stop and discard the active listening window."}},
+        .subcommands =
+            {{"summon", "Summon Vox to your current voice channel."},
+             {"status", "Show the current public-safe Vox status."},
+             {"leave", "Dismiss Vox if you summoned the session."},
+             CommandSubcommandDefinition{
+                 .name = "say",
+                 .description = "Queue a short owner-requested line for Vox.",
+                 .options = {{CommandOptionKind::string, "text",
+                              "Text to speak.", true, 1, 350}},
+                 .audience = CommandAudience::owner_admin},
+             {"mute",
+              "Mute or unmute automatic Vox speech.",
+              {{CommandOptionKind::string,
+                "duration",
+                "Mute duration or off.",
+                true,
+                2,
+                7,
+                {{"15 minutes", "15m"},
+                 {"1 hour", "1h"},
+                 {"4 hours", "4h"},
+                 {"This session", "session"},
+                 {"Off", "off"}}}}},
+             {"voice",
+              "Inspect or select the configured Vox voice.",
+              {{CommandOptionKind::string,
+                "voice",
+                "Allowed voice (owner-only to change).",
+                false,
+                4,
+                4,
+                {{"Onyx", "onyx"}}}}},
+             {"listen-start",
+              "Start one short, publicly indicated listening window.",
+              {{CommandOptionKind::string,
+                "duration",
+                "Listening duration in seconds.",
+                true,
+                1,
+                2,
+                {{"5 seconds", "5"},
+                 {"10 seconds", "10"},
+                 {"15 seconds", "15"}}}}},
+             {"listen-stop", "Stop and discard the active listening window."}},
     });
   }
   CommandDefinition owner_controls{
@@ -473,15 +521,41 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
       .subcommand_groups =
           {
               CommandSubcommandGroupDefinition{
-                  .name = "appearance",
-                  .description = "Inspect and control appearances.",
+                  .name = "safety",
+                  .description = "Owner-only emergency safety controls.",
                   .subcommands =
                       {
-                          {"disable", "Persistently disable live appearances."},
-                          {"enable",
-                           "Clear the global appearance kill switch."},
+                          CommandSubcommandDefinition{
+                              .name = "status",
+                              .description = "Inspect every operator kill.",
+                              .options = {},
+                              .audience = CommandAudience::owner_safety},
+                          CommandSubcommandDefinition{
+                              .name = "set",
+                              .description = "Set one durable operator kill.",
+                              .options = {{CommandOptionKind::string,
+                                           "target",
+                                           "Safety target.",
+                                           true,
+                                           3,
+                                           12,
+                                           {{"Appearances", "appearances"},
+                                            {"Text AI", "text-ai"},
+                                            {"TTS", "tts"},
+                                            {"Vox output", "vox-output"},
+                                            {"Voice input", "voice-input"}}},
+                                          {CommandOptionKind::string,
+                                           "mode",
+                                           "Operator mode.",
+                                           true,
+                                           7,
+                                           8,
+                                           {{"Enabled", "enabled"},
+                                            {"Disabled", "disabled"}}}},
+                              .audience = CommandAudience::owner_safety},
                       }},
           },
+      .audience = CommandAudience::owner_admin,
   };
   if (admin_commands_enabled) {
     owner_controls.subcommands = {
@@ -493,46 +567,47 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
          "Schedule a private self-targeted test notice."},
         {"test-public-retry", "Exercise one synthetic public delivery retry."},
     };
-    owner_controls.subcommand_groups.front().subcommands = {
-        {"simulate",
-         "Create an auditable dry-run fixture.",
-         {{CommandOptionKind::string,
-           "fixture",
-           "Sanitized fixture to evaluate.",
-           true,
-           8,
-           64,
-           {{"Lively game-night banter", "lively_game_night_banter"},
-            {"One-person quiet channel", "one_person_quiet_channel"},
-            {"Bot just spoke", "bot_just_spoke"},
-            {"Quiet hours", "quiet_hours"},
-            {"Manual quiet", "manual_quiet"},
-            {"Sensitive serious conversation",
-             "sensitive_serious_conversation"},
-            {"Christianity", "christianity"},
-            {"Chronicle anniversary", "chronicle_anniversary"},
-            {"Repeated inside joke", "repeated_inside_joke_on_cooldown"},
-            {"Tarot settlement", "tarot_settlement"},
-            {"Opted-out participant", "opted_out_participant"},
-            {"Stale candidate", "stale_candidate"},
-            {"Owner dry run", "owner_dry_run"}}}}},
-        {"preview",
-         "Inspect one stored redacted decision.",
-         {{CommandOptionKind::string, "reference",
-           "Full candidate or decision UUID.", true, 36, 36}}},
-        {"recent", "Inspect ten recent redacted decisions."},
-        {"trigger",
-         "Queue one auditable owner live test.",
-         {{CommandOptionKind::string,
-           "fixture",
-           "Curated live fixture.",
-           true,
-           8,
-           64,
-           {{"Owner live safe", "owner_live_safe"}}}}},
-        {"disable", "Persistently disable live appearances."},
-        {"enable", "Clear the global appearance kill switch."},
-    };
+    owner_controls.subcommand_groups.push_back(CommandSubcommandGroupDefinition{
+        .name = "appearance",
+        .description = "Inspect and test appearances.",
+        .subcommands = {
+            {"simulate",
+             "Create an auditable dry-run fixture.",
+             {{CommandOptionKind::string,
+               "fixture",
+               "Sanitized fixture to evaluate.",
+               true,
+               8,
+               64,
+               {{"Lively game-night banter", "lively_game_night_banter"},
+                {"One-person quiet channel", "one_person_quiet_channel"},
+                {"Bot just spoke", "bot_just_spoke"},
+                {"Quiet hours", "quiet_hours"},
+                {"Manual quiet", "manual_quiet"},
+                {"Sensitive serious conversation",
+                 "sensitive_serious_conversation"},
+                {"Christianity", "christianity"},
+                {"Chronicle anniversary", "chronicle_anniversary"},
+                {"Repeated inside joke", "repeated_inside_joke_on_cooldown"},
+                {"Tarot settlement", "tarot_settlement"},
+                {"Opted-out participant", "opted_out_participant"},
+                {"Stale candidate", "stale_candidate"},
+                {"Owner dry run", "owner_dry_run"}}}}},
+            {"preview",
+             "Inspect one stored redacted decision.",
+             {{CommandOptionKind::string, "reference",
+               "Full candidate or decision UUID.", true, 36, 36}}},
+            {"recent", "Inspect ten recent redacted decisions."},
+            {"trigger",
+             "Queue one auditable owner live test.",
+             {{CommandOptionKind::string,
+               "fixture",
+               "Curated live fixture.",
+               true,
+               8,
+               64,
+               {{"Owner live safe", "owner_live_safe"}}}}},
+        }});
     if (chronicle_enabled) {
       owner_controls.subcommands.push_back(
           {"test-anniversary", "Exercise an exactly-once test anniversary."});
@@ -708,25 +783,9 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
                     {{CommandOptionKind::string, "reference",
                       "Full source-event UUID.", true, 36, 36}}},
                    {"narration-recent",
-                    "Inspect ten sanitized narration audit states."},
-                   {"listening-disable",
-                    "Immediately kill voice capture and discard local audio."},
-                   {"listening-enable",
-                    "Clear the durable voice-listening kill switch."}},
+                    "Inspect ten sanitized narration audit states."}},
           });
     }
-  }
-  if (vox_enabled && !admin_commands_enabled) {
-    owner_controls.subcommand_groups.push_back(
-        CommandSubcommandGroupDefinition{
-            .name = "vox",
-            .description = "Owner-only Vox safety controls.",
-            .subcommands =
-                {{"listening-disable",
-                  "Immediately kill voice capture and discard local audio."},
-                 {"listening-enable",
-                  "Clear the durable voice-listening kill switch."}},
-        });
   }
   catalog.commands.push_back(std::move(owner_controls));
   return catalog;
@@ -737,10 +796,19 @@ std::string canonical_command_snapshot(const CommandCatalog &catalog) {
   output << "catalog_version=" << catalog.version << '\n';
   for (const auto &command : catalog.commands) {
     output << "command=" << static_cast<int>(command.kind) << '|'
-           << command.name << '|' << command.description << '\n';
+           << static_cast<int>(command.audience) << '|' << command.name << '|'
+           << command.description << '\n';
+    for (const auto &option : command.options) {
+      output << "root_option=" << static_cast<int>(option.kind) << '|'
+             << option.name << '|' << option.description << '|'
+             << option.required << '|' << option.minimum_length << '|'
+             << option.maximum_length << '\n';
+      for (const auto &choice : option.choices)
+        output << "choice=" << choice.name << '|' << choice.value << '\n';
+    }
     for (const auto &subcommand : command.subcommands) {
-      output << "subcommand=" << subcommand.name << '|'
-             << subcommand.description << '\n';
+      output << "subcommand=" << static_cast<int>(subcommand.audience) << '|'
+             << subcommand.name << '|' << subcommand.description << '\n';
       for (const auto &option : subcommand.options) {
         output << "option=" << static_cast<int>(option.kind) << '|'
                << option.name << '|' << option.description << '|'
@@ -762,8 +830,9 @@ std::string canonical_command_snapshot(const CommandCatalog &catalog) {
     for (const auto &group : command.subcommand_groups) {
       output << "group=" << group.name << '|' << group.description << '\n';
       for (const auto &subcommand : group.subcommands) {
-        output << "group_subcommand=" << subcommand.name << '|'
-               << subcommand.description << '\n';
+        output << "group_subcommand=" << static_cast<int>(subcommand.audience)
+               << '|' << subcommand.name << '|' << subcommand.description
+               << '\n';
         for (const auto &option : subcommand.options) {
           output << "option=" << static_cast<int>(option.kind) << '|'
                  << option.name << '|' << option.description << '|'

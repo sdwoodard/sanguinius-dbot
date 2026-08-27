@@ -25,6 +25,7 @@ enum class TranscriptionFailureCategory {
   invalid_request,
   timeout,
   rate_limited,
+  authentication,
   provider_rejected,
   provider_unavailable,
   invalid_response,
@@ -35,8 +36,7 @@ enum class TranscriptionFailureCategory {
 
 class TranscriptionError final : public std::runtime_error {
 public:
-  TranscriptionError(TranscriptionFailureCategory category,
-                     std::string message,
+  TranscriptionError(TranscriptionFailureCategory category, std::string message,
                      std::string provider_request_id = {});
 
   [[nodiscard]] TranscriptionFailureCategory category() const noexcept;
@@ -64,9 +64,11 @@ class TranscriptionClient {
 public:
   virtual ~TranscriptionClient() = default;
   [[nodiscard]] virtual Transcript
-  transcribe(const TranscriptionRequest &request,
-             std::stop_token stop_token,
+  transcribe(const TranscriptionRequest &request, std::stop_token stop_token,
              const std::function<void()> &transmission_started = {}) const = 0;
+  [[nodiscard]] virtual std::string provider_circuit_state() const {
+    return "closed";
+  }
 };
 
 [[nodiscard]] std::int64_t
@@ -76,8 +78,7 @@ estimated_transcription_cost_micro_usd(std::int64_t requested_seconds);
 sanitize_transcription_request_id(std::string_view value);
 [[nodiscard]] std::array<std::byte, 44>
 pcm_wav_header(std::size_t pcm_bytes, std::uint32_t sample_rate = 48'000,
-               std::uint16_t channels = 2,
-               std::uint16_t bits_per_sample = 16);
+               std::uint16_t channels = 2, std::uint16_t bits_per_sample = 16);
 [[nodiscard]] const char *transcription_failure_category_name(
     TranscriptionFailureCategory category) noexcept;
 

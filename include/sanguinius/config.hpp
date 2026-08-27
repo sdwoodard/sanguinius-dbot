@@ -8,12 +8,13 @@
 #include "sanguinius/tarot.hpp"
 #include "sanguinius/tarot_catalog.hpp"
 #include "sanguinius/tarot_house.hpp"
-#include "sanguinius/wagers.hpp"
 #include "sanguinius/tts.hpp"
 #include "sanguinius/tts_cache.hpp"
 #include "sanguinius/voice_input.hpp"
+#include "sanguinius/wagers.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -52,6 +53,8 @@ struct AiConfiguration {
   std::string model{"gpt-5.6-luna"};
   std::filesystem::path persona_file{"config/persona.txt"};
   std::string persona;
+  std::int64_t input_rate_micro_usd_per_million_tokens{};
+  std::int64_t output_rate_micro_usd_per_million_tokens{};
 };
 
 enum class TtsProvider {
@@ -66,8 +69,7 @@ struct TtsConfiguration {
   std::filesystem::path cache_directory{"/var/cache/sanguinius/tts"};
   std::filesystem::path ffmpeg_path{"/usr/bin/ffmpeg"};
   std::filesystem::path ffprobe_path{"/usr/bin/ffprobe"};
-  std::filesystem::path fallback_directory{
-      "/usr/local/share/sanguinius/vox"};
+  std::filesystem::path fallback_directory{"/usr/local/share/sanguinius/vox"};
   std::chrono::milliseconds connect_timeout{5'000};
   std::chrono::milliseconds request_timeout{30'000};
   AudioNormalizationLimits normalization_limits;

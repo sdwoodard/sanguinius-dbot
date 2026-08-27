@@ -34,9 +34,9 @@ public:
 
   void complete_generation(const VoxNarrationCompletion &) override {}
 
-  std::size_t
-  reconcile(std::int64_t, const std::function<std::string()> &,
-            const std::function<bool(std::string_view)> & = {}) override {
+  std::size_t reconcile(std::int64_t, const std::function<std::string()> &,
+                        const std::function<bool(std::string_view)> & = {},
+                        std::size_t = 50) override {
     return 0;
   }
 

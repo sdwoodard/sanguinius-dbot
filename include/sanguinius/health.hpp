@@ -1,16 +1,17 @@
 #pragma once
 
 #include "sanguinius/build_info.hpp"
+#include "sanguinius/cross_feature_orchestrator.hpp"
 #include "sanguinius/discord_interfaces.hpp"
 #include "sanguinius/durable_work.hpp"
 #include "sanguinius/feature_config.hpp"
-#include "sanguinius/work_queue.hpp"
 #include "sanguinius/tarot.hpp"
 #include "sanguinius/tarot_house.hpp"
-#include "sanguinius/wagers.hpp"
+#include "sanguinius/voice_input.hpp"
 #include "sanguinius/vox.hpp"
 #include "sanguinius/vox_narration.hpp"
-#include "sanguinius/voice_input.hpp"
+#include "sanguinius/wagers.hpp"
+#include "sanguinius/work_queue.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -51,6 +52,7 @@ struct HealthSnapshot {
   std::optional<VoxHealth> vox;
   std::optional<VoxNarrationHealth> vox_narration;
   std::optional<VoiceListeningHealth> voice_input;
+  std::optional<CrossFeatureHealth> cross_feature;
   bool scope_matched{};
 };
 
@@ -67,6 +69,7 @@ struct HealthRuntimeProviders {
   std::function<std::optional<VoxHealth>()> vox;
   std::function<std::optional<VoxNarrationHealth>()> vox_narration;
   std::function<std::optional<VoiceListeningHealth>()> voice_input;
+  std::function<std::optional<CrossFeatureHealth>()> cross_feature;
 };
 
 class HealthService {

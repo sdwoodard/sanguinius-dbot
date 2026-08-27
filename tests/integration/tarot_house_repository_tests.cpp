@@ -8,6 +8,7 @@
 #include "sanguinius/persistence/sqlite_tarot_house_repository.hpp"
 #include "sanguinius/persistence/sqlite_tarot_repository.hpp"
 #include "sanguinius/persistence/sqlite_wager_repository.hpp"
+#include "sanguinius/persistence/transaction.hpp"
 #include "sanguinius/tarot_catalog.hpp"
 
 #include "support/fake_clock.hpp"
@@ -42,7 +43,7 @@ public:
           sanguinius::persistence::production_migrations(),
           {"test", "revision"},
           clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 15);
+      REQUIRE(migrator.apply(database.connection()).current_version == 16);
     }
     context =
         std::make_shared<sanguinius::persistence::SqliteRepositoryContext>(
@@ -109,8 +110,7 @@ public:
   }
 
   void deliver_offer_source(const std::string_view offer_id,
-                            const std::int64_t now_ms,
-                            const std::size_t id) {
+                            const std::int64_t now_ms, const std::size_t id) {
     sanguinius::persistence::SqliteDurableWorkRepository durable{context};
     const auto source = durable.claim_due_outbox(
         now_ms, now_ms + 1'000, "offer-source", uuid(id), true);
@@ -482,6 +482,19 @@ TEST_CASE(
   REQUIRE(played.status == sanguinius::HouseMutationStatus::applied);
   REQUIRE(fixture.tarot->balance(30) == 95);
   REQUIRE(fixture.house->economy().expected_house_escrow == 10);
+  const auto history_snapshot =
+      fixture.house->begin_history(30, uuid(190), 1'000);
+  REQUIRE(history_snapshot.cursor_id == uuid(190));
+  REQUIRE(history_snapshot.total == 1);
+  REQUIRE(history_snapshot.wagers.size() == 1);
+  REQUIRE(history_snapshot.wagers.front().wager_id == played.wager->wager_id);
+  REQUIRE(fixture.house->load_history_page(31, uuid(190), 0, 1'001)
+              .cursor_id.empty());
+  REQUIRE(
+      fixture.house
+          ->load_history_page(30, uuid(190), 0,
+                              1'000 + sanguinius::tarot_interaction_lifetime_ms)
+          .cursor_id.empty());
   sanguinius::persistence::SqliteWagerRepository wagers{fixture.context};
   const auto funded_audit = wagers.check_invariants();
   REQUIRE(funded_audit.valid);
@@ -803,15 +816,14 @@ TEST_CASE("Final Hour observes only another human public draw",
       "UPDATE discord_user SET is_bot=1 WHERE user_id='31'");
   const auto bot_draw =
       draw(990, 31, sanguinius::TarotVisibility::public_result, 3'000);
-  REQUIRE(fixture.house
-              ->observe_draw(bot_draw, 3'000, fixture.ids(1'000))
-              .empty());
+  REQUIRE(
+      fixture.house->observe_draw(bot_draw, 3'000, fixture.ids(1'000)).empty());
   REQUIRE(fixture.house->reconcile_draws(3'001, fixture.ids(1'020)).empty());
   fixture.context->connection().execute(
       "UPDATE discord_user SET is_bot=0 WHERE user_id='31'");
   const auto observed = fixture.house->observe_draw(
-      draw(1'040, 31, sanguinius::TarotVisibility::public_result, 3'500),
-      3'500, fixture.ids(1'060));
+      draw(1'040, 31, sanguinius::TarotVisibility::public_result, 3'500), 3'500,
+      fixture.ids(1'060));
   REQUIRE(observed.size() == 1);
   REQUIRE(observed.front().wager->result == sanguinius::HouseResult::win);
   REQUIRE(fixture.tarot->balance(30) == 120);
@@ -832,10 +844,10 @@ TEST_CASE("Final Hour observes only another human public draw",
   fixture.context->connection().execute(
       "UPDATE discord_user SET is_bot=1 WHERE user_id='30'");
   REQUIRE(fixture.house
-              ->observe_draw(
-                  draw(1'150, 30, sanguinius::TarotVisibility::public_result,
-                       5'000),
-                  5'000, fixture.ids(1'170))
+              ->observe_draw(draw(1'150, 30,
+                                  sanguinius::TarotVisibility::public_result,
+                                  5'000),
+                             5'000, fixture.ids(1'170))
               .empty());
   const auto deadline = fixture.house->resolve_due(no.wager->outcome_due_at_ms,
                                                    false, fixture.ids(1'200));
@@ -900,18 +912,19 @@ TEST_CASE("public House settlement waits for funded and draw deliveries",
         1'000, 2'000, "ordering", uuid(1'700 + index), true);
     REQUIRE(predecessor.has_value());
     REQUIRE(predecessor->outbox_id != terminal_id);
-    REQUIRE(durable.mark_public_outbox_submitted(
-                *predecessor,
-                {.wall_time_ms = 1'000,
-                 .elapsed_realtime_ms = fixture.clock.elapsed_realtime_ms(),
-                 .boot_session_id = std::string{fixture.clock.boot_session_id()}},
-                2'000) == sanguinius::WorkMutationStatus::applied);
+    REQUIRE(
+        durable.mark_public_outbox_submitted(
+            *predecessor,
+            {.wall_time_ms = 1'000,
+             .elapsed_realtime_ms = fixture.clock.elapsed_realtime_ms(),
+             .boot_session_id = std::string{fixture.clock.boot_session_id()}},
+            2'000) == sanguinius::WorkMutationStatus::applied);
     REQUIRE(durable.complete_public_outbox(
                 *predecessor, sanguinius::DiscordId{6'000 + index}, 1'000) ==
             sanguinius::WorkMutationStatus::applied);
   }
-  const auto terminal = durable.claim_due_outbox(
-      1'000, 2'000, "ordering", uuid(1'702), true);
+  const auto terminal =
+      durable.claim_due_outbox(1'000, 2'000, "ordering", uuid(1'702), true);
   REQUIRE(terminal.has_value());
   REQUIRE(terminal->outbox_id == terminal_id);
 }
@@ -1552,22 +1565,21 @@ TEST_CASE("weekly reminder waits for its source card and cancels if it fails",
   REQUIRE(fixture.scalar(
               "SELECT count(*) FROM tarot_house_offer_delivery_failure WHERE "
               "offer_id='" +
-              *offer.offer_id +
-              "' AND source_outbox_id='" + source->outbox_id +
+              *offer.offer_id + "' AND source_outbox_id='" + source->outbox_id +
               "' AND terminal_state='failed' AND "
               "error_code='injected_source_failure'") == 1);
   REQUIRE(fixture.scalar(
               "SELECT count(*) FROM tarot_house_control WHERE offer_id='" +
               *offer.offer_id + "' AND state='cancelled'") == 1);
   REQUIRE(fixture.house
-              ->availability(fixture.call("availability:failed-source",
-                                          reminder_due + 2),
-                             definition, false, 100)
+              ->availability(
+                  fixture.call("availability:failed-source", reminder_due + 2),
+                  definition, false, 100)
               .status ==
           sanguinius::HouseAvailabilityStatus::no_scheduled_offer);
   REQUIRE(fixture.house
-              ->play({.invocation = fixture.call("play:failed-source",
-                                                 reminder_due + 2),
+              ->play({.invocation =
+                          fixture.call("play:failed-source", reminder_due + 2),
                       .definition = &definition,
                       .catalog_version = fixture.house_catalog.version,
                       .choice_slug = "yes",
@@ -1660,8 +1672,8 @@ TEST_CASE("weekly play waits for its public source card delivery",
               .status == sanguinius::HouseMutationStatus::invalid_state);
   REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_house_wager") == 0);
   sanguinius::persistence::SqliteDurableWorkRepository durable{fixture.context};
-  const auto source = durable.claim_due_outbox(11'000, 21'000, "source",
-                                               uuid(5'200), true);
+  const auto source =
+      durable.claim_due_outbox(11'000, 21'000, "source", uuid(5'200), true);
   REQUIRE(source.has_value());
   REQUIRE(fixture.text_scalar(
               "SELECT aggregate_type FROM outbox_message WHERE outbox_id='" +
@@ -1675,23 +1687,23 @@ TEST_CASE("weekly play waits for its public source card delivery",
   REQUIRE(durable.complete_public_outbox(*source, sanguinius::DiscordId{5'200},
                                          11'000) ==
           sanguinius::WorkMutationStatus::applied);
-  REQUIRE(fixture.house
-              ->play({.invocation =
-                          fixture.call("house:delivered-source", 11'001),
-                      .definition = &definition,
-                      .catalog_version = fixture.house_catalog.version,
-                      .choice_slug = "yes",
-                      .stake = 1,
-                      .visibility = sanguinius::TarotVisibility::public_result,
-                      .exposure_cap = 100,
-                      .profit_cap = 20,
-                      .starting_fate = 100,
-                      .is_test = true,
-                      .offer_id = offer.offer_id,
-                      .next_id = fixture.ids(5'300)})
-              .status == sanguinius::HouseMutationStatus::applied);
-  const auto edit = durable.claim_due_outbox(11'001, 21'001, "edit",
-                                             uuid(5'500), true);
+  REQUIRE(
+      fixture.house
+          ->play({.invocation = fixture.call("house:delivered-source", 11'001),
+                  .definition = &definition,
+                  .catalog_version = fixture.house_catalog.version,
+                  .choice_slug = "yes",
+                  .stake = 1,
+                  .visibility = sanguinius::TarotVisibility::public_result,
+                  .exposure_cap = 100,
+                  .profit_cap = 20,
+                  .starting_fate = 100,
+                  .is_test = true,
+                  .offer_id = offer.offer_id,
+                  .next_id = fixture.ids(5'300)})
+          .status == sanguinius::HouseMutationStatus::applied);
+  const auto edit =
+      durable.claim_due_outbox(11'001, 21'001, "edit", uuid(5'500), true);
   REQUIRE(edit.has_value());
   REQUIRE(edit->kind == "discord.message_edit.v1");
 }
@@ -1821,8 +1833,7 @@ TEST_CASE("Last Standard records observed outcomes through owner authority",
           fixture.text_scalar("SELECT create_outbox_id FROM "
                               "tarot_house_public_card WHERE offer_id='" +
                               *offer.offer_id + "'"));
-  REQUIRE(durable.fail_outbox(*source, slot, slot + 1,
-                              "injected_source_retry",
+  REQUIRE(durable.fail_outbox(*source, slot, slot + 1, "injected_source_retry",
                               sanguinius::OutboxFailureMode::retryable) ==
           sanguinius::WorkMutationStatus::applied);
   const auto retried_source = durable.claim_due_outbox(
@@ -1834,9 +1845,8 @@ TEST_CASE("Last Standard records observed outcomes through owner authority",
                .elapsed_realtime_ms = fixture.clock.elapsed_realtime_ms(),
                .boot_session_id = std::string{fixture.clock.boot_session_id()}},
               slot + 900) == sanguinius::WorkMutationStatus::applied);
-  REQUIRE(durable.complete_public_outbox(*retried_source,
-                                         sanguinius::DiscordId{4'551},
-                                         slot + 1) ==
+  REQUIRE(durable.complete_public_outbox(
+              *retried_source, sanguinius::DiscordId{4'551}, slot + 1) ==
           sanguinius::WorkMutationStatus::applied);
   const auto play = fixture.house->play(
       {.invocation = fixture.call("house:manual:play", slot + 1'000),
@@ -1921,12 +1931,12 @@ TEST_CASE("Last Standard records observed outcomes through owner authority",
   REQUIRE(fixture.scalar(
               "SELECT count(*) FROM tarot_house_receipt WHERE "
               "operation='resolve' AND request_fingerprint IS NOT NULL") == 3);
-  REQUIRE(fixture.text_scalar(
-              "SELECT status FROM tarot_house_receipt WHERE "
-              "idempotency_key='house:manual:early'") == "invalid_state");
-  REQUIRE(fixture.text_scalar(
-              "SELECT status FROM tarot_house_receipt WHERE "
-              "idempotency_key='house:manual:member'") == "forbidden");
+  REQUIRE(fixture.text_scalar("SELECT status FROM tarot_house_receipt WHERE "
+                              "idempotency_key='house:manual:early'") ==
+          "invalid_state");
+  REQUIRE(fixture.text_scalar("SELECT status FROM tarot_house_receipt WHERE "
+                              "idempotency_key='house:manual:member'") ==
+          "forbidden");
   REQUIRE(
       fixture.text_scalar("SELECT state FROM outbox_message WHERE outbox_id='" +
                           source->outbox_id + "'") == "delivered");
@@ -1938,12 +1948,11 @@ TEST_CASE("Last Standard records observed outcomes through owner authority",
       observed_at, observed_at + 1'000, "edit-worker", uuid(4'999), true);
   REQUIRE(terminal_edit.has_value());
   REQUIRE(terminal_edit->kind == "discord.message_edit.v1");
-  REQUIRE(durable.mark_public_outbox_submitted(
-              *terminal_edit,
-              {.wall_time_ms = observed_at,
-               .elapsed_realtime_ms = 99,
-               .boot_session_id = uuid(4'998)},
-              observed_at + 1'000) ==
+  REQUIRE(durable.mark_public_outbox_submitted(*terminal_edit,
+                                               {.wall_time_ms = observed_at,
+                                                .elapsed_realtime_ms = 99,
+                                                .boot_session_id = uuid(4'998)},
+                                               observed_at + 1'000) ==
           sanguinius::WorkMutationStatus::applied);
   REQUIRE(durable.complete_public_outbox(*terminal_edit, 7'001, observed_at) ==
           sanguinius::WorkMutationStatus::applied);
@@ -2158,23 +2167,21 @@ TEST_CASE("test House cleanup exactly reverses loss and recovery ledgers",
   auto changed_scope = fixture.call("house:cleanup:loss", 30'001);
   changed_scope.channel_id = 21;
   REQUIRE_THROWS_AS(
-      fixture.house->cleanup_test_wager(
-          {.invocation = changed_scope,
-           .wager_id = loss.wager->wager_id,
-           .reason = "Restore staged balance",
-           .owner = true,
-           .test_mode = true,
-           .next_id = fixture.ids(5'400)}),
+      fixture.house->cleanup_test_wager({.invocation = changed_scope,
+                                         .wager_id = loss.wager->wager_id,
+                                         .reason = "Restore staged balance",
+                                         .owner = true,
+                                         .test_mode = true,
+                                         .next_id = fixture.ids(5'400)}),
       std::invalid_argument);
-  REQUIRE_THROWS_AS(
-      fixture.house->cleanup_test_wager(
-          {.invocation = fixture.call("house:test-loss", 30'001),
-           .wager_id = loss.wager->wager_id,
-           .reason = "Restore staged balance",
-           .owner = true,
-           .test_mode = true,
-           .next_id = fixture.ids(5'400)}),
-      std::invalid_argument);
+  REQUIRE_THROWS_AS(fixture.house->cleanup_test_wager(
+                        {.invocation = fixture.call("house:test-loss", 30'001),
+                         .wager_id = loss.wager->wager_id,
+                         .reason = "Restore staged balance",
+                         .owner = true,
+                         .test_mode = true,
+                         .next_id = fixture.ids(5'400)}),
+                    std::invalid_argument);
 
   fixture.provision(31, 40, 70);
   const auto &recovery =
@@ -2445,6 +2452,41 @@ TEST_CASE(
   REQUIRE_FALSE(integration.retry(uuid(7'631), 4'000));
 }
 
+TEST_CASE("disabled Tarot integration terminally suppresses new observations",
+          "[tarot][integration][disabled][orchestration]") {
+  HouseFixture fixture;
+  fixture.provision(30, 100, 90'650);
+  static_cast<void>(fixture.draws->draw(
+      {.invocation = fixture.call("draw:integration:disabled", 1'000),
+       .visibility = sanguinius::TarotVisibility::private_result,
+       .cooldown_ms = 86'400'000,
+       .bypass_cooldown = true,
+       .is_test = false,
+       .draw_id = uuid(90'656),
+       .event_id = uuid(90'657),
+       .sample = [] { return std::pair<std::int64_t, std::int64_t>{9, 0}; }}));
+  sanguinius::persistence::SqliteTarotIntegrationRepository integration{
+      fixture.context};
+
+  REQUIRE(integration.suppress_disabled(2'000, 50) == 1);
+  REQUIRE(integration.suppress_disabled(2'001, 50) == 0);
+  auto observation = fixture.context->connection().prepare(
+      "SELECT state,attempts,last_error,processed_at_ms FROM "
+      "tarot_integration_observation WHERE source_event_id=?");
+  observation.bind(1, uuid(90'657));
+  REQUIRE(observation.step());
+  REQUIRE(observation.column_text(0) == "suppressed");
+  REQUIRE(observation.column_int64(1) == 1);
+  REQUIRE(observation.column_text(2) == "integration_disabled");
+  REQUIRE(observation.column_int64(3) == 2'000);
+
+  const auto enabled_scan = integration.scan(3'000, 32, fixture.ids(90'660));
+  REQUIRE(enabled_scan.completed == 0);
+  REQUIRE(enabled_scan.suppressed == 1);
+  REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_player_event WHERE "
+                         "baseline=0") == 0);
+}
+
 TEST_CASE("real settlement retries beyond the cap before later player results",
           "[tarot][integration][retry][cap][ordering][restart]") {
   HouseFixture fixture;
@@ -2603,8 +2645,9 @@ TEST_CASE("competing Tarot integration workers produce each effect once",
   REQUIRE(fixture.scalar("SELECT count(*) FROM voice_narration_intent") == 0);
 }
 
-TEST_CASE("disabled Chronicle blocks integration-owned relationship and title sinks",
-          "[tarot][integration][chronicle][feature-flag]") {
+TEST_CASE(
+    "disabled Chronicle blocks integration-owned relationship and title sinks",
+    "[tarot][integration][chronicle][feature-flag]") {
   HouseFixture fixture;
   fixture.provision(30, 100, 10'100);
   fixture.context->connection().execute(
@@ -2631,8 +2674,9 @@ TEST_CASE("disabled Chronicle blocks integration-owned relationship and title si
   REQUIRE(played.status == sanguinius::HouseMutationStatus::applied);
   const auto draw = fixture.persist_draw(
       10'400, 30, sanguinius::TarotVisibility::private_result, 2'000);
-  REQUIRE(fixture.house->observe_draw(draw, 2'000, fixture.ids(10'500)).size() ==
-          1);
+  REQUIRE(
+      fixture.house->observe_draw(draw, 2'000, fixture.ids(10'500)).size() ==
+      1);
 
   sanguinius::persistence::SqliteTarotIntegrationRepository integration{
       fixture.context};
@@ -2647,6 +2691,19 @@ TEST_CASE("disabled Chronicle blocks integration-owned relationship and title si
   REQUIRE(fixture.scalar("SELECT count(*) FROM chronicle_title_grant") == 0);
   REQUIRE(fixture.scalar("SELECT count(*) FROM relationship_event") == 0);
   REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_chronicle_proposal") == 0);
+  REQUIRE(fixture.scalar(
+              "SELECT count(*) FROM tarot_integration_effect_receipt WHERE "
+              "sink_kind='title' AND sink_reference='chronicle_disabled'") ==
+          1);
+  REQUIRE(integration.check_projection().valid);
+  {
+    sanguinius::persistence::Transaction transaction{
+        fixture.context->connection(),
+        sanguinius::persistence::TransactionMode::immediate};
+    REQUIRE(integration.rebuild_projection_uncommitted().valid);
+    transaction.commit();
+  }
+  REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_title_source") == 0);
 
   const auto &last_standard =
       sanguinius::house_template(fixture.house_catalog, "last-standard");
@@ -2666,8 +2723,8 @@ TEST_CASE("disabled Chronicle blocks integration-owned relationship and title si
   REQUIRE(offer.offer_id.has_value());
   fixture.deliver_offer_source(*offer.offer_id, slot, 10'800);
   const auto notable = fixture.house->play(
-      {.invocation = fixture.call("house:chronicle-disabled:notable",
-                                  slot + 1'000),
+      {.invocation =
+           fixture.call("house:chronicle-disabled:notable", slot + 1'000),
        .definition = &last_standard,
        .catalog_version = fixture.house_catalog.version,
        .choice_slug = "yes",
@@ -2680,20 +2737,21 @@ TEST_CASE("disabled Chronicle blocks integration-owned relationship and title si
        .offer_id = offer.offer_id,
        .next_id = fixture.ids(10'900)});
   REQUIRE(notable.status == sanguinius::HouseMutationStatus::applied);
-  REQUIRE(fixture.house
-              ->resolve({.invocation = fixture.call(
-                             "house:chronicle-disabled:resolve", observed_at),
-                         .wager_id = notable.wager->wager_id,
-                         .result = sanguinius::HouseResult::win,
-                         .observed_choice = "yes",
-                         .reason = "Play remained underway at the appointed hour",
-                         .automatic = false,
-                         .next_id = fixture.ids(11'000)})
-              .status == sanguinius::HouseMutationStatus::applied);
+  REQUIRE(
+      fixture.house
+          ->resolve({.invocation = fixture.call(
+                         "house:chronicle-disabled:resolve", observed_at),
+                     .wager_id = notable.wager->wager_id,
+                     .result = sanguinius::HouseResult::win,
+                     .observed_choice = "yes",
+                     .reason = "Play remained underway at the appointed hour",
+                     .automatic = false,
+                     .next_id = fixture.ids(11'000)})
+          .status == sanguinius::HouseMutationStatus::applied);
   REQUIRE(integration
               .scan(observed_at, 32, fixture.ids(11'200),
-                    sanguinius::TarotIntegrationSinkPolicy{
-                        .chronicle_enabled = false})
+                    sanguinius::TarotIntegrationSinkPolicy{.chronicle_enabled =
+                                                               false})
               .failed == 0);
   REQUIRE(fixture.scalar("SELECT count(*) FROM relationship_event") == 0);
   REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_chronicle_proposal") == 0);
@@ -2898,6 +2956,23 @@ TEST_CASE("House title threshold creates once-only approved-system proposals",
           "SELECT count(*) FROM tarot_title_source WHERE title_name="
           "'Favored of the Cast Die' AND title_definition_id IS NOT NULL") ==
       1);
+  REQUIRE(integration.check_projection().valid);
+  fixture.context->connection().execute(
+      "DELETE FROM tarot_title_source WHERE title_name="
+      "'Favored of the Cast Die'");
+  REQUIRE_FALSE(integration.check_projection().valid);
+  {
+    sanguinius::persistence::Transaction transaction{
+        fixture.context->connection(),
+        sanguinius::persistence::TransactionMode::immediate};
+    REQUIRE(integration.rebuild_projection_uncommitted().valid);
+    transaction.commit();
+  }
+  REQUIRE(
+      fixture.scalar(
+          "SELECT count(*) FROM tarot_title_source WHERE title_name="
+          "'Favored of the Cast Die' AND title_definition_id IS NOT NULL") ==
+      1);
   REQUIRE(fixture.scalar("SELECT count(*) FROM chronicle_title_grant WHERE "
                          "state='proposed'") == 1);
   REQUIRE(fixture.scalar("SELECT count(*) FROM tarot_chronicle_proposal WHERE "
@@ -2951,7 +3026,6 @@ TEST_CASE("House title threshold creates once-only approved-system proposals",
                            .award_entry_id = uuid(10'000),
                            .event_id = uuid(10'001),
                            .outbox_id = uuid(10'002),
-                           .relationship_event_id = uuid(10'003),
                            .idempotency_key = "tarot:title:approve",
                            .correlation_id = "tarot-title-test",
                            .now_ms = 2'500});
@@ -2990,7 +3064,6 @@ TEST_CASE("House title threshold creates once-only approved-system proposals",
        .award_entry_id = uuid(10'010),
        .event_id = uuid(10'011),
        .outbox_id = uuid(10'012),
-       .relationship_event_id = uuid(10'013),
        .idempotency_key = "tarot:title:revoke",
        .correlation_id = "tarot-title-test",
        .now_ms = 2'600});

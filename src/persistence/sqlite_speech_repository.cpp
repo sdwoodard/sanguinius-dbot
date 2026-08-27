@@ -853,6 +853,24 @@ SqliteSpeechRepository::complete_usage(const TtsUsageCompletion &completion) {
   return SpeechMutationStatus::stale;
 }
 
+SpeechMutationStatus
+SqliteSpeechRepository::release_usage(const std::string_view attempt_id) {
+  if (!valid_uuid_v4(std::string{attempt_id}))
+    throw std::invalid_argument{"TTS usage release is invalid."};
+  const std::scoped_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  Transaction transaction{connection, TransactionMode::immediate};
+  auto remove = connection.prepare(
+      "DELETE FROM tts_usage_attempt WHERE attempt_id=? AND state='submitted'");
+  remove.bind(1, attempt_id);
+  remove.execute();
+  const auto status = connection.changes() == 1
+                          ? SpeechMutationStatus::applied
+                          : SpeechMutationStatus::not_found;
+  transaction.commit();
+  return status;
+}
+
 std::optional<TtsCacheMetadata>
 SqliteSpeechRepository::cache_metadata(const std::string_view cache_key,
                                        const std::int64_t accessed_at_ms) {

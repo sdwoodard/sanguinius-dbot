@@ -14,14 +14,15 @@
 #include "support/fake_message_log.hpp"
 #include "support/fake_random.hpp"
 #include "support/fake_relationship_repository.hpp"
-#include "support/fake_speech.hpp"
 #include "support/fake_repositories.hpp"
+#include "support/fake_safety.hpp"
+#include "support/fake_speech.hpp"
 #include "support/fake_tarot_house_repository.hpp"
 #include "support/fake_tarot_repository.hpp"
-#include "support/fake_wager_repository.hpp"
+#include "support/fake_voice_input.hpp"
 #include "support/fake_vox.hpp"
 #include "support/fake_vox_narration.hpp"
-#include "support/fake_voice_input.hpp"
+#include "support/fake_wager_repository.hpp"
 
 #include <memory>
 #include <utility>
@@ -56,10 +57,9 @@ public:
           .durable_delivery_receipt_wait = std::chrono::milliseconds{100},
           .speech = {},
           .voice_input = {},
-          .static_speech_assets =
-              {.entrance = make_vox_proof_chime(),
-               .error = make_vox_proof_chime(),
-               .farewell = make_vox_proof_chime()},
+          .static_speech_assets = {.entrance = make_vox_proof_chime(),
+                                   .error = make_vox_proof_chime(),
+                                   .farewell = make_vox_proof_chime()},
       }) {
     auto owned_clock = std::make_unique<FakeClock>();
     auto owned_ids = std::make_unique<FakeIdGenerator>(std::vector<std::string>{
@@ -97,10 +97,9 @@ public:
             : nullptr;
     auto owned_voice_listening =
         std::make_unique<FakeVoiceListeningRepository>();
-    auto owned_voice_input =
-        options.features.vox_enabled
-            ? std::make_unique<FakeVoiceInputAdapter>()
-            : nullptr;
+    auto owned_voice_input = options.features.vox_enabled
+                                 ? std::make_unique<FakeVoiceInputAdapter>()
+                                 : nullptr;
     auto owned_random =
         std::make_unique<FakeRandom>(std::vector<std::uint64_t>(128, 0));
     auto owned_ai = std::make_unique<FakeAiClient>();
@@ -108,6 +107,8 @@ public:
     auto owned_voice_gateway = std::make_unique<FakeVoiceGateway>();
     auto owned_audio_normalizer = std::make_unique<FakeAudioNormalizer>();
     auto owned_tts_cache = std::make_unique<FakeTtsCache>();
+    auto owned_runtime_controls =
+        std::make_unique<FakeRuntimeFeatureControlRepository>();
 
     clock = owned_clock.get();
     ids = owned_ids.get();
@@ -171,6 +172,8 @@ public:
             .text_to_speech = nullptr,
             .audio_normalizer = std::move(owned_audio_normalizer),
             .tts_cache = std::move(owned_tts_cache),
+            .runtime_feature_controls = std::move(owned_runtime_controls),
+            .retention = nullptr,
         });
   }
 

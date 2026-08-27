@@ -1059,6 +1059,13 @@ public:
       const std::scoped_lock lock{draft_mutex_};
       volatile_transcript_drafts = drafts_.size();
     }
+    std::string provider_circuit_state{"unavailable"};
+    if (transcription_) {
+      try {
+        provider_circuit_state = transcription_->provider_circuit_state();
+      } catch (...) {
+      }
+    }
     return {.capability = configured_capability(),
             .configured_enabled = configuration_.enabled,
             .consent_attested = configuration_.guild_consent_attested,
@@ -1070,6 +1077,7 @@ public:
             .transcription_queue = transcription_worker_.snapshot(),
             .callback_drops = callback_drops_.load(),
             .volatile_transcript_drafts = volatile_transcript_drafts,
+            .provider_circuit_state = std::move(provider_circuit_state),
             .last_failure_category = last_failure()};
   }
 
@@ -1200,27 +1208,26 @@ private:
               const std::stop_token stop_token = std::stop_token{},
               DeliveryCallback receipt_callback = {}) {
     auto wait = std::make_shared<EditWait>();
-    const auto submission =
-        public_editor_->edit({.guild_id = scope_.guild_id,
-                              .channel_id = scope_.primary_channel_id,
-                              .message_id = message_id,
-                              .message = message},
-                             [wait, receipt_callback =
-                                        std::move(receipt_callback)](
-                                 const DeliveryResult result) {
-                               {
-                                 const std::scoped_lock lock{wait->mutex};
-                                 wait->result = result;
-                                 wait->done = true;
-                                 wait->condition.notify_all();
-                               }
-                               if (receipt_callback) {
-                                 try {
-                                   receipt_callback(result);
-                                 } catch (...) {
-                                 }
-                               }
-                             });
+    const auto submission = public_editor_->edit(
+        {.guild_id = scope_.guild_id,
+         .channel_id = scope_.primary_channel_id,
+         .message_id = message_id,
+         .message = message},
+        [wait, receipt_callback =
+                   std::move(receipt_callback)](const DeliveryResult result) {
+          {
+            const std::scoped_lock lock{wait->mutex};
+            wait->result = result;
+            wait->done = true;
+            wait->condition.notify_all();
+          }
+          if (receipt_callback) {
+            try {
+              receipt_callback(result);
+            } catch (...) {
+            }
+          }
+        });
     // A queued terminal edit will still repair the original card after the
     // earlier request completes. Report it as unconfirmed so publish_ended()
     // immediately emits a replacement ended card in the meantime.
@@ -1340,8 +1347,7 @@ private:
     }
     try {
       diagnostics_.emit(
-          {DiagnosticSeverity::error,
-           "voice_input.public_status_recovery",
+          {DiagnosticSeverity::error, "voice_input.public_status_recovery",
            "The listening status edit and replacement ended-status delivery "
            "both failed.",
            std::nullopt});

@@ -9,6 +9,18 @@
 
 namespace sanguinius {
 
+namespace persistence {
+class SqliteConnection;
+}
+
+namespace database_cli_detail {
+
+[[nodiscard]] bool
+check_core_invariants(persistence::SqliteConnection &connection,
+                      std::ostream &output);
+
+} // namespace database_cli_detail
+
 enum class DatabaseCommandType {
   status,
   check,
@@ -19,6 +31,8 @@ enum class DatabaseCommandType {
   relationships_rebuild,
   tarot_check,
   tarot_rebuild,
+  invariants_check,
+  invariants_rebuild,
 };
 
 struct DatabaseCommand {

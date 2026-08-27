@@ -4,8 +4,8 @@
 #include "sanguinius/callback_fence.hpp"
 #include "sanguinius/chronicle.hpp"
 #include "sanguinius/command_registry.hpp"
-#include "sanguinius/dpp_command_registry.hpp"
 #include "sanguinius/dpp_cluster_host.hpp"
+#include "sanguinius/dpp_command_registry.hpp"
 #include "sanguinius/interaction_response_state.hpp"
 
 #include <dpp/dpp.h>
@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <ctime>
 #include <functional>
 #include <future>
 #include <memory>
@@ -110,11 +111,21 @@ void invoke_callback(const std::shared_ptr<CallbackFence> &callbacks,
 }
 
 [[nodiscard]] dpp::message discord_message(const InteractionMessage &source) {
+  std::size_t embed_text_size = 0;
+  if (source.embed) {
+    embed_text_size = source.embed->title.size() +
+                      source.embed->description.size() +
+                      source.embed->footer.size();
+    for (const auto &field : source.embed->fields)
+      embed_text_size += field.name.size() + field.value.size();
+  }
   if (source.content.size() > 2'000 || source.buttons.size() > 5 ||
       source.allowed_user_mentions.size() > 1 ||
       (source.embed.has_value() &&
        (source.embed->title.size() > 256 ||
-        source.embed->description.size() > 4'096))) {
+        source.embed->description.size() > 4'096 ||
+        source.embed->fields.size() > 25 ||
+        source.embed->footer.size() > 2'048 || embed_text_size > 6'000))) {
     throw std::invalid_argument{
         "Discord interaction message exceeds safe bounds."};
   }
@@ -128,6 +139,17 @@ void invoke_callback(const std::shared_ptr<CallbackFence> &callbacks,
     if (!source.embed->url.empty()) {
       embed.set_url(source.embed->url);
     }
+    for (const auto &field : source.embed->fields) {
+      if (field.name.empty() || field.name.size() > 256 ||
+          field.value.empty() || field.value.size() > 1'024)
+        throw std::invalid_argument{"Discord embed field exceeds safe bounds."};
+      embed.add_field(field.name, field.value, field.inline_field);
+    }
+    if (!source.embed->footer.empty())
+      embed.set_footer(source.embed->footer, {});
+    if (source.embed->timestamp_ms)
+      embed.set_timestamp(
+          static_cast<std::time_t>(*source.embed->timestamp_ms / 1'000));
     message.add_embed(embed);
   }
   if (!source.buttons.empty()) {
@@ -141,10 +163,13 @@ void invoke_callback(const std::shared_ptr<CallbackFence> &callbacks,
             "Discord interaction button exceeds safe bounds."};
       }
       dpp::component button;
+      const auto style =
+          source_button.style == ButtonStyle::secondary ? dpp::cos_secondary
+          : source_button.style == ButtonStyle::success ? dpp::cos_success
+          : source_button.style == ButtonStyle::danger  ? dpp::cos_danger
+                                                        : dpp::cos_primary;
       button.set_type(dpp::cot_button)
-          .set_style(source_button.style == ButtonStyle::secondary
-                         ? dpp::cos_secondary
-                         : dpp::cos_primary)
+          .set_style(style)
           .set_label(source_button.label)
           .set_id(source_button.custom_id)
           .set_disabled(source_button.disabled);
@@ -422,10 +447,9 @@ incoming_interaction(const dpp::interaction_create_t &event,
     throw std::invalid_argument{"Discord resolved users exceed safe bounds."};
   for (const auto &[user_id, resolved_user] : event.command.resolved.users) {
     const auto member = event.command.resolved.members.find(user_id);
-    auto resolved_display_name =
-        member == event.command.resolved.members.end()
-            ? std::string{}
-            : member->second.get_nickname();
+    auto resolved_display_name = member == event.command.resolved.members.end()
+                                     ? std::string{}
+                                     : member->second.get_nickname();
     if (resolved_display_name.empty())
       resolved_display_name = resolved_user.global_name.empty()
                                   ? resolved_user.username
@@ -510,6 +534,29 @@ void append_command_options(const std::vector<dpp::command_data_option> &source,
 [[nodiscard]] std::vector<dpp::slashcommand>
 make_discord_commands(const CommandCatalog &catalog,
                       const dpp::snowflake application_id) {
+  const auto translate_root_option = [](const CommandOptionDefinition &option) {
+    const auto option_type =
+        option.kind == CommandOptionKind::user      ? dpp::co_user
+        : option.kind == CommandOptionKind::integer ? dpp::co_integer
+                                                    : dpp::co_string;
+    dpp::command_option translated{option_type, option.name, option.description,
+                                   option.required};
+    if (option.kind == CommandOptionKind::string) {
+      translated.set_min_length(
+          static_cast<std::int64_t>(option.minimum_length));
+      translated.set_max_length(
+          static_cast<std::int64_t>(option.maximum_length));
+    } else if (option.kind == CommandOptionKind::integer) {
+      if (!option.minimum_integer || !option.maximum_integer)
+        throw std::invalid_argument{"Integer command bounds are required."};
+      translated.set_min_value(*option.minimum_integer);
+      translated.set_max_value(*option.maximum_integer);
+    }
+    for (const auto &choice : option.choices)
+      translated.add_choice(
+          dpp::command_option_choice{choice.name, choice.value});
+    return translated;
+  };
   std::vector<dpp::slashcommand> result;
   result.reserve(catalog.commands.size());
   for (const auto &definition : catalog.commands) {
@@ -526,18 +573,22 @@ make_discord_commands(const CommandCatalog &catalog,
                                   application_id};
     }
     command.set_dm_permission(false);
+    if (!definition.options.empty() && (!definition.subcommands.empty() ||
+                                        !definition.subcommand_groups.empty()))
+      throw std::invalid_argument{
+          "Root command options cannot be mixed with subcommands."};
+    for (const auto &option : definition.options)
+      command.add_option(translate_root_option(option));
     for (const auto &subcommand : definition.subcommands) {
       dpp::command_option translated{dpp::co_sub_command, subcommand.name,
                                      subcommand.description};
       for (const auto &option : subcommand.options) {
-        const auto option_type = option.kind == CommandOptionKind::user
-                                     ? dpp::co_user
-                                 : option.kind == CommandOptionKind::integer
-                                     ? dpp::co_integer
-                                     : dpp::co_string;
+        const auto option_type =
+            option.kind == CommandOptionKind::user      ? dpp::co_user
+            : option.kind == CommandOptionKind::integer ? dpp::co_integer
+                                                        : dpp::co_string;
         dpp::command_option translated_option{
-            option_type,
-            option.name, option.description, option.required};
+            option_type, option.name, option.description, option.required};
         if (option.kind == CommandOptionKind::string) {
           translated_option.set_min_length(
               static_cast<std::int64_t>(option.minimum_length));
@@ -558,20 +609,18 @@ make_discord_commands(const CommandCatalog &catalog,
       command.add_option(translated);
     }
     for (const auto &group : definition.subcommand_groups) {
-      dpp::command_option translated_group{
-          dpp::co_sub_command_group, group.name, group.description};
+      dpp::command_option translated_group{dpp::co_sub_command_group,
+                                           group.name, group.description};
       for (const auto &subcommand : group.subcommands) {
         dpp::command_option translated{dpp::co_sub_command, subcommand.name,
                                        subcommand.description};
         for (const auto &option : subcommand.options) {
-          const auto option_type = option.kind == CommandOptionKind::user
-                                       ? dpp::co_user
-                                   : option.kind == CommandOptionKind::integer
-                                       ? dpp::co_integer
-                                       : dpp::co_string;
+          const auto option_type =
+              option.kind == CommandOptionKind::user      ? dpp::co_user
+              : option.kind == CommandOptionKind::integer ? dpp::co_integer
+                                                          : dpp::co_string;
           dpp::command_option translated_option{
-              option_type,
-              option.name, option.description, option.required};
+              option_type, option.name, option.description, option.required};
           if (option.kind == CommandOptionKind::string) {
             translated_option.set_min_length(
                 static_cast<std::int64_t>(option.minimum_length));
@@ -741,8 +790,7 @@ void dpp_adapter_detail::translate_slash_command(
     append_command_options(outer.options, interaction.command_options);
     return;
   }
-  if (command.options.size() == 1 &&
-      outer.type == dpp::co_sub_command_group) {
+  if (command.options.size() == 1 && outer.type == dpp::co_sub_command_group) {
     if (!valid_name(outer.name) || outer.options.size() != 1 ||
         outer.options.front().type != dpp::co_sub_command ||
         !valid_name(outer.options.front().name)) {
@@ -932,7 +980,7 @@ class DppDiscordAdapter::Impl {
 public:
   Impl(std::shared_ptr<DppClusterHost> cluster_host,
        const std::chrono::seconds request_timeout, const DiscordId guild_id,
-      Diagnostics &diagnostics)
+       Diagnostics &diagnostics)
       : cluster_host_{std::move(cluster_host)},
         bot_{require_cluster(cluster_host_)}, diagnostics_{diagnostics},
         request_timeout_{request_timeout}, guild_id_{guild_id},
@@ -1007,8 +1055,7 @@ public:
               auto interaction = incoming_interaction(
                   event, InteractionKind::slash_command, callbacks);
               const auto command = event.command.get_command_interaction();
-              dpp_adapter_detail::translate_slash_command(command,
-                                                          interaction);
+              dpp_adapter_detail::translate_slash_command(command, interaction);
               interaction_callback_(std::move(interaction));
             } catch (const std::exception &) {
               reject_interaction(event, "Slash-command translation failed.");
@@ -1348,6 +1395,13 @@ void DppDiscordAdapter::reply(const ReplyRequest &request) {
         .set_title(request.embed->title)
         .set_url(request.embed->url)
         .set_description(request.embed->description);
+    for (const auto &field : request.embed->fields)
+      embed.add_field(field.name, field.value, field.inline_field);
+    if (!request.embed->footer.empty())
+      embed.set_footer(request.embed->footer, {});
+    if (request.embed->timestamp_ms)
+      embed.set_timestamp(
+          static_cast<std::time_t>(*request.embed->timestamp_ms / 1'000));
     reply.add_embed(embed);
   }
   reply.set_reference(dpp::snowflake{request.target.message_id.value()},

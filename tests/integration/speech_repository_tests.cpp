@@ -3,6 +3,7 @@
 #include "sanguinius/persistence/sqlite_repositories.hpp"
 #include "sanguinius/persistence/sqlite_speech_repository.hpp"
 #include "sanguinius/persistence/sqlite_vox_repository.hpp"
+#include "sanguinius/safety_controls.hpp"
 #include "sanguinius/speech.hpp"
 #include "sanguinius/speech_service.hpp"
 #include "sanguinius/tts.hpp"
@@ -10,6 +11,7 @@
 #include "support/fake_clock.hpp"
 #include "support/fake_diagnostics.hpp"
 #include "support/fake_id_generator.hpp"
+#include "support/fake_safety.hpp"
 #include "support/fake_speech.hpp"
 #include "support/fake_vox.hpp"
 #include "support/temp_database.hpp"
@@ -51,7 +53,7 @@ struct SpeechFixture {
         sanguinius::persistence::production_migrations(),
         {"test", "revision"},
         clock};
-    REQUIRE(migrator.apply(database.connection()).current_version == 15);
+    REQUIRE(migrator.apply(database.connection()).current_version == 16);
     context =
         std::make_shared<sanguinius::persistence::SqliteRepositoryContext>(
             std::move(database));
@@ -165,6 +167,19 @@ public:
 private:
   mutable std::mutex mutex_;
   mutable std::size_t calls_{};
+};
+
+class CircuitOpenTts final : public sanguinius::TextToSpeechClient {
+public:
+  [[nodiscard]] sanguinius::SynthesizedAudio
+  synthesize(const sanguinius::TtsRequest &, std::stop_token) const override {
+    throw sanguinius::TtsError{sanguinius::TtsFailureCategory::circuit_open,
+                               "TTS provider circuit is open."};
+  }
+
+  [[nodiscard]] std::string provider_circuit_state() const override {
+    return "open";
+  }
 };
 
 class BlockingFlavorTts final : public sanguinius::TextToSpeechClient {
@@ -750,6 +765,145 @@ TEST_CASE("speech service charges retries once and reuses normalized cache",
   service.stop();
 }
 
+TEST_CASE("open TTS circuit releases unsent usage and degrades member status",
+          "[speech][service][circuit][budget][status]") {
+  SpeechFixture fixture;
+  fixture.clock.set(std::chrono::sys_seconds{std::chrono::seconds{1}});
+  sanguinius::test::FakeVoiceGateway gateway;
+  gateway.start([](sanguinius::VoiceEvent) {});
+  REQUIRE(gateway.connect({.session_id = fixture.session_id,
+                           .guild_id = 10,
+                           .channel_id = 40,
+                           .member_user_id = 31,
+                           .generation = 1,
+                           .validate_member_channel = true}) ==
+          sanguinius::VoiceGatewaySubmit::accepted);
+  gateway.emit(sanguinius::VoiceEventKind::ready);
+  CircuitOpenTts client;
+  sanguinius::test::FakeAudioNormalizer normalizer;
+  sanguinius::test::FakeTtsCache cache;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  auto clip = sanguinius::make_vox_proof_chime();
+  sanguinius::SpeechService service{
+      *fixture.speech,
+      &client,
+      normalizer,
+      cache,
+      gateway,
+      fixture.clock,
+      ids,
+      diagnostics,
+      {.entrance = clip, .error = clip, .farewell = clip},
+      speech_configuration(true)};
+  service.start();
+  service.session_ready(fixture.session_id, "10", false, false);
+  REQUIRE(service
+              .say(fixture.session_id, "10", "The circuit is already open.",
+                   "speech:circuit-open", 1'000)
+              .status == SpeechEnqueueStatus::accepted);
+
+  bool failed{};
+  for (std::size_t attempt = 0; attempt < 200 && !failed; ++attempt) {
+    {
+      const std::scoped_lock lock{fixture.context->mutex()};
+      auto state = fixture.context->connection().prepare(
+          "SELECT state FROM speech_item WHERE "
+          "deduplication_key='speech:circuit-open'");
+      failed = state.step() && state.column_text(0) == "failed";
+    }
+    if (!failed)
+      std::this_thread::sleep_for(5ms);
+  }
+  REQUIRE(failed);
+  const auto health = service.health();
+  REQUIRE(health.provider_circuit_state == "open");
+  REQUIRE(health.repository.usage.rolling_day_attempts == 0);
+  REQUIRE(health.repository.usage.rolling_day_micro_usd == 0);
+
+  auto runtime =
+      std::make_unique<sanguinius::test::FakeRuntimeFeatureControlRepository>();
+  sanguinius::SafetyControlService safety{std::move(runtime),
+                                          fixture.clock,
+                                          ids,
+                                          {.vox_enabled = true},
+                                          nullptr,
+                                          nullptr,
+                                          &service,
+                                          nullptr,
+                                          nullptr};
+  REQUIRE(safety.member_status().tts == "degraded");
+  static_cast<void>(safety.set(sanguinius::SafetyTarget::tts, true, 31,
+                               "safety:original-disable", "correlation"));
+  REQUIRE_FALSE(service.health().provider_enabled);
+  static_cast<void>(safety.set(sanguinius::SafetyTarget::tts, false, 31,
+                               "safety:newer-enable", "correlation"));
+  REQUIRE(service.health().provider_enabled);
+  const auto replay = safety.set(sanguinius::SafetyTarget::tts, true, 31,
+                                 "safety:original-disable", "correlation");
+  REQUIRE(service.health().provider_enabled);
+  REQUIRE(replay.content.find("newer state was retained") != std::string::npos);
+  service.stop();
+}
+
+TEST_CASE(
+    "operator TTS kill preempts active synthesis before cache or playback",
+    "[speech][service][safety][tts][preemption]") {
+  SpeechFixture fixture;
+  fixture.clock.set(std::chrono::sys_seconds{std::chrono::seconds{1}});
+  sanguinius::test::FakeVoiceGateway gateway;
+  gateway.start([](sanguinius::VoiceEvent) {});
+  REQUIRE(gateway.connect({.session_id = fixture.session_id,
+                           .guild_id = 10,
+                           .channel_id = 40,
+                           .member_user_id = 31,
+                           .generation = 1,
+                           .validate_member_channel = true}) ==
+          sanguinius::VoiceGatewaySubmit::accepted);
+  gateway.emit(sanguinius::VoiceEventKind::ready);
+  BlockingFailureTts client;
+  sanguinius::test::FakeAudioNormalizer normalizer;
+  sanguinius::test::FakeTtsCache cache;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  auto clip = sanguinius::make_vox_proof_chime();
+  sanguinius::SpeechService service{
+      *fixture.speech,
+      &client,
+      normalizer,
+      cache,
+      gateway,
+      fixture.clock,
+      ids,
+      diagnostics,
+      {.entrance = clip, .error = clip, .farewell = clip},
+      speech_configuration(true)};
+  service.start();
+  service.session_ready(fixture.session_id, "10", false, false);
+  REQUIRE(service
+              .say(fixture.session_id, "10", "Stop this provider request.",
+                   "speech:operator-kill", 1'000)
+              .status == SpeechEnqueueStatus::accepted);
+  REQUIRE(client.wait_for_call(2s));
+  service.set_provider_operator_disabled(true);
+
+  bool preempted{};
+  for (std::size_t attempt = 0; attempt < 200 && !preempted; ++attempt) {
+    {
+      const std::scoped_lock lock{fixture.context->mutex()};
+      auto state = fixture.context->connection().prepare(
+          "SELECT state,provider_request_id,cache_key FROM speech_item WHERE "
+          "deduplication_key='speech:operator-kill'");
+      preempted = state.step() && state.column_text(0) == "failed" &&
+                  state.column_is_null(1) && state.column_is_null(2);
+    }
+    if (!preempted)
+      std::this_thread::sleep_for(5ms);
+  }
+  REQUIRE(preempted);
+  service.stop();
+}
+
 TEST_CASE("speech marker completion retries transient persistence failures",
           "[speech][service][marker][persistence][retry]") {
   sanguinius::test::FakeSpeechRepository repository;
@@ -904,6 +1058,25 @@ TEST_CASE("disabled provider emits one static and public-safe text fallback",
         notice = std::move(message);
         ++notices;
       }};
+  auto runtime =
+      std::make_unique<sanguinius::test::FakeRuntimeFeatureControlRepository>();
+  sanguinius::SafetyControlService safety{std::move(runtime),
+                                          fixture.clock,
+                                          ids,
+                                          {.vox_enabled = true},
+                                          nullptr,
+                                          nullptr,
+                                          &service,
+                                          nullptr,
+                                          nullptr};
+  REQUIRE(safety.member_status().tts == "unavailable");
+  const auto safety_status = safety.status();
+  REQUIRE(safety_status.embed.has_value());
+  const auto tts_status =
+      std::ranges::find(safety_status.embed->fields, std::string_view{"TTS"},
+                        &sanguinius::EmbedPayload::Field::name);
+  REQUIRE(tts_status != safety_status.embed->fields.end());
+  REQUIRE(tts_status->value == "enabled (configuration unavailable)");
   service.start();
   service.session_ready(fixture.session_id, "10", false, false);
   REQUIRE(service

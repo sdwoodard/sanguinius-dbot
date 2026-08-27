@@ -19,12 +19,10 @@ namespace sanguinius {
 namespace {
 
 std::atomic<std::uint64_t> temporary_sequence{};
-constexpr std::string_view ownership_filename{
-    ".sanguinius-tts-cache-v1"};
+constexpr std::string_view ownership_filename{".sanguinius-tts-cache-v1"};
 constexpr std::string_view ownership_contents{
     "sanguinius dedicated TTS cache v1\n"};
-constexpr std::string_view temporary_prefix{
-    ".sanguinius-tts-tmp-"};
+constexpr std::string_view temporary_prefix{".sanguinius-tts-tmp-"};
 
 [[nodiscard]] bool valid_key(const std::string_view key) noexcept {
   return key.size() == 64 &&
@@ -112,9 +110,9 @@ void write_all(const int descriptor, const std::span<const std::byte> bytes) {
   std::vector<std::byte> bytes(size);
   std::size_t offset{};
   while (offset < size) {
-    const auto received = ::read(
-        descriptor, reinterpret_cast<char *>(bytes.data()) + offset,
-        size - offset);
+    const auto received =
+        ::read(descriptor, reinterpret_cast<char *>(bytes.data()) + offset,
+               size - offset);
     if (received > 0) {
       offset += static_cast<std::size_t>(received);
       continue;
@@ -130,14 +128,15 @@ void write_all(const int descriptor, const std::span<const std::byte> bytes) {
 [[nodiscard]] std::int64_t timespec_nanoseconds(const timespec value) noexcept {
   constexpr std::int64_t nanoseconds_per_second = 1'000'000'000;
   if (value.tv_sec < 0 ||
-      value.tv_sec > std::numeric_limits<std::int64_t>::max() /
-                         nanoseconds_per_second)
+      value.tv_sec >
+          std::numeric_limits<std::int64_t>::max() / nanoseconds_per_second)
     return 0;
   return static_cast<std::int64_t>(value.tv_sec) * nanoseconds_per_second +
          value.tv_nsec;
 }
 
-void touch_access_time(const int descriptor, const struct stat &status) noexcept {
+void touch_access_time(const int descriptor,
+                       const struct stat &status) noexcept {
   timespec now{};
   if (::clock_gettime(CLOCK_REALTIME, &now) != 0)
     return;
@@ -157,21 +156,23 @@ FilesystemTtsCache::FilesystemTtsCache(std::filesystem::path root,
     throw std::invalid_argument{"TTS cache configuration is invalid."};
   std::error_code error;
   std::filesystem::create_directories(root_, error);
-  struct stat root_status {};
+  struct stat root_status{};
   if (error || ::lstat(root_.c_str(), &root_status) != 0 ||
-      !S_ISDIR(root_status.st_mode) ||
-      root_status.st_uid != ::geteuid())
+      !S_ISDIR(root_status.st_mode) || root_status.st_uid != ::geteuid())
     throw TtsError{TtsFailureCategory::cache_failed,
                    "Unable to create a secure TTS cache directory."};
-  std::filesystem::permissions(
-      root_, std::filesystem::perms::owner_all,
-      std::filesystem::perm_options::replace, error);
-  if (error)
-    throw TtsError{TtsFailureCategory::cache_failed,
-                   "Unable to secure the TTS cache directory."};
+  const auto secure_root = [&] {
+    error.clear();
+    std::filesystem::permissions(root_, std::filesystem::perms::owner_all,
+                                 std::filesystem::perm_options::replace, error);
+    if (error)
+      throw TtsError{TtsFailureCategory::cache_failed,
+                     "Unable to secure the TTS cache directory."};
+  };
 
   const auto ownership_path = root_ / ownership_filename;
-  struct stat ownership_status {};
+  struct stat ownership_status{};
+  bool secured{};
   if (::lstat(ownership_path.c_str(), &ownership_status) != 0) {
     if (errno != ENOENT)
       throw TtsError{TtsFailureCategory::cache_failed,
@@ -184,10 +185,12 @@ FilesystemTtsCache::FilesystemTtsCache(std::filesystem::path root,
     if (error)
       throw TtsError{TtsFailureCategory::cache_failed,
                      "Unable to inspect TTS cache ownership."};
-    const int descriptor = ::open(ownership_path.c_str(),
-                                  O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC |
-                                      O_NOFOLLOW,
-                                  S_IRUSR | S_IWUSR);
+    secure_root();
+    secured = true;
+    const int descriptor =
+        ::open(ownership_path.c_str(),
+               O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+               S_IRUSR | S_IWUSR);
     if (descriptor < 0)
       throw TtsError{TtsFailureCategory::cache_failed,
                      "Unable to claim the TTS cache directory."};
@@ -198,8 +201,8 @@ FilesystemTtsCache::FilesystemTtsCache(std::filesystem::path root,
       if (::fsync(descriptor) != 0 || ::close(descriptor) != 0)
         throw TtsError{TtsFailureCategory::cache_failed,
                        "Unable to commit TTS cache ownership."};
-      const int directory = ::open(
-          root_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+      const int directory = ::open(root_.c_str(), O_RDONLY | O_DIRECTORY |
+                                                      O_CLOEXEC | O_NOFOLLOW);
       if (directory < 0 || ::fsync(directory) != 0) {
         if (directory >= 0)
           static_cast<void>(::close(directory));
@@ -219,8 +222,7 @@ FilesystemTtsCache::FilesystemTtsCache(std::filesystem::path root,
   if (!S_ISREG(ownership_status.st_mode) ||
       ownership_status.st_uid != ::geteuid() ||
       (ownership_status.st_mode & (S_IRWXG | S_IRWXO)) != 0 ||
-      ownership_status.st_size !=
-          static_cast<off_t>(ownership_contents.size()))
+      ownership_status.st_size != static_cast<off_t>(ownership_contents.size()))
     throw TtsError{TtsFailureCategory::cache_failed,
                    "The TTS cache ownership marker is invalid."};
   const int marker =
@@ -236,12 +238,14 @@ FilesystemTtsCache::FilesystemTtsCache(std::filesystem::path root,
     throw;
   }
   static_cast<void>(::close(marker));
-  const auto expected = std::as_bytes(std::span{ownership_contents.data(),
-                                                ownership_contents.size()});
+  const auto expected = std::as_bytes(
+      std::span{ownership_contents.data(), ownership_contents.size()});
   if (!std::equal(marker_bytes.begin(), marker_bytes.end(), expected.begin(),
                   expected.end()))
     throw TtsError{TtsFailureCategory::cache_failed,
                    "The TTS cache ownership marker is invalid."};
+  if (!secured)
+    secure_root();
 }
 
 std::optional<PcmAudio>
@@ -253,16 +257,17 @@ FilesystemTtsCache::read(const std::string_view key,
                    "TTS cache checksum is invalid."};
   const std::scoped_lock lock{mutex_};
   const auto path = root_ / name;
-  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  const int descriptor =
+      ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
   if (descriptor < 0) {
-    struct stat link_status {};
+    struct stat link_status{};
     if (::lstat(path.c_str(), &link_status) == 0 &&
         S_ISLNK(link_status.st_mode))
       static_cast<void>(::unlink(path.c_str()));
     ++health_.misses;
     return std::nullopt;
   }
-  struct stat status {};
+  struct stat status{};
   if (::fstat(descriptor, &status) != 0 || !S_ISREG(status.st_mode) ||
       status.st_size <= 0 ||
       static_cast<std::uintmax_t>(status.st_size) > maximum_tts_pcm_bytes ||
@@ -355,7 +360,7 @@ void FilesystemTtsCache::erase(const std::string_view key) noexcept {
     const auto name = filename(key);
     const std::scoped_lock lock{mutex_};
     const auto path = root_ / name;
-    struct stat status {};
+    struct stat status{};
     const bool existed = ::lstat(path.c_str(), &status) == 0;
     if (::unlink(path.c_str()) == 0 && existed) {
       if (health_.entries > 0)
@@ -397,16 +402,15 @@ FilesystemTtsCache::purge_locked(const std::string_view protected_key) {
        !error && iterator != end; iterator.increment(error)) {
     const auto &entry = *iterator;
     const auto name = entry.path().filename().string();
-    const bool named_entry =
-        name.size() == 68 && name.ends_with(".pcm") &&
-        valid_key(std::string_view{name}.substr(0, 64));
+    const bool named_entry = name.size() == 68 && name.ends_with(".pcm") &&
+                             valid_key(std::string_view{name}.substr(0, 64));
     if (name == ownership_filename)
       continue;
     const bool temporary_entry = valid_temporary_name(name);
     if (!temporary_entry && !named_entry)
       throw TtsError{TtsFailureCategory::cache_failed,
                      "The TTS cache contains an unowned entry."};
-    struct stat status {};
+    struct stat status{};
     if (::lstat(entry.path().c_str(), &status) != 0 ||
         !S_ISREG(status.st_mode) || status.st_size <= 0 ||
         static_cast<std::uintmax_t>(status.st_size) > maximum_tts_pcm_bytes ||

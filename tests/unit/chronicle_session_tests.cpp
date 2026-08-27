@@ -149,7 +149,10 @@ TEST_CASE("Chronicle title responses expose full references in bounded pages",
   listing.user_id = 31;
   const auto listed = service.list_titles(listing);
   REQUIRE(listed.content.find(grant_id) != std::string::npos);
-  REQUIRE(listed.content.find("page 1 of 2") != std::string::npos);
+  REQUIRE(listed.content.find("Page 1 of 2") != std::string::npos);
+  REQUIRE(listed.buttons.size() == 2);
+  REQUIRE(listed.buttons[0].disabled);
+  REQUIRE_FALSE(listed.buttons[1].disabled);
   REQUIRE(listed.content.size() < 2'000);
 }
 
@@ -206,7 +209,7 @@ TEST_CASE("closing Chronicle sessions do not expose fallback review controls",
           std::string::npos);
 }
 
-TEST_CASE("empty revalidated search pages retain their next control",
+TEST_CASE("empty revalidated search pages expose two-way navigation",
           "[chronicle][search][pagination][privacy]") {
   using namespace sanguinius;
   test::FakeChronicleSessionRepository repository;
@@ -237,11 +240,15 @@ TEST_CASE("empty revalidated search pages retain their next control",
   interaction.custom_id = std::string{chronicle_search_component_prefix} +
                           "00000000-0000-4000-8000-000000000200";
   const auto message = service.advance_search(interaction);
-  REQUIRE(message.content == "No results on this page remain visible.");
-  REQUIRE(message.buttons.size() == 1);
-  REQUIRE(message.buttons.front().custom_id ==
-          std::string{chronicle_search_component_prefix} +
-              "00000000-0000-4000-8000-000000000202");
+  REQUIRE(message.content ==
+          "No results on this page remain visible.\nPage 2 of 3");
+  REQUIRE(message.buttons.size() == 2);
+  REQUIRE(message.buttons[0].custom_id ==
+          std::string{chronicle_search_page_prefix} +
+              "00000000-0000-4000-8000-000000000201:0");
+  REQUIRE(message.buttons[1].custom_id ==
+          std::string{chronicle_search_page_prefix} +
+              "00000000-0000-4000-8000-000000000201:2");
 }
 
 TEST_CASE("structured Chronicle summaries use an exact strict schema",
@@ -288,6 +295,7 @@ TEST_CASE("an unavailable AI queue completes the deterministic fallback",
   test::FakeClock clock{std::chrono::sys_seconds{100s}};
   test::FakePersistentIdGenerator ids;
   bool outbox_woken = false;
+  bool domain_woken = false;
   ChronicleSessionService service{repository,
                                   clock,
                                   ids,
@@ -299,7 +307,8 @@ TEST_CASE("an unavailable AI queue completes the deterministic fallback",
                                   nullptr,
                                   nullptr,
                                   nullptr,
-                                  nullptr};
+                                  nullptr,
+                                  [&domain_woken] { domain_woken = true; }};
   const ClaimedScheduledJob job{
       .job_id = "00000000-0000-4000-8000-000000000101",
       .job_type = std::string{session_summary_job_type},
@@ -324,9 +333,45 @@ TEST_CASE("an unavailable AI queue completes the deterministic fallback",
   REQUIRE_FALSE(repository.last_summary_completion->candidate.has_value());
   REQUIRE(repository.last_summary_completion->failure_category ==
           "queue_unavailable");
-  REQUIRE(repository.last_summary_completion->relationship_event_ids.size() ==
-          1);
   REQUIRE(outbox_woken);
+  REQUIRE(domain_woken);
+}
+
+TEST_CASE("starting a Chronicle session wakes cross-feature orchestration",
+          "[chronicle][session][orchestration]") {
+  using namespace sanguinius;
+  test::FakeChronicleSessionRepository repository;
+  test::FakeClock clock{std::chrono::sys_seconds{100s}};
+  test::FakePersistentIdGenerator ids;
+  std::size_t domain_wakes{};
+  ChronicleSessionService service{repository,
+                                  clock,
+                                  ids,
+                                  ServerScopeConfiguration{10, 20, 30},
+                                  ControlConfiguration{},
+                                  [] {},
+                                  [] {},
+                                  "America/New_York",
+                                  nullptr,
+                                  nullptr,
+                                  nullptr,
+                                  nullptr,
+                                  [&domain_wakes] { ++domain_wakes; }};
+  IncomingInteraction interaction;
+  interaction.correlation_id = "start-wake";
+  interaction.interaction_id = 900;
+  interaction.guild_id = 10;
+  interaction.channel_id = 20;
+  interaction.user_id = 31;
+
+  REQUIRE(service.start(interaction).code ==
+          ChronicleSessionResultCode::created);
+  REQUIRE(domain_wakes == 1);
+
+  repository.start_result.code = ChronicleSessionResultCode::existing;
+  REQUIRE(service.start(interaction).code ==
+          ChronicleSessionResultCode::existing);
+  REQUIRE(domain_wakes == 1);
 }
 
 TEST_CASE("changed summary context releases fallback work for immediate retry",
@@ -337,15 +382,13 @@ TEST_CASE("changed summary context releases fallback work for immediate retry",
   durable.seed_job({.job_id = "00000000-0000-4000-8000-000000000201",
                     .job_type = std::string{session_summary_job_type},
                     .aggregate_type = "chronicle_session",
-                    .aggregate_id =
-                        "00000000-0000-4000-8000-000000000202",
+                    .aggregate_id = "00000000-0000-4000-8000-000000000202",
                     .due_at_ms = 100'000,
                     .max_attempts = 5,
                     .idempotency_key = "job:changed-summary-context",
                     .created_at_ms = 100'000},
                    SessionSummaryJobPayload{
-                       .session_id =
-                           "00000000-0000-4000-8000-000000000202",
+                       .session_id = "00000000-0000-4000-8000-000000000202",
                        .draft_id = "00000000-0000-4000-8000-000000000203",
                        .expected_session_revision = 2,
                        .expected_draft_revision = 1});
@@ -359,23 +402,23 @@ TEST_CASE("changed summary context releases fallback work for immediate retry",
   test::FakeClock clock{std::chrono::sys_seconds{100s}};
   test::FakePersistentIdGenerator ids;
   bool scheduler_woken = false;
-  ChronicleSessionService service{repository,
-                                  clock,
-                                  ids,
-                                  ServerScopeConfiguration{10, 20, 30},
-                                  ControlConfiguration{},
-                                  [&scheduler_woken] { scheduler_woken = true; },
-                                  [] {},
-                                  "America/New_York",
-                                  nullptr,
-                                  nullptr,
-                                  &durable,
-                                  nullptr};
+  ChronicleSessionService service{
+      repository,
+      clock,
+      ids,
+      ServerScopeConfiguration{10, 20, 30},
+      ControlConfiguration{},
+      [&scheduler_woken] { scheduler_woken = true; },
+      [] {},
+      "America/New_York",
+      nullptr,
+      nullptr,
+      &durable,
+      nullptr};
   REQUIRE(service.submit_summary_job(*claimed) == SubmitResult::accepted);
   REQUIRE(scheduler_woken);
   const auto reclaimed = durable.claim_due_job(
-      100'000, 220'000, "competitor",
-      "00000000-0000-4000-8000-000000000205");
+      100'000, 220'000, "competitor", "00000000-0000-4000-8000-000000000205");
   REQUIRE(reclaimed);
   REQUIRE(reclaimed->attempt_count == 1);
 }

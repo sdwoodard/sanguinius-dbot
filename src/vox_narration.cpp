@@ -20,7 +20,6 @@
 namespace sanguinius {
 namespace {
 
-constexpr auto poll_interval = std::chrono::milliseconds{750};
 // The production AI client permits a request to run for 60 seconds. Keep the
 // durable claim beyond that deadline so reconciliation cannot start a second
 // model attempt while the first valid request is still returning.
@@ -526,7 +525,9 @@ parse_narration_line(const std::string_view response,
   }
 }
 
-[[nodiscard]] AiRequest session_flavor_request(const std::string &context) {
+[[nodiscard]] AiRequest
+session_flavor_request(const std::string &context,
+                       const std::string_view session_id) {
   return {
       .instructions =
           "Prepare one brief entrance and one brief farewell in "
@@ -539,11 +540,17 @@ parse_narration_line(const std::string_view response,
           "string fields entrance and farewell.",
       .conversation = {{"user", "Public-safe session context:\n" + context}},
       .max_output_tokens = 160,
-      .json_schema = AiRequest::JsonSchema{
-          .name = "vox_session_flavor",
-          .schema =
-              R"({"type":"object","properties":{"entrance":{"type":"string","minLength":1,"maxLength":640},"farewell":{"type":"string","minLength":1,"maxLength":640}},"required":["entrance","farewell"],"additionalProperties":false})",
-          .strict = true}};
+      .json_schema =
+          AiRequest::JsonSchema{
+              .name = "vox_session_flavor",
+              .schema =
+                  R"({"type":"object","properties":{"entrance":{"type":"string","minLength":1,"maxLength":640},"farewell":{"type":"string","minLength":1,"maxLength":640}},"required":["entrance","farewell"],"additionalProperties":false})",
+              .strict = true},
+      .purpose = AiPurpose::vox_session,
+      .priority = AiPriority::optional,
+      .requester_user_id = std::nullopt,
+      .idempotency_key = "ai:vox-session:" + std::string{session_id},
+  };
 }
 
 [[nodiscard]] std::optional<std::pair<std::string, std::string>>
@@ -698,11 +705,18 @@ AiRequest vox_narration_request(const VoxNarrationCandidate &candidate) {
                                     "\nPublic-safe projection:\n" +
                                     candidate.safe_input}},
       .max_output_tokens = 96,
-      .json_schema = AiRequest::JsonSchema{
-          .name = "vox_narration_line",
-          .schema =
-              R"({"type":"object","properties":{"line":{"type":"string","minLength":1,"maxLength":640}},"required":["line"],"additionalProperties":false})",
-          .strict = true}};
+      .json_schema =
+          AiRequest::JsonSchema{
+              .name = "vox_narration_line",
+              .schema =
+                  R"({"type":"object","properties":{"line":{"type":"string","minLength":1,"maxLength":640}},"required":["line"],"additionalProperties":false})",
+              .strict = true},
+      .purpose = AiPurpose::vox_narration,
+      .priority = AiPriority::optional,
+      .requester_user_id = std::nullopt,
+      .idempotency_key = "ai:vox-narration:" + candidate.intent_id + ":" +
+                         std::to_string(candidate.revision),
+  };
 }
 
 std::optional<std::string>
@@ -753,12 +767,14 @@ VoxNarrationService::VoxNarrationService(
     PersistentIdGenerator &ids, Diagnostics &diagnostics, const AiClient &ai,
     AiWorkService &ai_work, std::string instance_id, const bool enabled,
     const bool test_mode, std::function<void()> speech_wakeup,
-    SessionFlavorReady session_flavor_ready)
+    SessionFlavorReady session_flavor_ready,
+    std::function<void()> orchestration_wakeup)
     : repository_{repository}, clock_{clock}, ids_{ids},
       diagnostics_{diagnostics}, ai_{ai}, ai_work_{ai_work},
       instance_id_{std::move(instance_id)}, enabled_{enabled},
       test_mode_{test_mode}, speech_wakeup_{std::move(speech_wakeup)},
-      session_flavor_ready_{std::move(session_flavor_ready)} {
+      session_flavor_ready_{std::move(session_flavor_ready)},
+      orchestration_wakeup_{std::move(orchestration_wakeup)} {
   if (instance_id_.empty())
     throw std::invalid_argument{"Narration instance ID is required."};
 }
@@ -769,19 +785,12 @@ void VoxNarrationService::start() {
   if (started_ || callbacks_closed_)
     throw std::logic_error{"Narration service may only be started once."};
   started_ = true;
-  poller_ = std::jthread{[this](const std::stop_token token) { poll(token); }};
 }
 
 void VoxNarrationService::stop() noexcept {
   try {
     static_cast<void>(work_stop_.request_stop());
-    if (started_) {
-      poller_.request_stop();
-      wakeup_.notify_all();
-      if (poller_.joinable())
-        poller_.join();
-      started_ = false;
-    }
+    started_ = false;
     if (!callbacks_closed_) {
       callbacks_->close_and_wait();
       callbacks_closed_ = true;
@@ -794,8 +803,6 @@ void VoxNarrationService::stop() noexcept {
   }
 }
 
-void VoxNarrationService::wake() noexcept { wakeup_.notify_all(); }
-
 void VoxNarrationService::prepare_session_flavor(std::string session_id,
                                                  std::string guild_id,
                                                  std::string summoner_user_id) {
@@ -803,7 +810,7 @@ void VoxNarrationService::prepare_session_flavor(std::string session_id,
     return;
   const auto correlation = shortened_persistent_id(session_id);
   const auto work_stop_token = work_stop_.get_token();
-  const auto submitted = ai_work_.submit(
+  const auto submitted = ai_work_.submit_optional(
       [callbacks = callbacks_, this, session_id = std::move(session_id),
        guild_id = std::move(guild_id),
        summoner_user_id = std::move(summoner_user_id),
@@ -821,9 +828,10 @@ void VoxNarrationService::prepare_session_flavor(std::string session_id,
                     session_id, guild_id, summoner_user_id);
                 if (!context)
                   return;
-                const auto response = ai_.generate(
-                    session_flavor_request(*context), work_stop_token);
-                auto flavor = parse_session_flavor(response, *context);
+                const auto response =
+                    ai_.generate(session_flavor_request(*context, session_id),
+                                 work_stop_token);
+                auto flavor = parse_session_flavor(response.text, *context);
                 const auto current_context = repository_.session_flavor_context(
                     session_id, guild_id, summoner_user_id);
                 if (!flavor ||
@@ -851,21 +859,32 @@ void VoxNarrationService::prepare_session_flavor(std::string session_id,
   }
 }
 
-void VoxNarrationService::run_one_cycle() {
+bool VoxNarrationService::run_one_cycle() {
+  constexpr std::size_t pass_limit = 50;
+  constexpr std::size_t observation_limit = 32;
   const auto current = now_ms(clock_);
-  static_cast<void>(repository_.observe_batch(
-      {.now_ms = current,
-       .enabled = enabled_,
-       .test_mode = test_mode_,
-       .limit = 32,
-       .next_id = [this] { return ids_.next_id(); }}));
-  static_cast<void>(repository_.reconcile(
-      current, [this] { return ids_.next_id(); },
-      [this](const std::string_view intent_id) {
-        return generation_is_live(intent_id);
-      }));
+  const auto observed =
+      repository_.observe_batch({.now_ms = current,
+                                 .enabled = enabled_,
+                                 .test_mode = test_mode_,
+                                 .limit = observation_limit,
+                                 .next_id = [this] { return ids_.next_id(); }});
+  auto remaining = pass_limit - std::min(observed, pass_limit);
+  const auto reconciled = remaining == 0
+                              ? 0
+                              : repository_.reconcile(
+                                    current, [this] { return ids_.next_id(); },
+                                    [this](const std::string_view intent_id) {
+                                      return generation_is_live(intent_id);
+                                    },
+                                    remaining);
+  remaining -= std::min(reconciled, remaining);
+  const auto backlog = observed >= observation_limit || reconciled != 0 ||
+                       (!enabled_ && observed != 0);
   if (!enabled_)
-    return;
+    return backlog;
+  if (remaining == 0)
+    return true;
   const auto claim_lease_token = ids_.next_id();
   const auto candidate =
       repository_.claim_next({.now_ms = current,
@@ -875,18 +894,18 @@ void VoxNarrationService::run_one_cycle() {
                               .lease_until_ms = current + generation_lease_ms,
                               .test_mode = test_mode_});
   if (!candidate)
-    return;
+    return backlog;
   if (candidate->event_type == "chronicle.session_started.v1" ||
       candidate->event_type == "chronicle.session_completed.v1") {
     complete_fallback(*candidate, VoxNarrationModelStatus::not_requested);
-    return;
+    return true;
   }
   {
     const std::scoped_lock lock{generation_mutex_};
     live_generations_.insert(candidate->intent_id);
   }
   const auto work_stop_token = work_stop_.get_token();
-  const auto submitted = ai_work_.submit(
+  const auto submitted = ai_work_.submit_optional(
       [callbacks = callbacks_, this, candidate = *candidate, claim_lease_token,
        work_stop_token](const std::stop_token) mutable {
         static_cast<void>(
@@ -902,22 +921,7 @@ void VoxNarrationService::run_one_cycle() {
     release_generation(candidate->intent_id);
     complete_fallback(*candidate, VoxNarrationModelStatus::saturated);
   }
-}
-
-void VoxNarrationService::poll(const std::stop_token stop_token) noexcept {
-  while (!stop_token.stop_requested()) {
-    try {
-      run_one_cycle();
-    } catch (const std::exception &) {
-      diagnostics_.emit({DiagnosticSeverity::error, "vox.narration.poll",
-                         "Narration polling failed safely.", std::nullopt});
-    } catch (...) {
-      diagnostics_.emit({DiagnosticSeverity::error, "vox.narration.poll",
-                         "Unknown narration polling failure.", std::nullopt});
-    }
-    std::unique_lock lock{mutex_};
-    wakeup_.wait_for(lock, poll_interval);
-  }
+  return true;
 }
 
 void VoxNarrationService::generate(VoxNarrationCandidate candidate,
@@ -925,7 +929,7 @@ void VoxNarrationService::generate(VoxNarrationCandidate candidate,
   try {
     const auto response =
         ai_.generate(vox_narration_request(candidate), stop_token);
-    auto parsed = parse_narration_line(response, candidate);
+    auto parsed = parse_narration_line(response.text, candidate);
     if (!parsed.line) {
       const auto status = parsed.status == LineValidationStatus::duplicate
                               ? VoxNarrationModelStatus::duplicate
@@ -948,7 +952,8 @@ void VoxNarrationService::generate(VoxNarrationCandidate candidate,
          .now_ms = now_ms(clock_)});
     if (speech_wakeup_)
       speech_wakeup_();
-    wake();
+    if (orchestration_wakeup_)
+      orchestration_wakeup_();
   } catch (const AiRefusal &) {
     complete_fallback(std::move(candidate), VoxNarrationModelStatus::refused);
   } catch (const OperationCancelled &) {
@@ -991,7 +996,8 @@ void VoxNarrationService::generate_dispatched(
   } catch (...) {
   }
   release_generation(intent_id);
-  wake();
+  if (orchestration_wakeup_)
+    orchestration_wakeup_();
 }
 
 bool VoxNarrationService::generation_is_live(
@@ -1033,7 +1039,8 @@ void VoxNarrationService::complete_fallback(
          .now_ms = now_ms(clock_)});
     if (speech_wakeup_)
       speech_wakeup_();
-    wake();
+    if (orchestration_wakeup_)
+      orchestration_wakeup_();
   } catch (const std::exception &) {
     diagnostics_.emit({DiagnosticSeverity::warning, "vox.narration.complete",
                        "Narration completion failed safely.",
@@ -1056,7 +1063,8 @@ VoxNarrationService::enqueue(const std::string_view source_event_id) {
        .test_mode = test_mode_,
        .next_id = [this] { return ids_.next_id(); }});
   if (result.status != VoxNarrationEnqueueStatus::rejected)
-    wake();
+    if (orchestration_wakeup_)
+      orchestration_wakeup_();
   return result;
 }
 
@@ -1070,7 +1078,8 @@ std::string VoxNarrationService::enqueue_with_receipt(
        .test_mode = test_mode_,
        .next_id = [this] { return ids_.next_id(); }},
       context);
-  wake();
+  if (orchestration_wakeup_)
+    orchestration_wakeup_();
   return response;
 }
 

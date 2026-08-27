@@ -373,10 +373,11 @@ void insert_public_dependency(SqliteConnection &connection,
                               const std::string_view successor_outbox_id,
                               const std::string_view dependency_kind,
                               const std::int64_t now_ms) {
-  auto insert = connection.prepare(
-      "INSERT OR IGNORE INTO tarot_public_outbox_dependency("
-      "predecessor_outbox_id,successor_outbox_id,dependency_kind,created_at_ms) "
-      "VALUES(?,?,?,?)");
+  auto insert =
+      connection.prepare("INSERT OR IGNORE INTO tarot_public_outbox_dependency("
+                         "predecessor_outbox_id,successor_outbox_id,dependency_"
+                         "kind,created_at_ms) "
+                         "VALUES(?,?,?,?)");
   insert.bind(1, predecessor_outbox_id);
   insert.bind(2, successor_outbox_id);
   insert.bind(3, dependency_kind);
@@ -795,11 +796,10 @@ qualifying_draw(SqliteConnection &connection, const HouseWagerRecord &wager) {
           "tarot.house.draw:" + draw.draw_id + ":" + wager.wager_id,
       .correlation_id = "tarot-house-draw-reconciliation",
       .now_ms = std::max({now_ms, draw.drawn_at_ms, wager.accepted_at_ms})};
-  return settle_uncommitted(connection, wager, call,
-                            observed_draw_outcome(wager),
-                            "Observed qualifying Tarot draw",
-                            SettlementCause::observed_draw, draw.draw_id,
-                            factory);
+  return settle_uncommitted(
+      connection, wager, call, observed_draw_outcome(wager),
+      "Observed qualifying Tarot draw", SettlementCause::observed_draw,
+      draw.draw_id, factory);
 }
 
 [[nodiscard]] HouseMutationStatus receipt_status(const std::string_view value) {
@@ -1868,9 +1868,7 @@ SqliteTarotHouseRepository::resolve(const HouseResolveRequest &request) {
                      : load_wager(connection, receipt.column_text(0));
     const auto status = receipt_status(stored_status);
     transaction.commit();
-    return {.status = status,
-            .wager = std::move(prior),
-            .event_types = {}};
+    return {.status = status, .wager = std::move(prior), .event_types = {}};
   }
   const auto save_resolution_receipt =
       [&](const HouseMutationStatus status,
@@ -1905,7 +1903,7 @@ SqliteTarotHouseRepository::resolve(const HouseResolveRequest &request) {
             .wager = wager,
             .event_types = {}};
   }
-  HouseResult resolved_result = request.result;
+  HouseResult resolved_result;
   auto owner = connection.prepare(
       "SELECT config.owner_user_id FROM tarot_house_wager wager JOIN "
       "guild_config config ON config.guild_id=wager.guild_id WHERE "
@@ -2034,8 +2032,9 @@ SqliteTarotHouseRepository::observe_draw(const TarotDrawRecord &draw,
 }
 
 std::vector<HouseMutationResult> SqliteTarotHouseRepository::reconcile_draws(
-    const std::int64_t now_ms, std::function<std::string()> factory) {
-  if (now_ms < 0 || !factory)
+    const std::int64_t now_ms, std::function<std::string()> factory,
+    const std::size_t limit) {
+  if (now_ms < 0 || !factory || limit == 0 || limit > 50)
     throw std::invalid_argument{"House draw reconciliation is invalid."};
   std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
@@ -2044,9 +2043,20 @@ std::vector<HouseMutationResult> SqliteTarotHouseRepository::reconcile_draws(
       "SELECT wager_id,user_id,template_slug,catalog_version,proposition,"
       "choice_slug,choice_label,odds_numerator,odds_denominator,stake,profit,"
       "visibility,authority,state,result,accepted_at_ms,outcome_due_at_ms,"
-      "terminal_cooldown_ms,recovery,is_test FROM tarot_house_wager WHERE "
+      "terminal_cooldown_ms,recovery,is_test FROM tarot_house_wager wager "
+      "JOIN tarot_event_order accepted_order ON accepted_order.event_id="
+      "wager.accepted_event_id WHERE "
       "state='accepted_funded' AND authority IN ('draw','public_draw') "
-      "ORDER BY accepted_at_ms,wager_id");
+      "AND EXISTS (SELECT 1 FROM tarot_card_draw draw JOIN discord_user drawer "
+      "ON drawer.user_id=draw.user_id JOIN tarot_event_order draw_order ON "
+      "draw_order.event_id=draw.event_id WHERE draw.is_test=wager.is_test AND "
+      "draw.guild_id=wager.guild_id AND draw.channel_id=wager.channel_id AND "
+      "draw_order.sequence_id>accepted_order.sequence_id AND "
+      "draw.drawn_at_ms<=wager.outcome_due_at_ms AND ((wager.authority='draw' "
+      "AND draw.user_id=wager.user_id) OR (wager.authority='public_draw' AND "
+      "draw.user_id<>wager.user_id AND drawer.is_bot=0 AND "
+      "draw.visibility='public'))) ORDER BY accepted_at_ms,wager_id LIMIT ?");
+  query.bind(1, static_cast<std::int64_t>(limit));
   std::vector<HouseWagerRecord> wagers;
   while (query.step())
     wagers.push_back(record_from(query));
@@ -2197,7 +2207,8 @@ HouseMutationResult SqliteTarotHouseRepository::cleanup_test_wager(
     const auto stored_status = prior.column_text(2);
     const auto expected_null_wager = stored_status == "not_found";
     if (prior.column_is_null(0) != expected_null_wager ||
-        (!prior.column_is_null(0) && prior.column_text(0) != request.wager_id) ||
+        (!prior.column_is_null(0) &&
+         prior.column_text(0) != request.wager_id) ||
         prior.column_text(1) != "test_cleanup" || prior.column_is_null(3) ||
         prior.column_text(3) != fingerprint)
       throw std::invalid_argument{
@@ -2402,6 +2413,97 @@ std::vector<HouseWagerRecord> SqliteTarotHouseRepository::history(
   return result;
 }
 
+HouseHistoryPage
+SqliteTarotHouseRepository::begin_history(const DiscordSnowflake &user_id,
+                                          std::string cursor_id,
+                                          const std::int64_t now_ms) {
+  if (!user_id.is_set() || !valid_uuid_v4(cursor_id) || now_ms < 0 ||
+      now_ms > std::numeric_limits<std::int64_t>::max() -
+                   tarot_interaction_lifetime_ms)
+    throw std::invalid_argument{"House history snapshot is invalid."};
+  std::unique_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  Transaction transaction{connection, TransactionMode::immediate};
+  auto query = connection.prepare(
+      "SELECT wager_id FROM tarot_house_wager WHERE user_id=? ORDER BY "
+      "accepted_at_ms DESC,wager_id DESC LIMIT 50");
+  query.bind(1, user_id.str());
+  std::vector<std::string> wagers;
+  while (query.step())
+    wagers.push_back(query.column_text(0));
+  auto snapshot = connection.prepare(
+      "INSERT INTO interaction_list_snapshot(snapshot_id,snapshot_kind,"
+      "viewer_user_id,subject_user_id,owner_view,item_count,created_at_ms,"
+      "expires_at_ms) VALUES(?,'tarot_house_history',?,?,0,?,?,?)");
+  snapshot.bind(1, cursor_id);
+  snapshot.bind(2, user_id.str());
+  snapshot.bind(3, user_id.str());
+  snapshot.bind(4, static_cast<std::int64_t>(wagers.size()));
+  snapshot.bind(5, now_ms);
+  snapshot.bind(6, now_ms + tarot_interaction_lifetime_ms);
+  snapshot.execute();
+  for (std::size_t position = 0; position < wagers.size(); ++position) {
+    auto item = connection.prepare(
+        "INSERT INTO interaction_list_snapshot_item(snapshot_id,position,"
+        "item_id) VALUES(?,?,?)");
+    item.bind(1, cursor_id);
+    item.bind(2, static_cast<std::int64_t>(position));
+    item.bind(3, wagers[position]);
+    item.execute();
+  }
+  transaction.commit();
+  lock.unlock();
+  return load_history_page(user_id, cursor_id, 0, now_ms);
+}
+
+HouseHistoryPage SqliteTarotHouseRepository::load_history_page(
+    const DiscordSnowflake &user_id, const std::string_view cursor_id,
+    const std::size_t page, const std::int64_t now_ms) {
+  if (!user_id.is_set() || !valid_uuid_v4(std::string{cursor_id}) ||
+      now_ms < 0 ||
+      page >= tarot_house_history_maximum_items / tarot_house_history_page_size)
+    throw std::invalid_argument{"House history page is invalid."};
+  const std::scoped_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  auto cursor = connection.prepare(
+      "SELECT item_count FROM interaction_list_snapshot WHERE snapshot_id=? "
+      "AND snapshot_kind='tarot_house_history' AND viewer_user_id=? AND "
+      "expires_at_ms>?");
+  cursor.bind(1, cursor_id);
+  cursor.bind(2, user_id.str());
+  cursor.bind(3, now_ms);
+  if (!cursor.step())
+    return {};
+  HouseHistoryPage result{.cursor_id = std::string{cursor_id},
+                          .page = page,
+                          .total =
+                              static_cast<std::size_t>(cursor.column_int64(0)),
+                          .wagers = {}};
+  const auto first = page * tarot_house_history_page_size;
+  auto query = connection.prepare(
+      "SELECT wager.wager_id,wager.user_id,wager.template_slug,"
+      "wager.catalog_version,wager.proposition,wager.choice_slug,"
+      "wager.choice_label,wager.odds_numerator,wager.odds_denominator,"
+      "wager.stake,wager.profit,wager.visibility,wager.authority,wager.state,"
+      "wager.result,wager.accepted_at_ms,wager.outcome_due_at_ms,"
+      "wager.terminal_cooldown_ms,wager.recovery,wager.is_test FROM "
+      "interaction_list_snapshot_item item JOIN interaction_list_snapshot "
+      "snapshot ON snapshot.snapshot_id=item.snapshot_id JOIN "
+      "tarot_house_wager wager ON wager.wager_id=item.item_id WHERE "
+      "item.snapshot_id=? AND snapshot.viewer_user_id=? AND "
+      "snapshot.expires_at_ms>? AND item.position>=? AND item.position<? "
+      "ORDER BY item.position");
+  query.bind(1, cursor_id);
+  query.bind(2, user_id.str());
+  query.bind(3, now_ms);
+  query.bind(4, static_cast<std::int64_t>(first));
+  query.bind(5,
+             static_cast<std::int64_t>(first + tarot_house_history_page_size));
+  while (query.step())
+    result.wagers.push_back(record_from(query));
+  return result;
+}
+
 TarotPlayerRecord
 SqliteTarotHouseRepository::record(const DiscordSnowflake &user_id) {
   std::scoped_lock lock{context_->mutex()};
@@ -2548,6 +2650,20 @@ SqliteTarotHouseRepository::rebuild_player_projection() {
   std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
   Transaction transaction{connection, TransactionMode::immediate};
+  const auto result = rebuild_player_projection_unlocked();
+  transaction.commit();
+  return result;
+}
+
+TarotPlayerProjectionReport
+SqliteTarotHouseRepository::rebuild_player_projection_uncommitted() {
+  std::scoped_lock lock{context_->mutex()};
+  return rebuild_player_projection_unlocked();
+}
+
+TarotPlayerProjectionReport
+SqliteTarotHouseRepository::rebuild_player_projection_unlocked() {
+  auto &connection = context_->connection();
   const auto expected = expected_player_projection(connection);
   connection.execute("DELETE FROM tarot_player_stats");
   auto insert = connection.prepare(
@@ -2566,7 +2682,6 @@ SqliteTarotHouseRepository::rebuild_player_projection() {
     insert.execute();
     insert.reset();
   }
-  transaction.commit();
   return check_player_projection_unlocked(connection);
 }
 

@@ -88,10 +88,11 @@ public:
   }
   std::vector<sanguinius::AppearanceCandidate>
   scan_events(const sanguinius::AppearancePolicy &, std::int64_t,
-              std::string_view) override {
+              std::string_view, std::size_t) override {
     ++scan_count;
     return {};
   }
+  bool event_scan_backlog() override { return event_backlog.exchange(false); }
   bool record_final(const sanguinius::AppearancePolicy &,
                     sanguinius::AppearanceMode,
                     const sanguinius::AppearanceCandidate &candidate,
@@ -164,6 +165,7 @@ public:
   std::atomic_bool fail_next_completion{};
   std::atomic_size_t mode_activation_count{};
   std::atomic_size_t scan_count{};
+  std::atomic_bool event_backlog{};
   std::optional<sanguinius::AppearanceDecisionRecord> shown_decision;
   std::vector<sanguinius::AppearanceDecisionRecord> recent_decisions;
   std::optional<std::string> simulated_policy_version;
@@ -198,9 +200,12 @@ public:
   ScriptedAi(AiBehavior behavior_value, std::string response_value = {})
       : behavior{behavior_value}, response{std::move(response_value)} {}
 
-  std::string generate(const sanguinius::AiRequest &,
-                       const std::stop_token stop) const override {
+  sanguinius::AiResult generate(
+      const sanguinius::AiRequest &, const std::stop_token stop,
+      const std::function<void()> &transmission_started = {}) const override {
     entered.store(true);
+    if (transmission_started)
+      transmission_started();
     if (behavior == AiBehavior::refusal)
       throw sanguinius::AiRefusal{};
     if (behavior == AiBehavior::incomplete)
@@ -212,7 +217,10 @@ public:
         std::this_thread::yield();
       throw sanguinius::OperationCancelled{};
     }
-    return response;
+    return {.text = response,
+            .provider_request_id = "scripted-test",
+            .input_tokens = 1,
+            .output_tokens = 1};
   }
 
   AiBehavior behavior;
@@ -263,8 +271,7 @@ TEST_CASE("server quiet deadlines honor New York calendar and DST rules",
       std::chrono::sys_days{std::chrono::year{2026} / std::chrono::March / 8} +
       std::chrono::hours{5} + std::chrono::minutes{30};
   REQUIRE_FALSE(sanguinius::appearance_quiet_deadline(
-      epoch_ms(spring_midnight_thirty), "America/New_York", "until",
-      "02:30"));
+      epoch_ms(spring_midnight_thirty), "America/New_York", "until", "02:30"));
 
   const auto spring_after_gap =
       std::chrono::sys_days{std::chrono::year{2026} / std::chrono::March / 8} +
@@ -647,4 +654,31 @@ TEST_CASE("appearance event scans are healthy no-ops while off",
   REQUIRE(service.scan_events());
   REQUIRE(repository.mode_activation_count.load() == 2);
   REQUIRE(repository.scan_count.load() == 0);
+}
+
+TEST_CASE("appearance event batches report durable work after suppressed rows",
+          "[appearance][flow][orchestration][backpressure]") {
+  RecordingRepository repository;
+  repository.event_backlog = true;
+  sanguinius::test::FakeClock clock{std::chrono::sys_seconds{1s}};
+  sanguinius::test::FakePersistentIdGenerator generator{ids()};
+  sanguinius::test::FakeDiagnostics diagnostics;
+  sanguinius::AppearanceService service{
+      repository,
+      clock,
+      generator,
+      policy(),
+      sanguinius::AppearanceMode::dry_run,
+      "instance",
+      nullptr,
+      nullptr,
+      diagnostics,
+      "persona",
+      "America/New_York",
+      [] { return sanguinius::AppearanceRuntimeState{.operational = true}; }};
+  service.start();
+
+  REQUIRE(service.scan_event_batch(50));
+  REQUIRE_FALSE(service.scan_event_batch(50));
+  REQUIRE(repository.scan_count.load() == 2);
 }

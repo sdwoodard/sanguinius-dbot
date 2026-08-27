@@ -13,6 +13,8 @@
 #include "sanguinius/pending_notice.hpp"
 #include "sanguinius/relationships.hpp"
 #include "sanguinius/repositories.hpp"
+#include "sanguinius/safety_controls.hpp"
+#include "sanguinius/sanguinius_overview.hpp"
 #include "sanguinius/tarot.hpp"
 #include "sanguinius/tarot_house.hpp"
 #include "sanguinius/tarot_integration.hpp"
@@ -66,11 +68,15 @@ private:
 } // namespace interaction_handler_detail
 
 enum class InteractionOperation {
+  help,
+  repo,
   status,
   inbox,
   privacy,
   appearance_callbacks,
   admin_health,
+  safety_status,
+  safety_set,
   work_recent,
   work_dead,
   test_notice,
@@ -182,7 +188,7 @@ public:
       const Clock &clock, DurableWorkControlService &durable_controls,
       ChronicleService *chronicle, ChronicleSessionService *chronicle_sessions,
       HealthService &health_service, Diagnostics &diagnostics,
-      FeatureConfiguration features,
+      FeatureConfiguration features, SanguiniusOverviewService &overview,
       std::function<QueueSnapshot()> message_queue,
       std::function<QueueSnapshot()> ai_queue, std::size_t queue_capacity = 64,
       RelationshipService *relationships = nullptr,
@@ -192,7 +198,8 @@ public:
       TarotHouseService *tarot_house = nullptr,
       TarotIntegrationService *tarot_integration = nullptr,
       VoxService *vox = nullptr, VoxNarrationService *vox_narration = nullptr,
-      VoiceListeningService *voice_listening = nullptr);
+      VoiceListeningService *voice_listening = nullptr,
+      SafetyControlService *safety_controls = nullptr);
   ~InteractionHandler();
 
   InteractionHandler(const InteractionHandler &) = delete;
@@ -238,9 +245,11 @@ private:
   VoxService *vox_{};
   VoxNarrationService *vox_narration_{};
   VoiceListeningService *voice_listening_{};
+  SafetyControlService *safety_controls_{};
   HealthService &health_service_;
   Diagnostics &diagnostics_;
   FeatureConfiguration features_;
+  SanguiniusOverviewService &overview_;
   std::function<QueueSnapshot()> message_queue_;
   std::function<QueueSnapshot()> ai_queue_;
   std::shared_ptr<CallbackFence> callbacks_;

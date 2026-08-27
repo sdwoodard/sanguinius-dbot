@@ -25,6 +25,21 @@ using namespace std::chrono_literals;
   return text.find(fragment) != std::string_view::npos;
 }
 
+[[nodiscard]] std::string
+rendered(const sanguinius::InteractionMessage &message) {
+  auto result = message.content;
+  if (!message.embed)
+    return result;
+  result += message.embed->title;
+  result += message.embed->description;
+  for (const auto &field : message.embed->fields) {
+    result += field.name;
+    result += field.value;
+  }
+  result += message.embed->footer;
+  return result;
+}
+
 [[nodiscard]] sanguinius::ApplicationOptions
 admin_options(const std::size_t interaction_capacity = 64) {
   return sanguinius::ApplicationOptions{
@@ -149,6 +164,28 @@ slash(const std::shared_ptr<sanguinius::test::FakeInteractionResponder>
   return request;
 }
 
+[[nodiscard]] sanguinius::IncomingInteraction
+safety_set(const std::shared_ptr<sanguinius::test::FakeInteractionResponder>
+               &responder,
+           const std::string_view target, const bool enabled,
+           const sanguinius::DiscordId interaction_id) {
+  auto request = slash(responder, "sang-admin", "set", interaction_id);
+  request.subcommand_group_name = "safety";
+  request.command_options = {
+      {"target", std::string{target}},
+      {"mode", std::string{enabled ? "enabled" : "disabled"}}};
+  return request;
+}
+
+[[nodiscard]] sanguinius::IncomingInteraction
+safety_status(const std::shared_ptr<sanguinius::test::FakeInteractionResponder>
+                  &responder,
+              const sanguinius::DiscordId interaction_id) {
+  auto request = slash(responder, "sang-admin", "status", interaction_id);
+  request.subcommand_group_name = "safety";
+  return request;
+}
+
 [[nodiscard]] sanguinius::EventJournalEntry
 durable_event(std::string event_id, std::string event_type, std::string key) {
   return sanguinius::EventJournalEntry{
@@ -195,7 +232,7 @@ TEST_CASE("Vox interactions connect play once reconnect and leave",
   sanguinius::test::ApplicationFixture fixture{vox_options()};
   fixture.application->start();
   REQUIRE(fixture.vox->recover_calls() == 1);
-  REQUIRE(fixture.discord->command_catalog().version == 14);
+  REQUIRE(fixture.discord->command_catalog().version == 15);
 
   auto summon = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   fixture.discord->emit(slash(summon, "vox", "summon", 900));
@@ -335,8 +372,8 @@ TEST_CASE("Tarot commands preserve private authority and public standings",
   sanguinius::test::ApplicationFixture fixture{tarot_options()};
   fixture.application->start();
   REQUIRE(fixture.tarot->initialize_calls == 1);
-  REQUIRE(fixture.discord->command_catalog().version == 14);
-  REQUIRE(fixture.discord->command_catalog().commands.size() == 3);
+  REQUIRE(fixture.discord->command_catalog().version == 15);
+  REQUIRE(fixture.discord->command_catalog().commands.size() == 5);
 
   auto balance = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   fixture.discord->emit(slash(balance, "tarot", "balance", 160));
@@ -387,7 +424,7 @@ TEST_CASE("Tarot commands preserve private authority and public standings",
   auto privacy = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   fixture.discord->emit(slash(privacy, "sanguinius", "privacy", 165));
   REQUIRE(privacy->wait_for_edit_count(1, 2s));
-  REQUIRE(contains(privacy->edits()[0].content, "immutable financial audit"));
+  REQUIRE(contains(rendered(privacy->edits()[0]), "immutable financial audit"));
 
   auto health = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   fixture.discord->emit(slash(health, "sang-admin", "health", 166));
@@ -406,19 +443,51 @@ TEST_CASE("Tarot commands preserve private authority and public standings",
                                    {"reason", std::string{"must reject"}}};
   disabled.discord->emit(std::move(gated_request));
   REQUIRE(gated->replies().size() == 1);
-  REQUIRE(contains(gated->replies()[0].first.content, "test mode"));
+  REQUIRE(contains(gated->replies()[0].first.content,
+                   "feature is currently disabled"));
   disabled.application->stop();
 }
 
 TEST_CASE("enabled Tarot deck and House routes keep command status ephemeral",
           "[application][interaction][tarot][house][privacy]") {
   sanguinius::test::ApplicationFixture fixture{tarot_house_options()};
+  for (std::size_t index = 0; index < 6; ++index) {
+    fixture.tarot_house->history_result.push_back(
+        {.wager_id =
+             "00000000-0000-4000-8000-000000000" + std::to_string(910 + index),
+         .user_id = 30,
+         .template_slug = "returning-dawn",
+         .catalog_version = "tarot-house-v1",
+         .proposition = "A bounded House history fixture.",
+         .choice_slug = "rise",
+         .choice_label = "Rise",
+         .odds_numerator = 1,
+         .odds_denominator = 1,
+         .stake = 5,
+         .profit = 5,
+         .visibility = sanguinius::TarotVisibility::private_result,
+         .authority = sanguinius::HouseResolutionAuthority::draw,
+         .state = sanguinius::HouseWagerState::accepted_funded,
+         .result = std::nullopt,
+         .accepted_at_ms = static_cast<std::int64_t>(index + 1),
+         .outcome_due_at_ms = 1'000,
+         .terminal_cooldown_ms = 1'000,
+         .recovery = false,
+         .is_test = false});
+  }
   fixture.tarot_integration->retry_result = true;
   fixture.application->start();
   REQUIRE(fixture.tarot_catalogs->install_calls == 1);
-  REQUIRE(fixture.tarot_house->reconcile_calls == 1);
+  const auto startup_orchestration_deadline =
+      std::chrono::steady_clock::now() + 2s;
+  while ((fixture.tarot_house->reconcile_calls.load() != 1 ||
+          fixture.tarot_integration->scan_calls.load() != 1) &&
+         std::chrono::steady_clock::now() < startup_orchestration_deadline)
+    std::this_thread::sleep_for(1ms);
+  REQUIRE(fixture.tarot_house->reconcile_calls.load() == 1);
+  REQUIRE(fixture.tarot_integration->scan_calls.load() == 1);
   REQUIRE(fixture.tarot_house->schedule_calls == 1);
-  REQUIRE(fixture.tarot_integration->schedule_calls == 1);
+  REQUIRE(fixture.tarot_integration->schedule_calls == 0);
 
   auto draw = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   fixture.discord->emit(slash(draw, "tarot", "draw", 180));
@@ -429,8 +498,13 @@ TEST_CASE("enabled Tarot deck and House routes keep command status ephemeral",
   REQUIRE(fixture.tarot_draws->last_visibility ==
           sanguinius::TarotVisibility::public_result);
   REQUIRE_FALSE(fixture.tarot_draws->last_is_test);
-  REQUIRE(fixture.tarot_house->observe_draw_calls == 1);
-  REQUIRE(fixture.tarot_integration->scan_calls == 1);
+  const auto orchestration_deadline = std::chrono::steady_clock::now() + 2s;
+  while ((fixture.tarot_house->reconcile_calls.load() != 2 ||
+          fixture.tarot_integration->scan_calls.load() != 2) &&
+         std::chrono::steady_clock::now() < orchestration_deadline)
+    std::this_thread::sleep_for(1ms);
+  REQUIRE(fixture.tarot_house->reconcile_calls.load() == 2);
+  REQUIRE(fixture.tarot_integration->scan_calls.load() == 2);
   REQUIRE_FALSE(fixture.tarot_integration->last_sink_policy.chronicle_enabled);
 
   auto offers = std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -443,6 +517,27 @@ TEST_CASE("enabled Tarot deck and House routes keep command status ephemeral",
   REQUIRE(contains(offers->edits()[0].content, "Returning Dawn"));
   REQUIRE(contains(offers->edits()[0].content, "1:1 profit"));
   REQUIRE(fixture.tarot_house->availability_calls == 4);
+
+  auto history = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto history_request = slash(history, "tarot", "history", 1811);
+  history_request.subcommand_group_name = "house";
+  fixture.discord->emit(std::move(history_request));
+  REQUIRE(history->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(history->edits()[0].content, "Page 1 of 2"));
+  REQUIRE(history->edits()[0].buttons.size() == 2);
+  REQUIRE(history->edits()[0].buttons[0].disabled);
+  REQUIRE_FALSE(history->edits()[0].buttons[1].disabled);
+
+  auto next_history =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto next_history_request = sanguinius::test::interaction(
+      next_history, sanguinius::InteractionKind::button, 1812);
+  next_history_request.custom_id = history->edits()[0].buttons[1].custom_id;
+  fixture.discord->emit(std::move(next_history_request));
+  REQUIRE(next_history->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(next_history->edits()[0].content, "Page 2 of 2"));
+  REQUIRE_FALSE(next_history->edits()[0].buttons[0].disabled);
+  REQUIRE(next_history->edits()[0].buttons[1].disabled);
 
   auto test_draw =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -645,6 +740,27 @@ TEST_CASE("Vox narration owner controls are private and idempotent",
   fixture.application->stop();
 }
 
+TEST_CASE("disabled Tarot integration suppresses pending work without scanning",
+          "[application][orchestration][tarot][disabled]") {
+  auto options = tarot_house_options();
+  options.tarot_house_policy.integration_enabled = false;
+  sanguinius::test::ApplicationFixture fixture{options};
+  fixture.tarot_integration->report.pending = 1;
+  fixture.application->start();
+
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (fixture.tarot_house->reconcile_calls.load() == 0 &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(1ms);
+  REQUIRE(fixture.tarot_house->reconcile_calls.load() == 1);
+  while (fixture.tarot_integration->suppress_disabled_calls.load() == 0 &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::yield();
+  REQUIRE(fixture.tarot_integration->scan_calls.load() == 0);
+  REQUIRE(fixture.tarot_integration->suppress_disabled_calls.load() == 1);
+  fixture.application->stop();
+}
+
 TEST_CASE(
     "peer wager commands route through ephemeral modal and fallback flows",
     "[application][interaction][wager][modal][privacy]") {
@@ -674,6 +790,8 @@ TEST_CASE(
   REQUIRE(create->deferrals() ==
           std::vector{sanguinius::ResponseVisibility::ephemeral});
   REQUIRE(create->edits()[0].buttons.size() == 1);
+  REQUIRE(create->edits()[0].buttons[0].style ==
+          sanguinius::ButtonStyle::primary);
   REQUIRE(fixture.wagers->create_request.has_value());
   REQUIRE(fixture.wagers->create_request->target_user_id ==
           sanguinius::DiscordSnowflake{31});
@@ -716,6 +834,10 @@ TEST_CASE(
   REQUIRE(preview->deferrals() ==
           std::vector{sanguinius::ResponseVisibility::ephemeral});
   REQUIRE(preview->edits()[0].buttons.size() == 2);
+  REQUIRE(preview->edits()[0].buttons[0].style ==
+          sanguinius::ButtonStyle::primary);
+  REQUIRE(preview->edits()[0].buttons[1].style ==
+          sanguinius::ButtonStyle::danger);
   REQUIRE(fixture.wagers->preview_request.has_value());
   REQUIRE(fixture.wagers->preview_request->stake == 10);
 
@@ -810,9 +932,9 @@ TEST_CASE("privacy discloses retained Tarot data while Tarot is disabled",
   REQUIRE(privacy->wait_for_edit_count(1, 2s));
   REQUIRE(privacy->deferrals() ==
           std::vector{sanguinius::ResponseVisibility::ephemeral});
-  REQUIRE(contains(privacy->edits()[0].content, "Fate feature: disabled"));
-  REQUIRE(contains(privacy->edits()[0].content, "Fate standings: private"));
-  REQUIRE(contains(privacy->edits()[0].content,
+  REQUIRE(contains(rendered(privacy->edits()[0]), "Fate feature: disabled"));
+  REQUIRE(contains(rendered(privacy->edits()[0]), "Fate standings: private"));
+  REQUIRE(contains(rendered(privacy->edits()[0]),
                    "retained as an immutable financial audit"));
 
   fixture.application->stop();
@@ -842,13 +964,35 @@ TEST_CASE(
   fixture.application->stop();
 }
 
+TEST_CASE("root help reports disabled topics and rejects invalid topics",
+          "[application][interaction][help][features]") {
+  sanguinius::test::ApplicationFixture fixture{admin_options()};
+  fixture.application->start();
+
+  auto disabled =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto disabled_request = slash(disabled, "help", "", 178);
+  disabled_request.command_options = {{"topic", std::string{"vox"}}};
+  fixture.discord->emit(std::move(disabled_request));
+  REQUIRE(disabled->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(rendered(disabled->edits()[0]), "currently unavailable"));
+
+  auto invalid = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto invalid_request = slash(invalid, "help", "", 179);
+  invalid_request.command_options = {{"topic", std::string{"debug"}}};
+  fixture.discord->emit(std::move(invalid_request));
+  REQUIRE(invalid->replies().size() == 1);
+  REQUIRE(contains(invalid->replies()[0].first.content, "malformed"));
+  fixture.application->stop();
+}
+
 TEST_CASE(
     "Chronicle interactions preserve immediate and deferred response rules",
     "[application][interaction][chronicle]") {
   sanguinius::test::ApplicationFixture fixture{chronicle_options()};
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 14);
-  REQUIRE(fixture.discord->command_catalog().commands.size() == 4);
+  REQUIRE(fixture.discord->command_catalog().version == 15);
+  REQUIRE(fixture.discord->command_catalog().commands.size() == 6);
 
   auto remember =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -928,7 +1072,14 @@ TEST_CASE(
   REQUIRE(submit_response->wait_for_edit_count(1, 2s));
   REQUIRE(fixture.chronicle->submission_count() == 1);
   REQUIRE(contains(submit_response->edits()[0].content, "now canon"));
-  REQUIRE(fixture.diagnostics->contains_category("relationship.canon_sync"));
+  const auto relationship_failure_deadline =
+      std::chrono::steady_clock::now() + 2s;
+  while (
+      !fixture.diagnostics->contains_category("cross_feature.relationships") &&
+      std::chrono::steady_clock::now() < relationship_failure_deadline)
+    std::this_thread::yield();
+  REQUIRE(
+      fixture.diagnostics->contains_category("cross_feature.relationships"));
   fixture.relationships->fail_synchronization(false);
   fixture.chronicle->set_submit_result(
       {.code = sanguinius::ChronicleResultCode::invalid_token});
@@ -1193,7 +1344,7 @@ TEST_CASE("slash status privacy and scope enforcement remain ephemeral",
           "[application][interaction][privacy]") {
   sanguinius::test::ApplicationFixture fixture;
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().commands.size() == 2);
+  REQUIRE(fixture.discord->command_catalog().commands.size() == 4);
 
   auto wrong_scope =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -1236,18 +1387,18 @@ TEST_CASE("slash status privacy and scope enforcement remain ephemeral",
   REQUIRE(status->deferrals() ==
           std::vector<sanguinius::ResponseVisibility>{
               sanguinius::ResponseVisibility::ephemeral});
-  REQUIRE(contains(status->edits()[0].content, "Unopened sealed notices: 0"));
+  REQUIRE(contains(rendered(status->edits()[0]), "Sealed notices0"));
 
   auto privacy = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   fixture.discord->emit(slash(privacy, "sanguinius", "privacy", 204));
   REQUIRE(privacy->wait_for_edit_count(1, 2s));
-  REQUIRE(contains(privacy->edits()[0].content, "Discord DMs are never used"));
-  REQUIRE(contains(privacy->edits()[0].content,
+  REQUIRE(
+      contains(rendered(privacy->edits()[0]), "Discord DMs are never used"));
+  REQUIRE(contains(rendered(privacy->edits()[0]),
                    "Raw received voice audio is never persisted"));
-  REQUIRE(contains(privacy->edits()[0].content,
-                   "guild-wide prior consent must be attested by the owner"));
+  REQUIRE(contains(rendered(privacy->edits()[0]), "prior guild consent"));
   REQUIRE_FALSE(
-      contains(privacy->edits()[0].content, "Your voice-input opt-in"));
+      contains(rendered(privacy->edits()[0]), "Your voice-input opt-in"));
   REQUIRE(fixture.identities->user_count() == 1);
   fixture.application->stop();
 }
@@ -1272,7 +1423,7 @@ TEST_CASE("interaction router rejects unauthorized and malformed routes",
       slash(anniversary_disabled, "sang-admin", "test-anniversary", 214));
   REQUIRE(anniversary_disabled->replies().size() == 1);
   REQUIRE(contains(anniversary_disabled->replies()[0].first.content,
-                   "Chronicle is currently unavailable"));
+                   "feature is currently disabled"));
   REQUIRE(chronicle_disabled.chronicle_sessions->anniversary_queue_calls == 0);
   chronicle_disabled.application->stop();
 
@@ -1322,7 +1473,7 @@ TEST_CASE("owner test notice card and private open are idempotent",
   sanguinius::test::ApplicationFixture fixture{admin_options()};
   fixture.clock->set(std::chrono::sys_seconds{std::chrono::seconds{1}});
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().commands.size() == 2);
+  REQUIRE(fixture.discord->command_catalog().commands.size() == 4);
 
   auto health = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   fixture.discord->emit(slash(health, "sang-admin", "health", 299));
@@ -1472,7 +1623,7 @@ TEST_CASE(
   sanguinius::test::ApplicationFixture fixture{options};
   fixture.clock->set(std::chrono::sys_seconds{std::chrono::seconds{1'000}});
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 14);
+  REQUIRE(fixture.discord->command_catalog().version == 15);
 
   auto quiet = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto quiet_request = slash(quiet, "sanguinius", "tonight", 520);
@@ -1489,24 +1640,28 @@ TEST_CASE(
   status_request.user_id = 32;
   fixture.discord->emit(std::move(status_request));
   REQUIRE(status->wait_for_edit_count(1, 2s));
-  REQUIRE(contains(status->edits()[0].content, "quiet=active"));
-  REQUIRE(contains(status->edits()[0].content, "quiet_until="));
-  REQUIRE(contains(status->edits()[0].content,
-                   "Your appearance callbacks: disabled"));
-  REQUIRE_FALSE(contains(status->edits()[0].content, "31"));
-  REQUIRE_FALSE(contains(status->edits()[0].content, "reservations="));
-  REQUIRE_FALSE(contains(status->edits()[0].content, "recommendation="));
-  REQUIRE_FALSE(contains(status->edits()[0].content, "feedback="));
+  REQUIRE(contains(rendered(status->edits()[0]), "Appearancesquiet"));
+  REQUIRE_FALSE(contains(rendered(status->edits()[0]), "quiet_until="));
+  REQUIRE(
+      contains(rendered(status->edits()[0]), "Chronicle callbacksdisabled"));
+  REQUIRE(
+      contains(rendered(status->edits()[0]), "Appearance callbacksdisabled"));
+  REQUIRE_FALSE(contains(rendered(status->edits()[0]), "31"));
+  REQUIRE_FALSE(contains(rendered(status->edits()[0]), "reservations="));
+  REQUIRE_FALSE(contains(rendered(status->edits()[0]), "recommendation="));
+  REQUIRE_FALSE(contains(rendered(status->edits()[0]), "feedback="));
 
   auto privacy = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto privacy_request = slash(privacy, "sanguinius", "privacy", 531);
   privacy_request.user_id = 32;
   fixture.discord->emit(std::move(privacy_request));
   REQUIRE(privacy->wait_for_edit_count(1, 2s));
-  REQUIRE(contains(privacy->edits()[0].content, "kill_switch=clear"));
-  REQUIRE(contains(privacy->edits()[0].content, "quiet=active"));
-  REQUIRE_FALSE(contains(privacy->edits()[0].content, "outbox_pending="));
-  REQUIRE_FALSE(contains(privacy->edits()[0].content, "model_failures_1h="));
+  REQUIRE(contains(rendered(privacy->edits()[0]),
+                   "AppearancesCallbacks: disabled\nquiet"));
+  REQUIRE_FALSE(contains(rendered(privacy->edits()[0]), "kill_switch="));
+  REQUIRE_FALSE(contains(rendered(privacy->edits()[0]), "quiet="));
+  REQUIRE_FALSE(contains(rendered(privacy->edits()[0]), "outbox_pending="));
+  REQUIRE_FALSE(contains(rendered(privacy->edits()[0]), "model_failures_1h="));
 
   auto other_clear =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -1539,11 +1694,17 @@ TEST_CASE(
   REQUIRE(fixture.appearances->feedback_count() == 1);
 
   auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
-  auto disable_request = slash(disable, "sang-admin", "disable", 525);
-  disable_request.subcommand_group_name = "appearance";
+  auto disable_request = safety_set(disable, "appearances", false, 525);
   fixture.discord->emit(std::move(disable_request));
   REQUIRE(disable->wait_for_edit_count(1, 2s));
   REQUIRE(contains(disable->edits()[0].content, "globally disabled"));
+
+  auto disabled_status =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(safety_status(disabled_status, 5251));
+  REQUIRE(disabled_status->wait_for_edit_count(1, 2s));
+  REQUIRE(
+      contains(rendered(disabled_status->edits()[0]), "Appearancesdisabled"));
 
   auto suppressed_trigger =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -1559,8 +1720,7 @@ TEST_CASE(
   REQUIRE_FALSE(contains(suppressed_trigger->edits()[0].content, "queued"));
 
   auto enable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
-  auto enable_request = slash(enable, "sang-admin", "enable", 527);
-  enable_request.subcommand_group_name = "appearance";
+  auto enable_request = safety_set(enable, "appearances", true, 527);
   fixture.discord->emit(std::move(enable_request));
   REQUIRE(enable->wait_for_edit_count(1, 2s));
   REQUIRE(contains(enable->edits()[0].content, "kill switch is clear"));
@@ -1591,8 +1751,7 @@ TEST_CASE(
   auto still_disable =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto still_disable_request =
-      slash(still_disable, "sang-admin", "disable", 530);
-  still_disable_request.subcommand_group_name = "appearance";
+      safety_set(still_disable, "appearances", false, 530);
   no_test.discord->emit(std::move(still_disable_request));
   REQUIRE(still_disable->wait_for_edit_count(1, 2s));
   REQUIRE(contains(still_disable->edits()[0].content, "globally disabled"));
@@ -1604,26 +1763,25 @@ TEST_CASE(
   safety_options.features.appearances_mode = sanguinius::AppearanceMode::live;
   sanguinius::test::ApplicationFixture safety{safety_options};
   safety.application->start();
-  REQUIRE(safety.discord->command_catalog().commands.size() == 2);
-  REQUIRE(safety.discord->command_catalog().commands[1].name == "sang-admin");
+  REQUIRE(safety.discord->command_catalog().commands.size() == 4);
+  REQUIRE(safety.discord->command_catalog().commands[3].name == "sang-admin");
   REQUIRE(safety.discord->command_catalog()
-              .commands[1]
+              .commands[3]
               .subcommand_groups[0]
               .subcommands.size() == 2);
 
   auto safety_disable =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto safety_disable_request =
-      slash(safety_disable, "sang-admin", "disable", 532);
-  safety_disable_request.subcommand_group_name = "appearance";
+      safety_set(safety_disable, "appearances", false, 532);
   safety.discord->emit(std::move(safety_disable_request));
   REQUIRE(safety_disable->wait_for_edit_count(1, 2s));
   REQUIRE(contains(safety_disable->edits()[0].content, "globally disabled"));
 
   auto safety_other =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
-  auto safety_other_request = slash(safety_other, "sang-admin", "enable", 533);
-  safety_other_request.subcommand_group_name = "appearance";
+  auto safety_other_request =
+      safety_set(safety_other, "appearances", true, 533);
   safety_other_request.user_id = 31;
   safety.discord->emit(std::move(safety_other_request));
   REQUIRE(safety_other->replies().size() == 1);
@@ -1637,6 +1795,27 @@ TEST_CASE(
   safety.application->stop();
 }
 
+TEST_CASE("voice safety controls remain available while Vox is disabled",
+          "[application][interaction][voice-input][privacy][disabled-vox]") {
+  auto options = admin_options();
+  options.controls.admin_commands_enabled = false;
+  options.controls.test_mode = false;
+  sanguinius::test::ApplicationFixture fixture{options};
+  fixture.application->start();
+
+  auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(safety_set(disable, "voice-input", false, 538));
+  REQUIRE(disable->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(disable->edits()[0].content, "disabled immediately"));
+  REQUIRE(fixture.voice_listening->kill_switch.load());
+
+  auto enable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(safety_set(enable, "voice-input", true, 539));
+  REQUIRE(enable->wait_for_edit_count(1, 2s));
+  REQUIRE_FALSE(fixture.voice_listening->kill_switch.load());
+  fixture.application->stop();
+}
+
 TEST_CASE("voice kill controls bypass general admin and interaction backlog",
           "[application][interaction][vox][privacy][backpressure]") {
   auto options = vox_options();
@@ -1647,11 +1826,11 @@ TEST_CASE("voice kill controls bypass general admin and interaction backlog",
   fixture.application->start();
 
   const auto catalog = fixture.discord->command_catalog();
-  const auto &admin = catalog.commands[2];
+  const auto &admin = catalog.commands[4];
   REQUIRE(admin.name == "sang-admin");
-  REQUIRE(admin.subcommand_groups.size() == 2);
-  REQUIRE(admin.subcommand_groups[1].name == "vox");
-  REQUIRE(admin.subcommand_groups[1].subcommands.size() == 2);
+  REQUIRE(admin.subcommand_groups.size() == 1);
+  REQUIRE(admin.subcommand_groups[0].name == "safety");
+  REQUIRE(admin.subcommand_groups[0].subcommands.size() == 2);
 
   fixture.identities->block();
   auto active = std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -1666,8 +1845,7 @@ TEST_CASE("voice kill controls bypass general admin and interaction backlog",
   REQUIRE(contains(rejected->edits()[0].content, "too many interactions"));
 
   auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
-  auto disable_request = slash(disable, "sang-admin", "listening-disable", 543);
-  disable_request.subcommand_group_name = "vox";
+  auto disable_request = safety_set(disable, "voice-input", false, 543);
   fixture.discord->emit(std::move(disable_request));
   fixture.identities->release();
   REQUIRE(disable->wait_for_edit_count(1, 2s));
@@ -1675,9 +1853,16 @@ TEST_CASE("voice kill controls bypass general admin and interaction backlog",
   REQUIRE(fixture.voice_listening->kill_switch.load());
   REQUIRE(fixture.voice_listening->kill_switch_changes.load() == 1);
 
+  auto disabled_status =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  fixture.discord->emit(safety_status(disabled_status, 5431));
+  REQUIRE(disabled_status->wait_for_edit_count(1, 2s));
+  INFO(rendered(disabled_status->edits()[0]));
+  REQUIRE(
+      contains(rendered(disabled_status->edits()[0]), "Voice inputdisabled"));
+
   auto enable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
-  auto enable_request = slash(enable, "sang-admin", "listening-enable", 544);
-  enable_request.subcommand_group_name = "vox";
+  auto enable_request = safety_set(enable, "voice-input", true, 544);
   fixture.discord->emit(std::move(enable_request));
   REQUIRE(enable->wait_for_edit_count(1, 2s));
   REQUIRE_FALSE(fixture.voice_listening->kill_switch.load());
@@ -1687,8 +1872,7 @@ TEST_CASE("voice kill controls bypass general admin and interaction backlog",
   unacknowledged_disable->set_defer_result(
       sanguinius::DeliveryResult::transient_failure);
   auto unacknowledged_request =
-      slash(unacknowledged_disable, "sang-admin", "listening-disable", 545);
-  unacknowledged_request.subcommand_group_name = "vox";
+      safety_set(unacknowledged_disable, "voice-input", false, 545);
   fixture.discord->emit(std::move(unacknowledged_request));
   REQUIRE(unacknowledged_disable->wait_for_edit_count(1, 2s));
   REQUIRE(fixture.voice_listening->kill_switch.load());
@@ -1700,8 +1884,7 @@ TEST_CASE("voice kill controls bypass general admin and interaction backlog",
   unacknowledged_enable->set_defer_result(
       sanguinius::DeliveryResult::transient_failure);
   auto unacknowledged_enable_request =
-      slash(unacknowledged_enable, "sang-admin", "listening-enable", 546);
-  unacknowledged_enable_request.subcommand_group_name = "vox";
+      safety_set(unacknowledged_enable, "voice-input", true, 546);
   fixture.discord->emit(std::move(unacknowledged_enable_request));
   REQUIRE_FALSE(fixture.voice_listening->wait_for_kill_switch_changes(
       changes_before_unacknowledged_enable + 1, 100ms));
@@ -1730,8 +1913,7 @@ TEST_CASE("voice disable persists while the stop-control queue is saturated",
   fixture.discord->emit(slash(queued_stop, "vox", "listen-stop", 547));
 
   auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
-  auto disable_request = slash(disable, "sang-admin", "listening-disable", 548);
-  disable_request.subcommand_group_name = "vox";
+  auto disable_request = safety_set(disable, "voice-input", false, 548);
   fixture.discord->emit(std::move(disable_request));
 
   REQUIRE(fixture.identities->wait_until_entered_count(2, 2s));
@@ -1770,8 +1952,7 @@ TEST_CASE("a newer voice disable supersedes an executing older enable",
   fixture.application->start();
 
   auto enable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
-  auto enable_request = slash(enable, "sang-admin", "listening-enable", 549);
-  enable_request.subcommand_group_name = "vox";
+  auto enable_request = safety_set(enable, "voice-input", true, 549);
   fixture.discord->emit(std::move(enable_request));
   {
     std::unique_lock lock{gate_mutex};
@@ -1779,8 +1960,7 @@ TEST_CASE("a newer voice disable supersedes an executing older enable",
   }
 
   auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
-  auto disable_request = slash(disable, "sang-admin", "listening-disable", 550);
-  disable_request.subcommand_group_name = "vox";
+  auto disable_request = safety_set(disable, "voice-input", false, 550);
   fixture.discord->emit(std::move(disable_request));
   {
     const std::scoped_lock lock{gate_mutex};
@@ -1830,16 +2010,14 @@ TEST_CASE(
   fixture.application->start();
 
   auto enable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
-  auto enable_request = slash(enable, "sang-admin", "listening-enable", 551);
-  enable_request.subcommand_group_name = "vox";
+  auto enable_request = safety_set(enable, "voice-input", true, 551);
   fixture.discord->emit(std::move(enable_request));
   {
     std::unique_lock lock{gate_mutex};
     REQUIRE(gate_condition.wait_for(lock, 2s, [&] { return enable_entered; }));
   }
   auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
-  auto disable_request = slash(disable, "sang-admin", "listening-disable", 552);
-  disable_request.subcommand_group_name = "vox";
+  auto disable_request = safety_set(disable, "voice-input", false, 552);
   fixture.discord->emit(std::move(disable_request));
 
   std::jthread shutdown{[&] { fixture.application->stop(); }};
@@ -1861,8 +2039,7 @@ TEST_CASE("shutdown persists a preempted disable awaiting Discord defer",
   fixture.application->start();
   auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   disable->hold_defer_completions();
-  auto disable_request = slash(disable, "sang-admin", "listening-disable", 553);
-  disable_request.subcommand_group_name = "vox";
+  auto disable_request = safety_set(disable, "voice-input", false, 553);
   fixture.discord->emit(std::move(disable_request));
 
   REQUIRE(fixture.voice_listening->wait_for_kill_switch_changes(1));
@@ -1923,9 +2100,7 @@ TEST_CASE("emergency voice disable supersedes a saturated enable queue",
 
   auto active_enable =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
-  auto active_request =
-      slash(active_enable, "sang-admin", "listening-enable", 554);
-  active_request.subcommand_group_name = "vox";
+  auto active_request = safety_set(active_enable, "voice-input", true, 554);
   fixture.discord->emit(std::move(active_request));
   {
     std::unique_lock lock{gate_mutex};
@@ -1934,14 +2109,11 @@ TEST_CASE("emergency voice disable supersedes a saturated enable queue",
 
   auto queued_enable =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
-  auto queued_request =
-      slash(queued_enable, "sang-admin", "listening-enable", 555);
-  queued_request.subcommand_group_name = "vox";
+  auto queued_request = safety_set(queued_enable, "voice-input", true, 555);
   fixture.discord->emit(std::move(queued_request));
 
   auto disable = std::make_shared<sanguinius::test::FakeInteractionResponder>();
-  auto disable_request = slash(disable, "sang-admin", "listening-disable", 556);
-  disable_request.subcommand_group_name = "vox";
+  auto disable_request = safety_set(disable, "voice-input", false, 556);
   fixture.discord->emit(std::move(disable_request));
 
   {

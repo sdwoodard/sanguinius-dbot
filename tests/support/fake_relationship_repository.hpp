@@ -43,25 +43,32 @@ public:
     return PromptFinalizationStatus::applied;
   }
 
-  std::size_t recover_prompt_attempts(std::string_view,
-                                      std::int64_t) override {
-    return recovered_attempts;
+  std::size_t recover_prompt_attempts(std::string_view, std::int64_t,
+                                      std::size_t limit) override {
+    const std::scoped_lock lock{mutex_};
+    const auto result = std::min(recovered_attempts, limit);
+    recovered_attempts -= result;
+    return result;
   }
 
   std::size_t synchronize_chronicle_sources(PersistentIdGenerator &,
-                                             std::int64_t) override {
+                                            std::int64_t,
+                                            std::size_t limit) override {
     const std::scoped_lock lock{mutex_};
     if (throw_on_synchronization_) {
       throw std::runtime_error{"injected Chronicle relationship sync failure"};
     }
-    return synchronized_sources;
+    const auto result = std::min(synchronized_sources, limit);
+    synchronized_sources -= result;
+    return result;
   }
 
   RelationshipProfile profile(const DiscordSnowflake &viewer,
                               const DiscordSnowflake &target, bool,
                               std::int64_t) override {
     auto result = profile_result;
-    if (!result.user_id.is_set()) result.user_id = target;
+    if (!result.user_id.is_set())
+      result.user_id = target;
     if (viewer == target && !result.found) {
       result.found = true;
       result.chronicle_opt_in = true;

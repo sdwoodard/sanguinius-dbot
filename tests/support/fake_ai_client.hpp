@@ -15,9 +15,9 @@ namespace sanguinius::test {
 
 class FakeAiClient final : public AiClient {
 public:
-  [[nodiscard]] std::string
-  generate(const AiRequest &request,
-           const std::stop_token stop_token) const override {
+  [[nodiscard]] AiResult generate(
+      const AiRequest &request, const std::stop_token stop_token,
+      const std::function<void()> &transmission_started = {}) const override {
     std::unique_lock lock{mutex_};
     requests_.push_back(request);
     entered_ = true;
@@ -33,10 +33,15 @@ public:
       changed_.notify_all();
       throw OperationCancelled{};
     }
+    if (transmission_started)
+      transmission_started();
     if (failure_) {
       throw std::runtime_error{failure_message_};
     }
-    return response_;
+    return AiResult{.text = response_,
+                    .provider_request_id = "fake-ai-request",
+                    .input_tokens = 10,
+                    .output_tokens = 5};
   }
 
   void set_response(std::string response) {

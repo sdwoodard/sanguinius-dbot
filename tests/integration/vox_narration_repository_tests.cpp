@@ -134,7 +134,7 @@ struct NarrationFixture {
           sanguinius::persistence::production_migrations(),
           {"test-version", "test-revision"},
           clock};
-      REQUIRE(migrator.apply(migration.connection()).current_version == 15);
+      REQUIRE(migrator.apply(migration.connection()).current_version == 16);
       insert_scope(migration.connection());
       migration.connection().execute(
           "INSERT INTO application_instance(instance_id,application_version,"
@@ -277,7 +277,7 @@ TEST_CASE("Vox narration cursor starts at the migration journal head",
                uuid(2), 100);
   sanguinius::persistence::Migrator current{
       production, {"test-version", "test-revision"}, clock};
-  REQUIRE(current.apply(database.connection()).current_version == 15);
+  REQUIRE(current.apply(database.connection()).current_version == 16);
   auto context =
       std::make_shared<sanguinius::persistence::SqliteRepositoryContext>(
           std::move(database));
@@ -377,12 +377,12 @@ TEST_CASE("owner enqueue durably observes exactly one referenced test event",
   CHECK(preview->source_event_id == event_id);
   CHECK(preview->is_test);
 
-  const auto test_mode_disabled = fixture.repository->enqueue_reference(
-      {.source_event_id = event_id,
-       .now_ms = 110,
-       .enabled = true,
-       .test_mode = false,
-       .next_id = fixture.ids()});
+  const auto test_mode_disabled =
+      fixture.repository->enqueue_reference({.source_event_id = event_id,
+                                             .now_ms = 110,
+                                             .enabled = true,
+                                             .test_mode = false,
+                                             .next_id = fixture.ids()});
   CHECK(test_mode_disabled.status ==
         sanguinius::VoxNarrationEnqueueStatus::rejected);
   CHECK(test_mode_disabled.reason == "test_mode_disabled");
@@ -993,10 +993,10 @@ TEST_CASE("narration generation starts its lease after shared-worker delay",
                                           true,
                                           false};
 
-  service.run_one_cycle();
+  static_cast<void>(service.run_one_cycle());
   CHECK_FALSE(ai.wait_until_entered(20ms));
   fixture.clock.set(std::chrono::sys_seconds{std::chrono::seconds{70}});
-  service.run_one_cycle();
+  static_cast<void>(service.run_one_cycle());
   auto dispatched = fixture.context->connection().prepare(
       "SELECT state,state_version,lease_until_ms FROM "
       "voice_narration_intent WHERE intent_id=?");

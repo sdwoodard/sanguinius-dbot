@@ -220,6 +220,7 @@ public:
 
 struct VoxHealth {
   bool enabled{};
+  bool operator_disabled{};
   std::optional<VoxState> state;
   std::optional<VoxFixtureState> fixture_state;
   bool dave_active{};
@@ -255,6 +256,8 @@ public:
 
   void start();
   void stop() noexcept;
+  void set_output_operator_disabled(bool disabled) noexcept;
+  void emergency_disable_output() noexcept;
   [[nodiscard]] SubmitResult summon(VoxCommandContext context,
                                     Completion completion);
   [[nodiscard]] SubmitResult status(VoxCommandContext context,

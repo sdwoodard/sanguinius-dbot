@@ -8,7 +8,6 @@
 #include "sanguinius/persistent_id.hpp"
 #include "sanguinius/work_queue.hpp"
 
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -18,7 +17,6 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -180,7 +178,8 @@ public:
   virtual void complete_generation(const VoxNarrationCompletion &) = 0;
   virtual std::size_t reconcile(
       std::int64_t now_ms, const std::function<std::string()> &next_id,
-      const std::function<bool(std::string_view)> &generation_is_live = {}) = 0;
+      const std::function<bool(std::string_view)> &generation_is_live = {},
+      std::size_t limit = 50) = 0;
   [[nodiscard]] virtual std::optional<VoxNarrationCandidate>
   preview(std::string_view source_event_id, std::int64_t now_ms) = 0;
   [[nodiscard]] virtual std::vector<VoxNarrationRecent>
@@ -238,7 +237,8 @@ public:
                       const AiClient &ai, AiWorkService &ai_work,
                       std::string instance_id, bool enabled, bool test_mode,
                       std::function<void()> speech_wakeup = {},
-                      SessionFlavorReady session_flavor_ready = {});
+                      SessionFlavorReady session_flavor_ready = {},
+                      std::function<void()> orchestration_wakeup = {});
   ~VoxNarrationService();
 
   VoxNarrationService(const VoxNarrationService &) = delete;
@@ -246,8 +246,7 @@ public:
 
   void start();
   void stop() noexcept;
-  void wake() noexcept;
-  void run_one_cycle();
+  [[nodiscard]] bool run_one_cycle();
   [[nodiscard]] std::optional<VoxNarrationCandidate>
   preview(std::string_view source_event_id);
   [[nodiscard]] VoxNarrationEnqueueResult
@@ -266,7 +265,6 @@ public:
                               std::string summoner_user_id);
 
 private:
-  void poll(std::stop_token stop_token) noexcept;
   void generate_dispatched(VoxNarrationCandidate candidate,
                            std::string claim_lease_token,
                            std::stop_token stop_token) noexcept;
@@ -288,13 +286,11 @@ private:
   bool test_mode_{};
   std::function<void()> speech_wakeup_;
   SessionFlavorReady session_flavor_ready_;
+  std::function<void()> orchestration_wakeup_;
   std::shared_ptr<CallbackFence> callbacks_{std::make_shared<CallbackFence>()};
   mutable std::mutex generation_mutex_;
   std::unordered_set<std::string> live_generations_;
-  std::mutex mutex_;
-  std::condition_variable wakeup_;
   std::stop_source work_stop_;
-  std::jthread poller_;
   bool started_{};
   bool callbacks_closed_{};
 };

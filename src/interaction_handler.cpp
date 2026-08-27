@@ -1,4 +1,5 @@
 #include "sanguinius/interaction_handler.hpp"
+#include "sanguinius/presentation.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -39,55 +40,6 @@ struct DeliveryNotifier {
     return std::nullopt;
   }
   return value;
-}
-
-[[nodiscard]] std::string enabled(const bool value) {
-  return value ? "enabled" : "disabled";
-}
-
-[[nodiscard]] InteractionMessage
-status_message(const FeatureConfiguration &features,
-               const std::size_t pending_notices,
-               const std::string_view appearance_status,
-               const bool appearance_callbacks_enabled) {
-  std::ostringstream output;
-  output << "Sanguinius is ready.\n"
-         << "Unopened sealed notices: " << pending_notices << "\n"
-         << "Chronicle: " << enabled(features.chronicle_enabled) << "\n"
-         << "Tarot: " << enabled(features.tarot_enabled) << "\n"
-         << "Appearances: " << appearance_mode_name(features.appearances_mode)
-         << "\nYour appearance callbacks: "
-         << enabled(appearance_callbacks_enabled)
-         << "\nAppearance controls: " << appearance_status << "\n"
-         << "Vox: " << enabled(features.vox_enabled);
-  return text_message(output.str());
-}
-
-[[nodiscard]] InteractionMessage privacy_message(
-    const FeatureConfiguration &features, const UserPreferences &preferences,
-    const std::size_t pending_notices, const std::string_view appearance_status,
-    const std::string_view tarot_status) {
-  std::ostringstream output;
-  output << "Your Sanguinius privacy summary\n"
-         << "Discord identity cache: stored for stable account identity\n"
-         << "Chronicle opt-in: " << enabled(preferences.chronicle_opt_in)
-         << "\nMemory callbacks: "
-         << enabled(preferences.memory_callback_opt_in)
-         << "\nChronicle anniversaries: "
-         << enabled(preferences.chronicle_opt_in &&
-                    preferences.anniversary_reminders_enabled)
-         << "\nAppearance callbacks: "
-         << enabled(preferences.appearance_callback_opt_in)
-         << "\nServer-wide appearance controls: " << appearance_status
-         << "\nVoice input globally: " << enabled(features.voice_input_enabled)
-         << "\nVoice-input consent rule: guild-wide prior consent must be "
-            "attested by the owner; the legacy personal preference is not a "
-            "capture gate"
-         << "\nUnopened sealed notices: " << pending_notices << "\n"
-         << tarot_status
-         << "\nDiscord DMs are never used. Raw received voice audio is never "
-            "persisted.";
-  return text_message(output.str());
 }
 
 } // namespace
@@ -183,14 +135,15 @@ InteractionHandler::InteractionHandler(
     const Clock &clock, DurableWorkControlService &durable_controls,
     ChronicleService *chronicle, ChronicleSessionService *chronicle_sessions,
     HealthService &health_service, Diagnostics &diagnostics,
-    const FeatureConfiguration features,
+    const FeatureConfiguration features, SanguiniusOverviewService &overview,
     std::function<QueueSnapshot()> message_queue,
     std::function<QueueSnapshot()> ai_queue, const std::size_t queue_capacity,
     RelationshipService *relationships, AppearanceService *appearances,
     TarotService *tarot, TarotWagerService *wagers,
     TarotDrawService *tarot_draws, TarotHouseService *tarot_house,
     TarotIntegrationService *tarot_integration, VoxService *vox,
-    VoxNarrationService *vox_narration, VoiceListeningService *voice_listening)
+    VoxNarrationService *vox_narration, VoiceListeningService *voice_listening,
+    SafetyControlService *safety_controls)
     : identities_{identities}, notices_{notices}, clock_{clock},
       durable_controls_{durable_controls}, chronicle_{chronicle},
       chronicle_sessions_{chronicle_sessions}, relationships_{relationships},
@@ -198,9 +151,9 @@ InteractionHandler::InteractionHandler(
       tarot_draws_{tarot_draws}, tarot_house_{tarot_house},
       tarot_integration_{tarot_integration}, vox_{vox},
       vox_narration_{vox_narration}, voice_listening_{voice_listening},
-      health_service_{health_service}, diagnostics_{diagnostics},
-      features_{features}, message_queue_{std::move(message_queue)},
-      ai_queue_{std::move(ai_queue)},
+      safety_controls_{safety_controls}, health_service_{health_service},
+      diagnostics_{diagnostics}, features_{features}, overview_{overview},
+      message_queue_{std::move(message_queue)}, ai_queue_{std::move(ai_queue)},
       callbacks_{std::make_shared<CallbackFence>()}, worker_{queue_capacity, 1},
       privacy_worker_{queue_capacity, 1},
       kill_switch_worker_{queue_capacity, 1} {
@@ -250,16 +203,14 @@ SubmitResult InteractionHandler::enqueue(RoutedInteraction interaction) {
       diagnostics_.emit({DiagnosticSeverity::error, "interaction.handling",
                          error.what(), interaction.interaction.correlation_id});
       edit(interaction.interaction,
-           text_message("I could not complete that interaction. Please "
-                        "try again shortly."),
+           presentation::error(presentation::ErrorKind::busy),
            "interaction.response");
     } catch (...) {
       diagnostics_.emit({DiagnosticSeverity::error, "interaction.handling",
                          "Unknown interaction handling failure.",
                          interaction.interaction.correlation_id});
       edit(interaction.interaction,
-           text_message("I could not complete that interaction. Please "
-                        "try again shortly."),
+           presentation::error(presentation::ErrorKind::busy),
            "interaction.response");
     }
   });
@@ -269,9 +220,8 @@ SubmitResult InteractionHandler::enqueue(RoutedInteraction interaction) {
                        "interaction queue is full.",
                        correlation_id});
     if (responder) {
-      responder->edit_original(text_message(
-          "I am handling too many interactions right now. Please try again "
-          "shortly."));
+      responder->edit_original(
+          presentation::error(presentation::ErrorKind::busy));
     }
   }
   return result;
@@ -321,7 +271,7 @@ InteractionHandler::enqueue_privacy_control(RoutedInteraction interaction) {
          correlation_id});
     if (responder) {
       responder->edit_original(
-          text_message("A voice privacy control is already being processed."));
+          presentation::error(presentation::ErrorKind::busy));
     }
   }
   return result;
@@ -335,16 +285,14 @@ void InteractionHandler::process_privacy_control(
     diagnostics_.emit({DiagnosticSeverity::error, "interaction.privacy_control",
                        error.what(), request.interaction.correlation_id});
     edit(request.interaction,
-         text_message("I could not complete that voice privacy control. "
-                      "Please try again immediately."),
+         presentation::error(presentation::ErrorKind::busy),
          "interaction.response");
   } catch (...) {
     diagnostics_.emit({DiagnosticSeverity::error, "interaction.privacy_control",
                        "Unknown voice privacy-control failure.",
                        request.interaction.correlation_id});
     edit(request.interaction,
-         text_message("I could not complete that voice privacy control. "
-                      "Please try again immediately."),
+         presentation::error(presentation::ErrorKind::busy),
          "interaction.response");
   }
 }
@@ -416,17 +364,45 @@ bool InteractionHandler::show_voice_transcript_modal(
 void InteractionHandler::process(const RoutedInteraction &request) {
   ensure_user(request.interaction);
   switch (request.operation) {
+  case InteractionOperation::help: {
+    std::string topic{"all"};
+    const auto found = std::ranges::find(request.interaction.command_options,
+                                         "topic", &InteractionOption::name);
+    if (found != request.interaction.command_options.end()) {
+      const auto *value = std::get_if<std::string>(&found->value);
+      if (value == nullptr ||
+          (*value != "all" && *value != "sanguinius" && *value != "chronicle" &&
+           *value != "tarot" && *value != "vox")) {
+        edit(request.interaction,
+             presentation::error(presentation::ErrorKind::malformed),
+             "interaction.help");
+        return;
+      }
+      topic = *value;
+    }
+    edit(request.interaction, overview_.help(topic), "interaction.help");
+    return;
+  }
+  case InteractionOperation::repo:
+    edit(request.interaction,
+         presentation::repository(
+             std::chrono::duration_cast<std::chrono::milliseconds>(
+                 clock_.now().time_since_epoch())
+                 .count()),
+         "interaction.repo");
+    return;
   case InteractionOperation::status: {
     const auto preferences =
         identities_.load_preferences(request.interaction.user_id);
     if (!preferences.has_value())
       throw std::runtime_error{"User preferences were not initialized."};
     edit(request.interaction,
-         status_message(features_,
-                        notices_.pending_count(request.interaction.user_id),
-                        appearances_ ? appearances_->member_status_summary()
-                                     : "unavailable",
-                        preferences->appearance_callback_opt_in),
+         overview_.status(notices_.pending_count(request.interaction.user_id),
+                          appearances_ ? appearances_->member_status_summary()
+                                       : "unavailable",
+                          *preferences,
+                          safety_controls_ ? safety_controls_->member_status()
+                                           : MemberRuntimeStatus{}),
          "interaction.status");
     return;
   }
@@ -437,9 +413,8 @@ void InteractionHandler::process(const RoutedInteraction &request) {
       throw std::runtime_error{"User preferences were not initialized."};
     }
     edit(request.interaction,
-         privacy_message(
-             features_, *preferences,
-             notices_.pending_count(request.interaction.user_id),
+         overview_.privacy(
+             *preferences, notices_.pending_count(request.interaction.user_id),
              appearances_ ? appearances_->member_status_summary()
                           : "unavailable",
              tarot_
@@ -450,7 +425,9 @@ void InteractionHandler::process(const RoutedInteraction &request) {
                        "\nFate feature: disabled\nFate ledger: "
                        "retained as an immutable financial "
                        "audit; balances are derived from "
-                       "postings."),
+                       "postings.",
+             safety_controls_ ? safety_controls_->member_status()
+                              : MemberRuntimeStatus{}),
          "interaction.privacy");
     return;
   }
@@ -769,12 +746,48 @@ void InteractionHandler::process(const RoutedInteraction &request) {
   case InteractionOperation::admin_health: {
     const auto snapshot =
         health_service_.snapshot(message_queue_(), ai_queue_(), true);
-    auto rendered = render_health(snapshot);
-    if (appearances_)
-      rendered += "\nAppearances: " + appearances_->status_summary();
+    auto rendered = overview_.owner_health(
+        render_health(snapshot),
+        appearances_ ? appearances_->member_status_summary() : "unavailable",
+        safety_controls_ ? safety_controls_->member_status()
+                         : MemberRuntimeStatus{},
+        appearances_ ? appearances_->status_summary() : std::string_view{});
     edit(request.interaction,
          text_message(bounded_health_message(std::move(rendered))),
          "interaction.health");
+    return;
+  }
+  case InteractionOperation::safety_status:
+    if (!safety_controls_)
+      throw std::runtime_error{"Safety controls are unavailable."};
+    edit(request.interaction, safety_controls_->status(),
+         "interaction.safety_status");
+    return;
+  case InteractionOperation::safety_set: {
+    if (!safety_controls_)
+      throw std::runtime_error{"Safety controls are unavailable."};
+    const auto target_option =
+        std::ranges::find(request.interaction.command_options, "target",
+                          &InteractionOption::name);
+    const auto mode_option = std::ranges::find(
+        request.interaction.command_options, "mode", &InteractionOption::name);
+    const auto *target =
+        target_option == request.interaction.command_options.end()
+            ? nullptr
+            : std::get_if<std::string>(&target_option->value);
+    const auto *mode = mode_option == request.interaction.command_options.end()
+                           ? nullptr
+                           : std::get_if<std::string>(&mode_option->value);
+    if (target == nullptr || mode == nullptr ||
+        (*mode != "enabled" && *mode != "disabled"))
+      throw std::invalid_argument{"Safety control options are invalid."};
+    edit(request.interaction,
+         safety_controls_->set(parse_safety_target(*target),
+                               *mode == "disabled", request.interaction.user_id,
+                               "safety.set:" +
+                                   request.interaction.interaction_id.str(),
+                               request.interaction.correlation_id),
+         "interaction.safety_set");
     return;
   }
   case InteractionOperation::work_recent:
@@ -1225,7 +1238,7 @@ void InteractionHandler::process(const RoutedInteraction &request) {
   case InteractionOperation::vox_listening_enable: {
     if (!voice_listening_) {
       edit(request.interaction,
-           text_message("Voice listening is unavailable in this build."),
+           presentation::error(presentation::ErrorKind::feature_disabled),
            "interaction.voice_listening_unavailable");
       return;
     }
@@ -1295,7 +1308,7 @@ void InteractionHandler::process(const RoutedInteraction &request) {
     }
     if (submitted != SubmitResult::accepted) {
       edit(request.interaction,
-           text_message("Voice listening is busy or shutting down. Try again."),
+           presentation::error(presentation::ErrorKind::busy),
            "interaction.voice_listening_queue");
     }
     return;
@@ -1382,7 +1395,7 @@ void InteractionHandler::process(const RoutedInteraction &request) {
             : vox_->test_disconnect(std::move(context), std::move(completion));
     if (submitted != SubmitResult::accepted) {
       edit(request.interaction,
-           text_message("Vox is handling another request. Please try again."),
+           presentation::error(presentation::ErrorKind::busy),
            "interaction.vox_queue");
     }
     return;
@@ -1421,6 +1434,7 @@ void InteractionHandler::edit(
   try {
     pending_delivery =
         std::make_shared<DeliveryNotifier>(std::move(delivery_callback));
+    presentation::validate(message);
     if (!interaction.responder) {
       throw std::runtime_error{"Interaction responder is missing."};
     }

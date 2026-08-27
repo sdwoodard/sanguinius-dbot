@@ -88,15 +88,17 @@ public:
     candidate.human_messages_since_bot = 8;
     const std::scoped_lock lock{mutex_};
     candidate.globally_disabled = globally_disabled_;
-    candidate.global_quiet = quiet_until_ms_ && *quiet_until_ms_ > request.now_ms;
+    candidate.global_quiet =
+        quiet_until_ms_ && *quiet_until_ms_ > request.now_ms;
     candidates_.push_back(candidate);
     return candidate;
   }
   std::vector<AppearanceCandidate> scan_events(const AppearancePolicy &,
-                                               std::int64_t,
-                                               std::string_view) override {
+                                               std::int64_t, std::string_view,
+                                               std::size_t) override {
     return {};
   }
+  bool event_scan_backlog() override { return false; }
   bool record_final(const AppearancePolicy &, const AppearanceMode mode,
                     const AppearanceCandidate &candidate,
                     const AppearanceEvaluation &evaluation,
@@ -153,7 +155,7 @@ public:
     const bool accepted = evaluation.eligible_for_model && result &&
                           result->should_speak && !result->serious_context;
     found->action = accepted ? (mode == AppearanceMode::live ? "live_queued"
-                                                              : "hypothetical")
+                                                             : "hypothetical")
                              : "reject";
     found->reason = accepted ? found->action : found->model_status;
     if (accepted && mode != AppearanceMode::live)
@@ -165,9 +167,9 @@ public:
   AppearanceMutationResult
   set_quiet(const AppearanceQuietMutation &request) override {
     const std::scoped_lock lock{mutex_};
-    const auto replay = std::ranges::find(quiet_requests_,
-                                          request.idempotency_key,
-                                          &QuietRequest::idempotency_key);
+    const auto replay =
+        std::ranges::find(quiet_requests_, request.idempotency_key,
+                          &QuietRequest::idempotency_key);
     if (replay != quiet_requests_.end()) {
       if (replay->actor_user_id != request.actor_user_id ||
           replay->reason != request.reason ||
@@ -176,12 +178,11 @@ public:
       return replay->result;
     }
     const auto finish = [&](const AppearanceMutationResult result) {
-      quiet_requests_.push_back(
-          {.idempotency_key = request.idempotency_key,
-           .actor_user_id = request.actor_user_id,
-           .reason = request.reason,
-           .request_value = request.request_value,
-           .result = result});
+      quiet_requests_.push_back({.idempotency_key = request.idempotency_key,
+                                 .actor_user_id = request.actor_user_id,
+                                 .reason = request.reason,
+                                 .request_value = request.request_value,
+                                 .result = result});
       return result;
     };
     if (!request.quiet_until_ms) {
@@ -201,9 +202,9 @@ public:
     return finish(AppearanceMutationResult::applied);
   }
   AppearanceMutationResult
-  set_global_disabled(const DiscordSnowflake actor_user_id,
-                      const bool disabled, std::int64_t, std::string,
-                      std::string, std::string) override {
+  set_global_disabled(const DiscordSnowflake actor_user_id, const bool disabled,
+                      std::int64_t, std::string, std::string,
+                      std::string) override {
     const std::scoped_lock lock{mutex_};
     if (actor_user_id != DiscordSnowflake{30})
       return AppearanceMutationResult::unauthorized;
@@ -315,8 +316,7 @@ private:
 
   void store(const AppearanceCandidate &candidate,
              const AppearanceEvaluation &evaluation, AppearanceMode mode,
-             std::string decision_id,
-             std::string model_status,
+             std::string decision_id, std::string model_status,
              std::optional<AppearanceModelResult> result,
              const std::int64_t now_ms) {
     const bool accepted = evaluation.eligible_for_model && result &&
@@ -331,7 +331,7 @@ private:
          .safe_summary = candidate.safe_summary,
          .state = "final",
          .action = accepted ? (mode == AppearanceMode::live ? "live_queued"
-                                                             : "hypothetical")
+                                                            : "hypothetical")
                             : "reject",
          .reason = accepted ? (mode == AppearanceMode::live ? "live_queued"
                                                             : "hypothetical")

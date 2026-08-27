@@ -28,6 +28,8 @@ class ApplicationInstanceRepository {
 public:
   virtual ~ApplicationInstanceRepository() = default;
   virtual void record_start(const ApplicationInstanceRecord &record) = 0;
+  virtual void record_heartbeat(const std::string &instance_id,
+                                std::int64_t heartbeat_at_ms) = 0;
   virtual void record_stop(const std::string &instance_id,
                            std::int64_t stopped_at_ms,
                            ApplicationStopReason reason) = 0;

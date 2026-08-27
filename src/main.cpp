@@ -25,6 +25,9 @@ void print_usage(std::ostream &stream, const std::string_view executable) {
          << "       " << executable << " db relationships check\n"
          << "       " << executable << " db tarot check\n"
          << "       " << executable << " db tarot rebuild --confirm\n"
+         << "       " << executable << " db invariants check\n"
+         << "       " << executable
+         << " db invariants rebuild --confirm-rebuildable-projections\n"
          << "       " << executable << " db relationships rebuild --confirm\n"
          << "       " << executable << " discord commands sync\n"
          << "       " << executable << " discord commands clear --confirm\n";
@@ -70,6 +73,11 @@ database_command(const int argc, char **argv) {
     return sanguinius::DatabaseCommand{
         sanguinius::DatabaseCommandType::tarot_check, std::nullopt};
   }
+  if (argc == 4 && operation == "invariants" &&
+      std::string_view{argv[3]} == "check") {
+    return sanguinius::DatabaseCommand{
+        sanguinius::DatabaseCommandType::invariants_check, std::nullopt};
+  }
   if (argc == 5 && operation == "relationships" &&
       std::string_view{argv[3]} == "rebuild" &&
       std::string_view{argv[4]} == "--confirm") {
@@ -81,6 +89,12 @@ database_command(const int argc, char **argv) {
       std::string_view{argv[4]} == "--confirm") {
     return sanguinius::DatabaseCommand{
         sanguinius::DatabaseCommandType::tarot_rebuild, std::nullopt};
+  }
+  if (argc == 5 && operation == "invariants" &&
+      std::string_view{argv[3]} == "rebuild" &&
+      std::string_view{argv[4]} == "--confirm-rebuildable-projections") {
+    return sanguinius::DatabaseCommand{
+        sanguinius::DatabaseCommandType::invariants_rebuild, std::nullopt};
   }
   return std::nullopt;
 }

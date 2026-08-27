@@ -37,6 +37,7 @@ public:
             .entries = {},
             .offset = 0,
             .total = 0,
+            .previous_custom_id = std::nullopt,
             .next_custom_id = std::nullopt};
   }
 
@@ -45,6 +46,7 @@ public:
             .entries = {},
             .offset = 0,
             .total = 0,
+            .previous_custom_id = std::nullopt,
             .next_custom_id = std::nullopt};
   }
 

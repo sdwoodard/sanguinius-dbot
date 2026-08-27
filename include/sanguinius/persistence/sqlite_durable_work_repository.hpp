@@ -56,6 +56,9 @@ public:
                                             bool retryable) override;
   [[nodiscard]] WorkMutationStatus cancel_job(std::string_view job_id,
                                               std::int64_t now_ms) override;
+  [[nodiscard]] WorkMutationStatus
+  cancel_claimed_job(const ClaimedScheduledJob &job,
+                     std::int64_t now_ms) override;
 
   [[nodiscard]] std::optional<ClaimedOutboxMessage>
   claim_due_outbox(std::int64_t now_ms, std::int64_t lease_until_ms,
@@ -83,7 +86,7 @@ public:
               std::int64_t retry_at_ms, std::string error_code,
               OutboxFailureMode mode) override;
   [[nodiscard]] WorkMutationStatus cancel_outbox(std::string_view outbox_id,
-                                                  std::int64_t now_ms) override;
+                                                 std::int64_t now_ms) override;
   [[nodiscard]] std::optional<DiscordSnowflake>
   delivered_provider_message_id(std::string_view outbox_id) override;
 

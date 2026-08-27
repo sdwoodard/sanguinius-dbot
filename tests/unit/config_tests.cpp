@@ -427,8 +427,22 @@ TEST_CASE("voice input configuration is explicit and disabled by default",
   REQUIRE(configured.voice_input.model == "gpt-transcribe");
   REQUIRE(configured.voice_input.request_timeout ==
           std::chrono::milliseconds{1});
+  REQUIRE(configured.voice_input.usage_policy.rolling_day_windows == 50);
+  REQUIRE(configured.voice_input.usage_policy.rolling_day_micro_usd == 250'000);
+  REQUIRE(configured.voice_input.usage_policy.calendar_month_micro_usd ==
+          5'000'000);
   REQUIRE(configured.transcription_provider ==
           sanguinius::TranscriptionProvider::openai);
+
+  for (const auto &[variable, value] :
+       std::vector<std::pair<std::string, std::string>>{
+           {"SANGUINIUS_VOICE_INPUT_ROLLING_DAY_WINDOWS", "51"},
+           {"SANGUINIUS_VOICE_INPUT_ROLLING_DAY_MICRO_USD", "250001"},
+           {"SANGUINIUS_VOICE_INPUT_MONTHLY_MICRO_USD", "5000001"}}) {
+    FakeConfigSource invalid;
+    invalid.values[variable] = value;
+    REQUIRE(contains(config_error(invalid), variable));
+  }
 
   source.values["SANGUINIUS_TRANSCRIPTION_MODEL"] = "unsupported-model";
   REQUIRE(sanguinius::Config::from_source(source).voice_input.model ==
@@ -442,10 +456,10 @@ TEST_CASE("TTS configuration is fixed-contract and permits only lower limits",
   REQUIRE(default_config.tts.provider == sanguinius::TtsProvider::disabled);
   REQUIRE(default_config.tts.model == "tts-1");
   REQUIRE(default_config.tts.voice == "onyx");
-  REQUIRE(default_config.tts.usage_policy.rolling_day_attempts == 20);
-  REQUIRE(default_config.tts.usage_policy.rolling_day_micro_usd == 100'000);
+  REQUIRE(default_config.tts.usage_policy.rolling_day_attempts == 100);
+  REQUIRE(default_config.tts.usage_policy.rolling_day_micro_usd == 500'000);
   REQUIRE(default_config.tts.usage_policy.calendar_month_micro_usd ==
-          2'000'000);
+          10'000'000);
 
   FakeConfigSource lowered;
   lowered.values["SANGUINIUS_TTS_PROVIDER"] = "openai";
@@ -470,9 +484,9 @@ TEST_CASE("TTS configuration is fixed-contract and permits only lower limits",
            {"SANGUINIUS_TTS_MODEL", "tts-1-hd"},
            {"SANGUINIUS_TTS_VOICE", "alloy"},
            {"SANGUINIUS_TTS_CACHE_DIRECTORY", "relative/cache"},
-           {"SANGUINIUS_TTS_ROLLING_DAY_ATTEMPTS", "21"},
-           {"SANGUINIUS_TTS_ROLLING_DAY_MICRO_USD", "100001"},
-           {"SANGUINIUS_TTS_MONTHLY_MICRO_USD", "2000001"},
+           {"SANGUINIUS_TTS_ROLLING_DAY_ATTEMPTS", "101"},
+           {"SANGUINIUS_TTS_ROLLING_DAY_MICRO_USD", "500001"},
+           {"SANGUINIUS_TTS_MONTHLY_MICRO_USD", "10000001"},
            {"SANGUINIUS_TTS_CACHE_MAXIMUM_MIB", "129"}}) {
     FakeConfigSource invalid;
     invalid.values[variable] = value;

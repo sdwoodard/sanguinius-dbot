@@ -1,5 +1,7 @@
 #include "sanguinius/wagers.hpp"
 
+#include "sanguinius/presentation.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -185,10 +187,7 @@ render_wager(const WagerMutationResult &result) {
         .custom_id = control.custom_id,
         .label = control.action,
         .disabled = false,
-        .style = control.action == "Discard" || control.action == "Decline" ||
-                         control.action == "Cancel"
-                     ? ButtonStyle::secondary
-                     : ButtonStyle::primary,
+        .style = presentation::action_button_style(control.action),
     });
   }
   return message;
@@ -260,6 +259,12 @@ render_history(const WagerHistoryResult &result, const bool disputes_only) {
                              : "**Your recent wagers**");
     for (const auto &wager : result.wagers)
       output << "\n" << state_sentence(wager);
+    if (!disputes_only) {
+      const auto page_count = std::max<std::size_t>(
+          1, (result.total + wager_history_page_size - 1) /
+                 wager_history_page_size);
+      output << "\nPage " << result.page + 1 << " of " << page_count;
+    }
   }
   if (!result.evidence.empty()) {
     output << "\n\n**Private evidence**";
@@ -270,20 +275,30 @@ render_history(const WagerHistoryResult &result, const bool disputes_only) {
     output << "\n- " << (result.evidence_total_count - result.evidence.size())
            << " additional evidence entries remain in the durable audit.";
   auto message = text_message(bounded_discord_content(output.str()));
-  if (result.next_cursor_id) {
-    message.buttons.push_back({.custom_id = std::string{wager_history_prefix} +
-                                            *result.next_cursor_id,
-                               .label = "Older wagers",
-                               .style = ButtonStyle::secondary});
+  if (!result.exact && !disputes_only) {
+    message.buttons.push_back(
+        {.custom_id =
+             result.previous_cursor_id
+                 ? std::string{wager_history_prefix} +
+                       *result.previous_cursor_id
+                 : std::string{presentation::disabled_previous_custom_id},
+         .label = "Previous",
+         .disabled = !result.previous_cursor_id.has_value(),
+         .style = ButtonStyle::secondary});
+    message.buttons.push_back(
+        {.custom_id =
+             result.next_cursor_id
+                 ? std::string{wager_history_prefix} + *result.next_cursor_id
+                 : std::string{presentation::disabled_next_custom_id},
+         .label = "Next",
+         .disabled = !result.next_cursor_id.has_value(),
+         .style = ButtonStyle::secondary});
   }
   for (const auto &control : result.controls) {
-    message.buttons.push_back({.custom_id = control.custom_id,
-                               .label = control.action,
-                               .style = control.action == "Decline" ||
-                                                control.action == "Cancel" ||
-                                                control.action == "Discard"
-                                            ? ButtonStyle::secondary
-                                            : ButtonStyle::primary});
+    message.buttons.push_back(
+        {.custom_id = control.custom_id,
+         .label = control.action,
+         .style = presentation::action_button_style(control.action)});
   }
   return message;
 }

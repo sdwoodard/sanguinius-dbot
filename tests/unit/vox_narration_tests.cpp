@@ -46,6 +46,7 @@ class SessionFlavorRepository final
 public:
   std::size_t
   observe_batch(const sanguinius::VoxNarrationObserveRequest &) override {
+    ++observe_calls_;
     return 0;
   }
 
@@ -57,9 +58,9 @@ public:
   void
   complete_generation(const sanguinius::VoxNarrationCompletion &) override {}
 
-  std::size_t
-  reconcile(std::int64_t, const std::function<std::string()> &,
-            const std::function<bool(std::string_view)> & = {}) override {
+  std::size_t reconcile(std::int64_t, const std::function<std::string()> &,
+                        const std::function<bool(std::string_view)> & = {},
+                        std::size_t = 50) override {
     return 0;
   }
 
@@ -89,10 +90,14 @@ public:
   [[nodiscard]] std::size_t context_calls() const noexcept {
     return context_calls_.load();
   }
+  [[nodiscard]] std::size_t observe_calls() const noexcept {
+    return observe_calls_.load();
+  }
 
 private:
   std::atomic<bool> context_current_{true};
   std::atomic<std::size_t> context_calls_{};
+  std::atomic<std::size_t> observe_calls_{};
 };
 
 class GenerationRepository final : public sanguinius::VoxNarrationRepository {
@@ -135,9 +140,9 @@ public:
     changed_.notify_all();
   }
 
-  std::size_t
-  reconcile(std::int64_t, const std::function<std::string()> &,
-            const std::function<bool(std::string_view)> & = {}) override {
+  std::size_t reconcile(std::int64_t, const std::function<std::string()> &,
+                        const std::function<bool(std::string_view)> & = {},
+                        std::size_t = 50) override {
     return 0;
   }
 
@@ -169,7 +174,99 @@ private:
   bool claimed_{};
 };
 
+class PassBudgetRepository final : public sanguinius::VoxNarrationRepository {
+public:
+  std::size_t observe_batch(
+      const sanguinius::VoxNarrationObserveRequest &request) override {
+    observed = request.limit;
+    return request.limit;
+  }
+
+  std::optional<sanguinius::VoxNarrationCandidate>
+  claim_next(const sanguinius::VoxNarrationClaimRequest &) override {
+    ++claims;
+    return std::nullopt;
+  }
+
+  void
+  complete_generation(const sanguinius::VoxNarrationCompletion &) override {}
+
+  std::size_t reconcile(std::int64_t, const std::function<std::string()> &,
+                        const std::function<bool(std::string_view)> & = {},
+                        const std::size_t limit = 50) override {
+    reconciled = limit;
+    return limit;
+  }
+
+  std::optional<sanguinius::VoxNarrationCandidate>
+  preview(std::string_view, std::int64_t) override {
+    return std::nullopt;
+  }
+
+  std::vector<sanguinius::VoxNarrationRecent> recent(std::size_t) override {
+    return {};
+  }
+
+  sanguinius::VoxNarrationHealth health() override { return {}; }
+
+  std::size_t observed{};
+  std::size_t reconciled{};
+  std::size_t claims{};
+};
+
 } // namespace
+
+TEST_CASE("Vox narration lifecycle has no feature-owned polling loop",
+          "[vox][narration][orchestration][polling]") {
+  SessionFlavorRepository repository;
+  sanguinius::test::FakeClock clock;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  sanguinius::test::FakeAiClient ai;
+  sanguinius::AiWorkService work{2, 1};
+  sanguinius::VoxNarrationService service{
+      repository,
+      clock,
+      ids,
+      diagnostics,
+      ai,
+      work,
+      "00000000-0000-4000-8000-000000000099",
+      true,
+      false};
+  service.start();
+  std::this_thread::sleep_for(std::chrono::milliseconds{50});
+  REQUIRE(repository.observe_calls() == 0);
+  REQUIRE_FALSE(service.run_one_cycle());
+  REQUIRE(repository.observe_calls() == 1);
+  service.stop();
+}
+
+TEST_CASE("Vox narration shares one fifty-record pass budget",
+          "[vox][narration][orchestration][budget]") {
+  PassBudgetRepository repository;
+  sanguinius::test::FakeClock clock;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  sanguinius::test::FakeAiClient ai;
+  sanguinius::AiWorkService work{2, 1};
+  sanguinius::VoxNarrationService service{
+      repository,
+      clock,
+      ids,
+      diagnostics,
+      ai,
+      work,
+      "00000000-0000-4000-8000-000000000099",
+      true,
+      false};
+
+  REQUIRE(service.run_one_cycle());
+  REQUIRE(repository.observed == 32);
+  REQUIRE(repository.reconciled == 18);
+  REQUIRE(repository.observed + repository.reconciled == 50);
+  REQUIRE(repository.claims == 0);
+}
 
 TEST_CASE("Vox narration maps only approved public event families",
           "[vox][narration][policy]") {
@@ -370,7 +467,7 @@ TEST_CASE(
         "00000000-0000-4000-8000-000000000099",
         true,
         false};
-    service.run_one_cycle();
+    static_cast<void>(service.run_one_cycle());
     const auto completion = repository.wait_for_completion(2s);
     service.stop();
     work.stop();

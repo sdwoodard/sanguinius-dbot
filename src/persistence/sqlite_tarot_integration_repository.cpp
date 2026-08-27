@@ -13,6 +13,7 @@
 #include <mutex>
 #include <sqlite3.h>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -25,6 +26,138 @@ struct Observation {
   std::string visibility;
   bool is_test{};
 };
+
+struct ExpectedTitle {
+  std::string source_event_id;
+  std::string user_id;
+  std::string title;
+  std::int64_t occurred_at_ms{};
+};
+
+struct TitleAccumulator {
+  std::int64_t win_streak{};
+  std::int64_t loss_streak{};
+  std::int64_t settled_house{};
+};
+
+[[nodiscard]] std::string title_key(const std::string_view user_id,
+                                    const std::string_view title) {
+  return std::string{user_id} + "\n" + std::string{title};
+}
+
+[[nodiscard]] std::unordered_map<std::string, ExpectedTitle>
+expected_titles(SqliteConnection &connection) {
+  auto query = connection.prepare(
+      "SELECT player.source_event_id,player.user_id,player.result,"
+      "player.wager_kind,player.occurred_at_ms,player.baseline FROM "
+      "tarot_player_event player "
+      "JOIN tarot_event_order event_order ON event_order.event_id=player."
+      "source_event_id WHERE player.is_test=0 ORDER BY player.user_id,"
+      "event_order.sequence_id");
+  std::unordered_map<std::string, TitleAccumulator> accumulators;
+  std::unordered_map<std::string, ExpectedTitle> expected;
+  auto disabled = connection.prepare(
+      "SELECT 1 FROM tarot_integration_effect_receipt WHERE "
+      "source_event_id=? AND sink_kind='title' AND sink_key=? AND "
+      "sink_reference='chronicle_disabled'");
+  while (query.step()) {
+    const auto event_id = query.column_text(0);
+    const auto user_id = query.column_text(1);
+    const auto result = query.column_text(2);
+    const auto wager_kind = query.column_text(3);
+    const auto occurred_at_ms = query.column_int64(4);
+    const bool baseline = query.column_int64(5) != 0;
+    auto &value = accumulators[user_id];
+    const auto add = [&](const std::string_view title) {
+      disabled.reset();
+      disabled.bind(1, event_id);
+      disabled.bind(2, user_id + ":" + std::string{title});
+      if (disabled.step())
+        return;
+      expected.try_emplace(title_key(user_id, title),
+                           ExpectedTitle{.source_event_id = event_id,
+                                         .user_id = user_id,
+                                         .title = std::string{title},
+                                         .occurred_at_ms = occurred_at_ms});
+    };
+    if (!baseline && result == "win" && value.win_streak + 1 == 3)
+      add("Favored of the Cast Die");
+    if (!baseline && result == "win" && value.loss_streak >= 3)
+      add("Bearer of the Returning Dawn");
+    if (!baseline && wager_kind == "house" && value.settled_house + 1 == 10)
+      add("Keeper of the Last Standard");
+    if (result == "win") {
+      ++value.win_streak;
+      value.loss_streak = 0;
+    } else if (result == "loss") {
+      ++value.loss_streak;
+      value.win_streak = 0;
+    }
+    if (wager_kind == "house")
+      ++value.settled_house;
+  }
+  return expected;
+}
+
+[[nodiscard]] std::string
+title_state_for_grant(const std::string_view grant_state) {
+  if (grant_state == "active")
+    return "approved";
+  if (grant_state == "rejected")
+    return "rejected";
+  if (grant_state == "revoked")
+    return "revoked";
+  return "proposed";
+}
+
+[[nodiscard]] TarotIntegrationProjectionReport
+check_title_projection(SqliteConnection &connection) {
+  const auto expected = expected_titles(connection);
+  std::size_t actual_count{};
+  std::size_t mismatches{};
+  std::unordered_map<std::string, bool> seen;
+  auto actual = connection.prepare(
+      "SELECT source.source_event_id,source.user_id,source.title_name,"
+      "source.title_definition_id,source.state,grant.state FROM "
+      "tarot_title_source source LEFT JOIN chronicle_title_grant grant ON "
+      "grant.definition_id=source.title_definition_id");
+  while (actual.step()) {
+    ++actual_count;
+    const auto key = title_key(actual.column_text(1), actual.column_text(2));
+    seen[key] = true;
+    const auto found = expected.find(key);
+    if (found == expected.end() ||
+        found->second.source_event_id != actual.column_text(0)) {
+      ++mismatches;
+      continue;
+    }
+    if (!actual.column_is_null(3)) {
+      if (actual.column_is_null(5) ||
+          actual.column_text(4) != title_state_for_grant(actual.column_text(5)))
+        ++mismatches;
+    } else if (actual.column_text(4) == "suppressed") {
+      auto receipt = connection.prepare(
+          "SELECT 1 FROM tarot_integration_effect_receipt WHERE "
+          "source_event_id=? AND sink_kind='title' AND sink_key=? AND "
+          "sink_reference='recipient_opted_out'");
+      receipt.bind(1, found->second.source_event_id);
+      receipt.bind(2, found->second.user_id + ":" + found->second.title);
+      if (!receipt.step())
+        ++mismatches;
+    } else if (actual.column_text(4) != "proposed") {
+      ++mismatches;
+    }
+  }
+  for (const auto &[key, ignored] : expected) {
+    static_cast<void>(ignored);
+    if (!seen.contains(key))
+      ++mismatches;
+  }
+  return {.valid = mismatches == 0,
+          .expected_title_count = expected.size(),
+          .title_source_count = actual_count,
+          .title_mismatch_count = mismatches};
+}
 
 [[nodiscard]] TarotIntegrationReport
 inspect_unlocked(SqliteConnection &connection) {
@@ -170,8 +303,7 @@ void create_chronicle(SqliteConnection &connection,
                       const std::vector<std::string> &participants,
                       const std::string_view actor,
                       const std::string_view title, const std::string_view body,
-                      const bool chronicle_enabled,
-                      const std::int64_t now_ms,
+                      const bool chronicle_enabled, const std::int64_t now_ms,
                       const std::function<std::string()> &ids) {
   if (!chronicle_enabled || observation.is_test ||
       observation.visibility != "public" ||
@@ -490,14 +622,11 @@ void rebuild_user_projection(SqliteConnection &connection,
   update.execute();
 }
 
-void update_player_stats(SqliteConnection &connection,
-                         const Observation &observation,
-                         const std::string_view user_id,
-                         const std::string_view result,
-                         const std::string_view wager_kind,
-                         const std::int64_t occurred_at_ms,
-                         const bool chronicle_enabled,
-                         const std::int64_t now_ms) {
+void update_player_stats(
+    SqliteConnection &connection, const Observation &observation,
+    const std::string_view user_id, const std::string_view result,
+    const std::string_view wager_kind, const std::int64_t occurred_at_ms,
+    const bool chronicle_enabled, const std::int64_t now_ms) {
   if (observation.is_test ||
       effect_exists(connection, observation.event_id, "stats", user_id))
     return;
@@ -512,27 +641,30 @@ void update_player_stats(SqliteConnection &connection,
   event.bind(5, occurred_at_ms);
   event.execute();
   rebuild_user_projection(connection, user_id, now_ms);
-  if (chronicle_enabled && result == "win" && prefix.win_streak + 1 == 3)
-    propose_title_source(connection, observation, user_id,
-                         "Favored of the Cast Die", now_ms);
-  if (chronicle_enabled && result == "win" && prefix.loss_streak >= 3)
-    propose_title_source(connection, observation, user_id,
-                         "Bearer of the Returning Dawn", now_ms);
-  if (chronicle_enabled && wager_kind == "house" &&
-      prefix.settled_house + 1 == 10)
-    propose_title_source(connection, observation, user_id,
-                         "Keeper of the Last Standard", now_ms);
+  const auto handle_title = [&](const std::string_view title) {
+    if (chronicle_enabled) {
+      propose_title_source(connection, observation, user_id, title, now_ms);
+      return;
+    }
+    effect(connection, observation.event_id, "title",
+           std::string{user_id} + ":" + std::string{title},
+           std::optional<std::string_view>{"chronicle_disabled"}, now_ms);
+  };
+  if (result == "win" && prefix.win_streak + 1 == 3)
+    handle_title("Favored of the Cast Die");
+  if (result == "win" && prefix.loss_streak >= 3)
+    handle_title("Bearer of the Returning Dawn");
+  if (wager_kind == "house" && prefix.settled_house + 1 == 10)
+    handle_title("Keeper of the Last Standard");
   effect(connection, observation.event_id, "stats", user_id,
          std::optional<std::string_view>{"applied"}, now_ms);
 }
 
-[[nodiscard]] bool sync_titles(SqliteConnection &connection,
-                               const Observation &observation,
-                               const std::string_view guild_id,
-                               const std::string_view channel_id,
-                               const bool chronicle_enabled,
-                               const std::int64_t now_ms,
-                               const std::function<std::string()> &ids) {
+[[nodiscard]] bool
+sync_titles(SqliteConnection &connection, const Observation &observation,
+            const std::string_view guild_id, const std::string_view channel_id,
+            const bool chronicle_enabled, const std::int64_t now_ms,
+            const std::function<std::string()> &ids) {
   if (!chronicle_enabled)
     return false;
   auto query = connection.prepare(
@@ -716,9 +848,8 @@ void process_house(SqliteConnection &connection, const Observation &observation,
                                 : RelationshipSourceKind::tarot_resolved,
                         occurred_at, chronicle_enabled, now_ms, ids);
   }
-  const bool title_created =
-      sync_titles(connection, observation, guild, channel, chronicle_enabled,
-                  now_ms, ids);
+  const bool title_created = sync_titles(
+      connection, observation, guild, channel, chronicle_enabled, now_ms, ids);
   if (observation.visibility == "public" && !recovery) {
     const auto summary = "A public House augury, " + template_slug +
                          ", settled as a " + result + ".";
@@ -861,12 +992,10 @@ void SqliteTarotIntegrationRepository::ensure_schedule(
   transaction.commit();
 }
 
-TarotIntegrationReport
-SqliteTarotIntegrationRepository::scan(const std::int64_t now_ms,
-                                       const std::size_t limit,
-                                       std::function<std::string()> ids,
-                                       const TarotIntegrationSinkPolicy
-                                           sink_policy) {
+TarotIntegrationReport SqliteTarotIntegrationRepository::scan(
+    const std::int64_t now_ms, const std::size_t limit,
+    std::function<std::string()> ids,
+    const TarotIntegrationSinkPolicy sink_policy) {
   if (limit == 0 || limit > 100)
     throw std::invalid_argument{"Tarot integration batch is invalid."};
   std::scoped_lock lock{context_->mutex()};
@@ -877,7 +1006,8 @@ SqliteTarotIntegrationRepository::scan(const std::int64_t now_ms,
       "tarot_integration_observation observation JOIN tarot_event_order "
       "event_order ON event_order.event_id=observation.source_event_id WHERE "
       "(observation.state IN ('pending','failed') OR (observation.state="
-      "'suppressed' AND observation.is_test=0)) AND (observation.is_test=0 "
+      "'suppressed' AND observation.is_test=0 AND COALESCE(observation."
+      "last_error,'')<>'integration_disabled')) AND (observation.is_test=0 "
       "OR observation.attempts<100) AND observation.next_attempt_at_ms<=? "
       "ORDER BY event_order.sequence_id LIMIT ?");
   query.bind(1, now_ms);
@@ -928,6 +1058,32 @@ SqliteTarotIntegrationRepository::scan(const std::int64_t now_ms,
   return inspect_unlocked(connection);
 }
 
+std::size_t
+SqliteTarotIntegrationRepository::suppress_disabled(const std::int64_t now_ms,
+                                                    const std::size_t limit) {
+  if (now_ms < 0 || limit == 0 || limit > 50)
+    throw std::invalid_argument{"Disabled Tarot integration batch is invalid."};
+  std::scoped_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  Transaction transaction{connection, TransactionMode::immediate};
+  auto update = connection.prepare(
+      "UPDATE tarot_integration_observation SET state='suppressed',"
+      "attempts=attempts+1,next_attempt_at_ms=?,"
+      "last_error='integration_disabled',processed_at_ms=max(created_at_ms,?) "
+      "WHERE source_event_id IN (SELECT source_event_id FROM "
+      "tarot_integration_observation WHERE (state IN "
+      "('pending','processing','failed') OR (state='suppressed' AND "
+      "is_test=0)) AND COALESCE(last_error,'')<>'integration_disabled' "
+      "ORDER BY created_at_ms,source_event_id LIMIT ?)");
+  update.bind(1, now_ms);
+  update.bind(2, now_ms);
+  update.bind(3, static_cast<std::int64_t>(limit));
+  update.execute();
+  const auto suppressed = static_cast<std::size_t>(connection.changes());
+  transaction.commit();
+  return suppressed;
+}
+
 bool SqliteTarotIntegrationRepository::retry(
     const std::string_view source_event_id, const std::int64_t now_ms) {
   std::scoped_lock lock{context_->mutex()};
@@ -946,6 +1102,64 @@ TarotIntegrationReport SqliteTarotIntegrationRepository::inspect() {
   std::scoped_lock lock{context_->mutex()};
   auto &connection = context_->connection();
   return inspect_unlocked(connection);
+}
+
+TarotIntegrationProjectionReport
+SqliteTarotIntegrationRepository::check_projection() {
+  std::scoped_lock lock{context_->mutex()};
+  return check_projection_unlocked();
+}
+
+TarotIntegrationProjectionReport
+SqliteTarotIntegrationRepository::check_projection_unlocked() {
+  return check_title_projection(context_->connection());
+}
+
+TarotIntegrationProjectionReport
+SqliteTarotIntegrationRepository::rebuild_projection_uncommitted() {
+  std::scoped_lock lock{context_->mutex()};
+  auto &connection = context_->connection();
+  const auto expected = expected_titles(connection);
+  connection.execute("DELETE FROM tarot_title_source");
+  auto insert = connection.prepare(
+      "INSERT INTO tarot_title_source(source_event_id,user_id,title_name,"
+      "title_definition_id,state,created_at_ms) VALUES(?,?,?,?,?,?)");
+  for (const auto &[key, title] : expected) {
+    static_cast<void>(key);
+    const auto source_idempotency = "title:tarot:" + title.source_event_id +
+                                    ":" + title.user_id + ":" + title.title;
+    auto grant = connection.prepare(
+        "SELECT definition_id,state FROM chronicle_title_grant WHERE "
+        "source_idempotency_key=?");
+    grant.bind(1, source_idempotency);
+    std::optional<std::string> definition_id;
+    std::string state{"proposed"};
+    if (grant.step()) {
+      definition_id = grant.column_text(0);
+      state = title_state_for_grant(grant.column_text(1));
+    } else {
+      auto suppressed = connection.prepare(
+          "SELECT 1 FROM tarot_integration_effect_receipt WHERE "
+          "source_event_id=? AND sink_kind='title' AND sink_key=? AND "
+          "sink_reference='recipient_opted_out'");
+      suppressed.bind(1, title.source_event_id);
+      suppressed.bind(2, title.user_id + ":" + title.title);
+      if (suppressed.step())
+        state = "suppressed";
+    }
+    insert.bind(1, title.source_event_id);
+    insert.bind(2, title.user_id);
+    insert.bind(3, title.title);
+    if (definition_id)
+      insert.bind(4, *definition_id);
+    else
+      insert.bind_null(4);
+    insert.bind(5, state);
+    insert.bind(6, title.occurred_at_ms);
+    insert.execute();
+    insert.reset();
+  }
+  return check_projection_unlocked();
 }
 
 } // namespace sanguinius::persistence

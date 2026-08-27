@@ -1,27 +1,12 @@
 #include "sanguinius/message_handler.hpp"
 
-#include <algorithm>
-#include <cctype>
-#include <optional>
 #include <utility>
 
 namespace sanguinius {
 namespace {
 
-constexpr std::string_view repository_url{
-    "https://github.com/sdwoodard/sanguinius-dbot"};
-constexpr std::uint32_t repository_embed_color = 0x0E4BEFU;
 constexpr std::string_view overload_message{
     "I am handling too many requests right now. Please try again shortly."};
-
-[[nodiscard]] std::string lowercase(const std::string_view value) {
-  std::string result{value};
-  std::transform(result.begin(), result.end(), result.begin(),
-                 [](const unsigned char character) {
-                   return static_cast<char>(std::tolower(character));
-                 });
-  return result;
-}
 
 [[nodiscard]] MessageReference target(const IncomingMessage &message) {
   return MessageReference{message.message_id, message.guild_id,
@@ -36,38 +21,23 @@ server_context(const IncomingMessage &message) {
 
 } // namespace
 
-Command parse_command(const std::string_view content,
-                      const std::string_view prefix) {
-  if (!content.starts_with(prefix)) {
-    return Command::none;
-  }
-
-  const auto start = prefix.size();
-  const auto end = content.find_first_of(" \t\r\n", start);
-  const auto name = lowercase(
-      content.substr(start, end == std::string_view::npos ? end : end - start));
-
-  if (name == "help") {
-    return Command::help;
-  }
-  if (name == "repo") {
-    return Command::repo;
-  }
-  return Command::none;
-}
-
-MessageHandler::MessageHandler(MessageLog &message_log,
-                               AiResponder &ai_responder,
-                               DiscordTextDelivery &delivery,
-                               Diagnostics &diagnostics,
-                               OwnerAdminService &owner_admin,
-                               std::string command_prefix,
-                               const std::size_t queue_capacity,
-                               std::function<void(const IncomingMessage &)> observer)
+MessageHandler::MessageHandler(
+    MessageLog &message_log, AiResponder &ai_responder,
+    DiscordTextDelivery &delivery, Diagnostics &diagnostics,
+    OwnerAdminService &owner_admin, std::string command_prefix,
+    const std::size_t queue_capacity,
+    std::function<void(const IncomingMessage &)> observer,
+    std::function<std::string(const HealthSnapshot &)> health_renderer)
     : message_log_{message_log}, ai_responder_{ai_responder},
       delivery_{delivery}, diagnostics_{diagnostics}, owner_admin_{owner_admin},
-      command_prefix_{std::move(command_prefix)}, observer_{std::move(observer)},
-      worker_{queue_capacity, 1} {}
+      command_prefix_{std::move(command_prefix)},
+      observer_{std::move(observer)},
+      health_renderer_{std::move(health_renderer)}, worker_{queue_capacity, 1} {
+  if (!health_renderer_)
+    health_renderer_ = [](const HealthSnapshot &snapshot) {
+      return render_health(snapshot);
+    };
+}
 
 MessageHandler::~MessageHandler() { stop(); }
 
@@ -118,9 +88,8 @@ void MessageHandler::process(const IncomingMessage &message) const {
     try {
       observer_(message);
     } catch (const std::exception &error) {
-      diagnostics_.emit({DiagnosticSeverity::error,
-                         "message.observer", error.what(),
-                         message.correlation_id});
+      diagnostics_.emit({DiagnosticSeverity::error, "message.observer",
+                         error.what(), message.correlation_id});
     }
   }
 
@@ -153,49 +122,13 @@ void MessageHandler::process(const IncomingMessage &message) const {
     }
     return;
   }
-
-  const auto command = parse_command(message.content, command_prefix_);
-  if (command == Command::help) {
-    send_help(message);
-  } else if (command == Command::repo) {
-    send_repo(message);
-  }
-}
-
-void MessageHandler::send_help(const IncomingMessage &message) const {
-  delivery_.reply({
-      .target = target(message),
-      .content =
-          "Mention me at the beginning of a message to ask me something.\n"
-          "Sanguinius also supports two commands:\n`" +
-          command_prefix_ + "help` — show this message\n`" + command_prefix_ +
-          "repo` — show the source repository",
-      .embed = std::nullopt,
-      .suppress_mentions = true,
-  });
-}
-
-void MessageHandler::send_repo(const IncomingMessage &message) const {
-  delivery_.reply({
-      .target = target(message),
-      .content = {},
-      .embed =
-          EmbedPayload{
-              .color = repository_embed_color,
-              .title = "Sanguinius source code",
-              .url = std::string{repository_url},
-              .description = "Build instructions and source code for the "
-                             "Sanguinius Discord bot.",
-          },
-      .suppress_mentions = true,
-  });
 }
 
 void MessageHandler::send_health(const IncomingMessage &message,
                                  const HealthSnapshot &snapshot) const {
   delivery_.reply({
       .target = target(message),
-      .content = render_health(snapshot),
+      .content = health_renderer_(snapshot),
       .embed = std::nullopt,
       .suppress_mentions = true,
   });
@@ -223,8 +156,7 @@ bool MessageHandler::actionable(const IncomingMessage &message) const {
   if (parse_admin_operation(message.content, command_prefix_).has_value()) {
     return owner_admin_.authorize(server_context(message)).allowed();
   }
-  return ai_responder_.handles(message) ||
-         parse_command(message.content, command_prefix_) != Command::none;
+  return ai_responder_.handles(message);
 }
 
 } // namespace sanguinius

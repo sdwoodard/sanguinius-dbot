@@ -1,6 +1,7 @@
 #include "sanguinius/tarot.hpp"
 
 #include "sanguinius/durable_work.hpp"
+#include "sanguinius/presentation.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -54,6 +55,9 @@ option(const IncomingInteraction &interaction, const std::string_view name) {
 
   std::ostringstream output;
   output << "Your immutable Fate history";
+  const auto page_count = std::max<std::size_t>(
+      1, (page.total + tarot_history_page_size - 1) / tarot_history_page_size);
+  const auto page_number = page.offset / tarot_history_page_size + 1;
   if (page.total == 0) {
     output << "\nNo ledger entries are available.";
   } else {
@@ -72,13 +76,20 @@ option(const IncomingInteraction &interaction, const std::string_view name) {
         output << " · " << *entry.reason;
     }
   }
+  output << "\nPage " << page_number << " of " << page_count;
   auto message = text_message(output.str());
-  if (page.next_custom_id) {
-    message.buttons.push_back(ButtonPayload{.custom_id = *page.next_custom_id,
-                                            .label = "Next five",
-                                            .disabled = false,
-                                            .style = ButtonStyle::secondary});
-  }
+  message.buttons.push_back(
+      ButtonPayload{.custom_id = page.previous_custom_id.value_or(
+                        std::string{presentation::disabled_previous_custom_id}),
+                    .label = "Previous",
+                    .disabled = !page.previous_custom_id.has_value(),
+                    .style = ButtonStyle::secondary});
+  message.buttons.push_back(
+      ButtonPayload{.custom_id = page.next_custom_id.value_or(
+                        std::string{presentation::disabled_next_custom_id}),
+                    .label = "Next",
+                    .disabled = !page.next_custom_id.has_value(),
+                    .style = ButtonStyle::secondary});
   return message;
 }
 
@@ -253,9 +264,9 @@ TarotService::history(const IncomingInteraction &interaction) {
   const auto call = invocation(interaction);
   static_cast<void>(ensure_account(call));
   std::vector<std::string> tokens;
-  tokens.reserve((tarot_history_maximum_items / tarot_history_page_size) - 1);
-  for (std::size_t index = tarot_history_page_size;
-       index < tarot_history_maximum_items; index += tarot_history_page_size)
+  tokens.reserve(tarot_history_maximum_items / tarot_history_page_size);
+  for (std::size_t index = 0; index < tarot_history_maximum_items;
+       index += tarot_history_page_size)
     tokens.push_back(ids_.next_id());
   return history_message(repository_.create_history_snapshot(
       {.invocation = call,

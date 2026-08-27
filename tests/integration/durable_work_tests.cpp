@@ -66,7 +66,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 15);
+      REQUIRE(migrator.apply(database.connection()).current_version == 16);
     }
     context = std::make_shared<SqliteRepositoryContext>(
         Database::open_runtime(temporary.path(), 25ms));
@@ -188,21 +188,23 @@ template <typename Predicate>
   return predicate();
 }
 
-TEST_CASE("durable button styles preserve old primary rows and live secondary rows",
-          "[durable][outbox][buttons][compatibility]") {
+TEST_CASE(
+    "durable button styles preserve old primary rows and live secondary rows",
+    "[durable][outbox][buttons][compatibility]") {
   DurableFixture fixture;
   const sanguinius::PublicOutboxPayload payload{
-      .request = {.guild_id = 10,
-                  .channel_id = 20,
-                  .message = {.content = "Styled controls",
-                              .embed = std::nullopt,
-                              .buttons = {{.custom_id = "old-primary",
-                                           .label = "Primary"},
-                                          {.custom_id = "live-secondary",
-                                           .label = "Secondary",
-                                           .disabled = false,
-                                           .style = sanguinius::ButtonStyle::secondary}},
-                              .allowed_user_mentions = {}}},
+      .request =
+          {.guild_id = 10,
+           .channel_id = 20,
+           .message =
+               {.content = "Styled controls",
+                .embed = std::nullopt,
+                .buttons = {{.custom_id = "old-primary", .label = "Primary"},
+                            {.custom_id = "live-secondary",
+                             .label = "Secondary",
+                             .disabled = false,
+                             .style = sanguinius::ButtonStyle::secondary}},
+                .allowed_user_mentions = {}}},
       .fail_before_first_send = false};
   REQUIRE(fixture.repository->enqueue_public(
       event(event_id_1, "event:button-styles"),
@@ -259,7 +261,7 @@ public:
       const Migrator migrator{sanguinius::persistence::production_migrations(),
                               {"test", "revision"},
                               clock};
-      REQUIRE(migrator.apply(database.connection()).current_version == 15);
+      REQUIRE(migrator.apply(database.connection()).current_version == 16);
     }
     auto context = open();
     SqliteCoreIdentityRepository identities{context};

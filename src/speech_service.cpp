@@ -55,6 +55,40 @@ void stop_aware_delay(const std::stop_token stop_token,
 
 } // namespace
 
+std::size_t reconcile_tts_cache(SpeechRepository &repository, TtsCache &cache) {
+  std::size_t removed{};
+  const auto mutation = cache.purge();
+  for (const auto &key : mutation.removed_keys) {
+    repository.remove_cache_metadata(key);
+    ++removed;
+  }
+
+  auto files = cache.keys();
+  auto metadata = repository.cache_keys();
+  std::sort(files.begin(), files.end());
+  std::sort(metadata.begin(), metadata.end());
+  for (const auto &key : metadata) {
+    if (!std::binary_search(files.begin(), files.end(), key)) {
+      repository.remove_cache_metadata(key);
+      ++removed;
+    }
+  }
+  for (const auto &key : files) {
+    if (!std::binary_search(metadata.begin(), metadata.end(), key)) {
+      cache.erase(key);
+      ++removed;
+    }
+  }
+  const auto remaining = cache.keys();
+  for (const auto &key : remaining) {
+    if (!std::binary_search(metadata.begin(), metadata.end(), key)) {
+      throw TtsError{TtsFailureCategory::cache_failed,
+                     "Unable to remove an orphaned TTS cache file."};
+    }
+  }
+  return removed;
+}
+
 std::int64_t calendar_month_start_utc_ms(const std::int64_t now_ms) {
   if (now_ms < 0)
     throw std::invalid_argument{"TTS usage time must be nonnegative."};
@@ -319,6 +353,16 @@ public:
       wake();
   }
 
+  void set_provider_operator_disabled(const bool disabled) noexcept {
+    provider_operator_disabled_.store(disabled);
+    if (disabled) {
+      const std::scoped_lock lock{provider_stop_mutex_};
+      for (const auto &source : active_provider_stops_)
+        static_cast<void>(source->request_stop());
+      request_pump();
+    }
+  }
+
   void wake() noexcept { request_pump(); }
 
   void begin_session_flavor(std::string session_id) {
@@ -490,6 +534,7 @@ public:
   SpeechServiceHealth health() const {
     const auto current = wall_now_ms(clock_);
     std::string voice{"onyx"};
+    std::string provider_circuit_state{"closed"};
     std::optional<std::string> guild;
     std::optional<std::string> failure;
     std::optional<std::int64_t> normalization_latency;
@@ -505,7 +550,17 @@ public:
       } catch (...) {
       }
     }
-    return {.provider_enabled = configuration_.provider_enabled,
+    if (client_ != nullptr) {
+      try {
+        provider_circuit_state = client_->provider_circuit_state();
+      } catch (...) {
+        provider_circuit_state = "unavailable";
+      }
+    }
+    return {.provider_enabled = configuration_.provider_enabled &&
+                                !provider_operator_disabled_.load(),
+            .provider_configured = configuration_.provider_enabled,
+            .provider_circuit_state = std::move(provider_circuit_state),
             .voice = std::move(voice),
             .synthesis_worker = synthesis_worker_.snapshot(),
             .playback_worker = playback_worker_.snapshot(),
@@ -1123,6 +1178,12 @@ private:
       playing_.reset();
   }
 
+  void release_provider_stop(
+      const std::shared_ptr<std::stop_source> &source) noexcept {
+    const std::scoped_lock lock{provider_stop_mutex_};
+    std::erase(active_provider_stops_, source);
+  }
+
   PreparedAudio prepare(const SpeechItem &item,
                         const std::stop_token stop_token) {
     if (item.expires_at_ms && *item.expires_at_ms <= wall_now_ms(clock_))
@@ -1142,6 +1203,11 @@ private:
                        .provider = item.provider,
                        .model = item.model,
                        .voice = item.voice};
+    if (item.provider != "static" &&
+        (!configuration_.provider_enabled ||
+         provider_operator_disabled_.load() || client_ == nullptr))
+      throw TtsError{TtsFailureCategory::unavailable,
+                     "The TTS provider is disabled."};
     const auto key = tts_cache_key(normalized, request);
     if (const auto metadata =
             repository_.cache_metadata(key, wall_now_ms(clock_))) {
@@ -1163,10 +1229,29 @@ private:
     if (item.provider == "static") {
       pcm = asset_for(item);
     } else {
-      if (!configuration_.provider_enabled || client_ == nullptr)
-        throw TtsError{TtsFailureCategory::unavailable,
-                       "The TTS provider is disabled."};
-      pcm = synthesize(item, request, provider_request_id, stop_token);
+      auto provider_stop = std::make_shared<std::stop_source>();
+      std::stop_callback forward_stop{stop_token, [provider_stop] {
+                                        static_cast<void>(
+                                            provider_stop->request_stop());
+                                      }};
+      {
+        const std::scoped_lock lock{provider_stop_mutex_};
+        if (provider_operator_disabled_.load())
+          throw TtsError{TtsFailureCategory::unavailable,
+                         "The TTS provider is disabled."};
+        active_provider_stops_.push_back(provider_stop);
+      }
+      try {
+        pcm = synthesize(item, request, provider_request_id,
+                         provider_stop->get_token());
+      } catch (...) {
+        release_provider_stop(provider_stop);
+        throw;
+      }
+      release_provider_stop(provider_stop);
+      if (provider_operator_disabled_.load() || provider_stop->stop_requested())
+        throw TtsError{TtsFailureCategory::cancelled,
+                       "TTS synthesis was cancelled by an operator."};
     }
     if (item.expires_at_ms && *item.expires_at_ms <= wall_now_ms(clock_))
       throw TtsError{TtsFailureCategory::timeout,
@@ -1237,16 +1322,23 @@ private:
       if (!reservation.accepted)
         throw TtsError{TtsFailureCategory::budget_exhausted,
                        "The TTS usage ceiling has been reached."};
+      bool provider_response_pending{};
       try {
         auto attempt_request = request;
         attempt_request.timeout = remaining;
         const auto media = client_->synthesize(attempt_request, stop_token);
+        provider_response_pending = true;
         provider_request_id = media.provider_request_id.empty()
                                   ? std::nullopt
                                   : std::optional{media.provider_request_id};
+        if (stop_token.stop_requested())
+          throw TtsError{TtsFailureCategory::cancelled,
+                         "TTS synthesis was cancelled."};
         const auto normalization_started = std::chrono::steady_clock::now();
-        const auto normalized = normalizer_.normalize(
+        auto normalized = normalizer_.normalize(
             media, configuration_.normalization_limits, stop_token);
+        client_->provider_response_validated();
+        provider_response_pending = false;
         {
           const std::scoped_lock lock{state_mutex_};
           last_normalization_latency_ms_ =
@@ -1265,6 +1357,16 @@ private:
              .completed_at_ms = completed_at}));
         return normalized.pcm;
       } catch (const TtsError &error) {
+        if (provider_response_pending) {
+          try {
+            client_->provider_response_rejected(error.category());
+          } catch (...) {
+          }
+        }
+        if (error.category() == TtsFailureCategory::circuit_open) {
+          static_cast<void>(repository_.release_usage(attempt_id));
+          throw;
+        }
         const auto ambiguous =
             error.category() == TtsFailureCategory::transport ||
             error.category() == TtsFailureCategory::timeout;
@@ -1433,25 +1535,7 @@ private:
   }
 
   void reconcile_cache() {
-    remove_cache_metadata(cache_.purge());
-    auto files = cache_.keys();
-    auto metadata = repository_.cache_keys();
-    std::sort(files.begin(), files.end());
-    std::sort(metadata.begin(), metadata.end());
-    for (const auto &key : metadata) {
-      if (!std::binary_search(files.begin(), files.end(), key))
-        repository_.remove_cache_metadata(key);
-    }
-    for (const auto &key : files) {
-      if (!std::binary_search(metadata.begin(), metadata.end(), key))
-        cache_.erase(key);
-    }
-    const auto remaining = cache_.keys();
-    for (const auto &key : remaining) {
-      if (!std::binary_search(metadata.begin(), metadata.end(), key))
-        throw TtsError{TtsFailureCategory::cache_failed,
-                       "Unable to remove an orphaned TTS cache file."};
-    }
+    static_cast<void>(reconcile_tts_cache(repository_, cache_));
   }
 
   [[nodiscard]] bool automatic_narration_is_suppressed() noexcept {
@@ -1505,6 +1589,9 @@ private:
   SpeechServiceConfiguration configuration_;
   SpeechTextFallback text_fallback_;
   std::function<bool()> automatic_narration_suppressed_;
+  std::atomic<bool> provider_operator_disabled_{false};
+  mutable std::mutex provider_stop_mutex_;
+  std::vector<std::shared_ptr<std::stop_source>> active_provider_stops_;
   BoundedExecutor synthesis_worker_;
   BoundedExecutor flavor_worker_;
   BoundedExecutor playback_worker_;
@@ -1574,6 +1661,11 @@ void SpeechService::set_muted(const std::string_view session_id,
 
 void SpeechService::set_voice_input_listening(const bool listening) noexcept {
   impl_->set_voice_input_listening(listening);
+}
+
+void SpeechService::set_provider_operator_disabled(
+    const bool disabled) noexcept {
+  impl_->set_provider_operator_disabled(disabled);
 }
 
 void SpeechService::wake() noexcept { impl_->wake(); }

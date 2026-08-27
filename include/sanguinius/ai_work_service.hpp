@@ -3,6 +3,7 @@
 #include "sanguinius/work_queue.hpp"
 
 #include <cstddef>
+#include <memory>
 
 namespace sanguinius {
 
@@ -19,12 +20,19 @@ public:
   void stop() noexcept;
   [[nodiscard]] SubmitResult submit(BoundedExecutor::Task task);
   [[nodiscard]] SubmitResult
+  submit_explicit(BoundedExecutor::Task task,
+                  BoundedExecutor::Cancellation cancellation = {});
+  [[nodiscard]] SubmitResult
+  submit_optional(BoundedExecutor::Task task,
+                  BoundedExecutor::Cancellation cancellation = {});
+  [[nodiscard]] SubmitResult
   submit_priority(BoundedExecutor::Task task,
                   BoundedExecutor::Cancellation cancellation = {});
   [[nodiscard]] QueueSnapshot snapshot() const;
 
 private:
-  BoundedExecutor workers_;
+  class Impl;
+  std::unique_ptr<Impl> impl_;
 };
 
 } // namespace sanguinius

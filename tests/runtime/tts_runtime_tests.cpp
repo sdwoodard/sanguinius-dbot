@@ -1,6 +1,6 @@
+#include "sanguinius/composition_root.hpp"
 #include "sanguinius/ffmpeg_audio_normalizer.hpp"
 #include "sanguinius/openai_tts_client.hpp"
-#include "sanguinius/composition_root.hpp"
 #include "sanguinius/static_speech_assets.hpp"
 #include "sanguinius/tts_cache.hpp"
 
@@ -11,8 +11,8 @@
 #include <array>
 #include <chrono>
 #include <cmath>
-#include <filesystem>
 #include <fcntl.h>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <span>
@@ -30,9 +30,8 @@ public:
   sanguinius::TtsHttpResponse response;
   mutable std::optional<sanguinius::TtsHttpRequest> request;
 
-  sanguinius::TtsHttpResponse
-  post(const sanguinius::TtsHttpRequest &value,
-       std::stop_token) const override {
+  sanguinius::TtsHttpResponse post(const sanguinius::TtsHttpRequest &value,
+                                   std::stop_token) const override {
     request = value;
     return response;
   }
@@ -82,9 +81,9 @@ std::vector<std::byte> mono_wav() {
 class TemporaryDirectory final {
 public:
   TemporaryDirectory() {
-    std::array pattern{'/', 't', 'm', 'p', '/', 's', 'a', 'n', 'g', 'u', 'i',
-                       'n', 'i', 'u', 's', '-', 't', 't', 's', '-', 'X', 'X',
-                       'X', 'X', 'X', 'X', '\0'};
+    std::array pattern{'/', 't', 'm', 'p', '/', 's', 'a', 'n', 'g',
+                       'u', 'i', 'n', 'i', 'u', 's', '-', 't', 't',
+                       's', '-', 'X', 'X', 'X', 'X', 'X', 'X', '\0'};
     const auto *created = ::mkdtemp(pattern.data());
     if (created == nullptr)
       throw std::runtime_error{"mkdtemp failed"};
@@ -121,8 +120,8 @@ TEST_CASE("OpenAI TTS request is exact and does not send instructions",
                          .retry_after = std::nullopt,
                          .body = mono_wav()};
   sanguinius::OpenAiTtsClient client{"secret-fixture", transport};
-  const auto result = client.synthesize(
-      {.text = "  The vox\n is open.  "}, std::stop_token{});
+  const auto result =
+      client.synthesize({.text = "  The vox\n is open.  "}, std::stop_token{});
   REQUIRE(result.provider_request_id == "request-fixture");
   REQUIRE(transport->request.has_value());
   const auto json = nlohmann::json::parse(transport->request->json_body);
@@ -139,11 +138,17 @@ TEST_CASE("OpenAI TTS classifies provider and media failures",
           "[tts][openai][failure]") {
   auto transport = std::make_shared<FakeTransport>();
   sanguinius::OpenAiTtsClient client{"secret-fixture", transport};
+  const std::string private_provider_message{
+      R"({"error":{"message":"private provider detail"}})"};
   transport->response = {.status = 429,
                          .content_type = "application/json",
                          .request_id = "limited",
                          .retry_after = std::chrono::seconds{2},
-                         .body = {}};
+                         .body = {reinterpret_cast<const std::byte *>(
+                                      private_provider_message.data()),
+                                  reinterpret_cast<const std::byte *>(
+                                      private_provider_message.data() +
+                                      private_provider_message.size())}};
   try {
     static_cast<void>(client.synthesize({.text = "Line"}, std::stop_token{}));
     FAIL("expected provider failure");
@@ -151,6 +156,8 @@ TEST_CASE("OpenAI TTS classifies provider and media failures",
     REQUIRE(error.category() == sanguinius::TtsFailureCategory::rate_limited);
     REQUIRE(error.retryable());
     REQUIRE(error.provider_request_id() == "limited");
+    REQUIRE(std::string_view{error.what()}.find("private provider detail") ==
+            std::string_view::npos);
   }
 
   const std::string invalid{"{\"error\":true}"};
@@ -161,10 +168,9 @@ TEST_CASE("OpenAI TTS classifies provider and media failures",
       .retry_after = std::nullopt,
       .body = {reinterpret_cast<const std::byte *>(invalid.data()),
                reinterpret_cast<const std::byte *>(invalid.data() +
-                                                    invalid.size())}};
-  REQUIRE_THROWS_AS(
-      client.synthesize({.text = "Line"}, std::stop_token{}),
-      sanguinius::TtsError);
+                                                   invalid.size())}};
+  REQUIRE_THROWS_AS(client.synthesize({.text = "Line"}, std::stop_token{}),
+                    sanguinius::TtsError);
 }
 
 TEST_CASE("OpenAI Retry-After seconds are bounded instead of discarded",
@@ -176,16 +182,15 @@ TEST_CASE("OpenAI Retry-After seconds are bounded instead of discarded",
   REQUIRE_FALSE(sanguinius::bounded_retry_after("tomorrow").has_value());
 }
 
-TEST_CASE("FFmpeg normalizes bounded WAV to exact D++ PCM",
-          "[tts][ffmpeg]") {
+TEST_CASE("FFmpeg normalizes bounded WAV to exact D++ PCM", "[tts][ffmpeg]") {
   sanguinius::FfmpegAudioNormalizer normalizer{"/usr/bin/ffprobe",
-                                                "/usr/bin/ffmpeg"};
-  const auto normalized = normalizer.normalize(
-      {.bytes = mono_wav(),
-       .format = sanguinius::AudioFormat::wav,
-       .content_type = "audio/wav",
-       .provider_request_id = {}},
-      {}, std::stop_token{});
+                                               "/usr/bin/ffmpeg"};
+  const auto normalized =
+      normalizer.normalize({.bytes = mono_wav(),
+                            .format = sanguinius::AudioFormat::wav,
+                            .content_type = "audio/wav",
+                            .provider_request_id = {}},
+                           {}, std::stop_token{});
   REQUIRE(normalized.pcm.sample_rate == 48'000);
   REQUIRE(normalized.pcm.channels == 2);
   REQUIRE(normalized.pcm.bits_per_sample == 16);
@@ -198,13 +203,14 @@ TEST_CASE("FFmpeg normalizes bounded WAV to exact D++ PCM",
 
 TEST_CASE("FFmpeg runtime validation pins the tested major version",
           "[tts][ffmpeg][configuration]") {
-  REQUIRE_NOTHROW(sanguinius::validate_ffmpeg_runtime(
-      "/usr/bin/ffprobe", "/usr/bin/ffmpeg", 9));
-  REQUIRE_THROWS(sanguinius::validate_ffmpeg_runtime(
-      "/usr/bin/ffprobe", "/usr/bin/ffmpeg", 8));
+  REQUIRE_NOTHROW(sanguinius::validate_ffmpeg_runtime("/usr/bin/ffprobe",
+                                                      "/usr/bin/ffmpeg", 9));
+  REQUIRE_THROWS(sanguinius::validate_ffmpeg_runtime("/usr/bin/ffprobe",
+                                                     "/usr/bin/ffmpeg", 8));
 }
 
-TEST_CASE("FFmpeg wrapper closes inherited descriptors and contains early stdin closure",
+TEST_CASE("FFmpeg wrapper closes inherited descriptors and contains early "
+          "stdin closure",
           "[tts][ffmpeg][security]") {
   TemporaryDirectory temporary;
   const int base_descriptor = ::open("/dev/null", O_RDONLY);
@@ -217,8 +223,7 @@ TEST_CASE("FFmpeg wrapper closes inherited descriptors and contains early stdin 
   const auto ffmpeg = temporary.path() / "ffmpeg";
   write_executable(
       ffprobe,
-      "#!/bin/sh\nif [ -e /proc/$$/fd/" +
-          std::to_string(inherited_descriptor) +
+      "#!/bin/sh\nif [ -e /proc/$$/fd/" + std::to_string(inherited_descriptor) +
           " ]; then printf '%s' '{\"streams\":[{\"codec_type\":\"audio\"}],"
           "\"format\":{\"duration\":\"0.001\"}}'; else printf '%s' "
           "'{\"streams\":[{\"codec_type\":\"audio\"}],\"format\":{}}'; fi\n");
@@ -231,13 +236,13 @@ TEST_CASE("FFmpeg wrapper closes inherited descriptors and contains early stdin 
   std::copy(signature.begin(), signature.end(),
             reinterpret_cast<char *>(media.data()));
   sanguinius::FfmpegAudioNormalizer normalizer{ffprobe, ffmpeg};
-  REQUIRE_THROWS_AS(normalizer.normalize(
-                        {.bytes = std::move(media),
-                         .format = sanguinius::AudioFormat::wav,
-                         .content_type = "audio/wav",
-                         .provider_request_id = {}},
-                        {}, std::stop_token{}),
-                    sanguinius::TtsError);
+  REQUIRE_THROWS_AS(
+      normalizer.normalize({.bytes = std::move(media),
+                            .format = sanguinius::AudioFormat::wav,
+                            .content_type = "audio/wav",
+                            .provider_request_id = {}},
+                           {}, std::stop_token{}),
+      sanguinius::TtsError);
   static_cast<void>(::close(inherited_descriptor));
 }
 
@@ -247,25 +252,23 @@ TEST_CASE("FFmpeg timeout kills and reaps the isolated process group",
   const auto ffprobe = temporary.path() / "ffprobe";
   const auto ffmpeg = temporary.path() / "ffmpeg";
   const auto descendant_pid_file = temporary.path() / "descendant.pid";
-  write_executable(
-      ffprobe,
-      "#!/bin/sh\n"
-      "trap 'exit 0' TERM\n"
-      "(trap '' TERM; while :; do sleep 1; done) &\n"
-      "printf '%s\\n' \"$!\" > '" + descendant_pid_file.string() +
-          "'\n"
-          "wait\n");
+  write_executable(ffprobe, "#!/bin/sh\n"
+                            "trap 'exit 0' TERM\n"
+                            "(trap '' TERM; while :; do sleep 1; done) &\n"
+                            "printf '%s\\n' \"$!\" > '" +
+                                descendant_pid_file.string() +
+                                "'\n"
+                                "wait\n");
   write_executable(ffmpeg, "#!/bin/sh\nexit 1\n");
   sanguinius::FfmpegAudioNormalizer normalizer{ffprobe, ffmpeg};
   auto limits = sanguinius::AudioNormalizationLimits{};
   limits.probe_timeout = std::chrono::milliseconds{100};
   REQUIRE_THROWS_AS(
-      normalizer.normalize(
-          {.bytes = mono_wav(),
-           .format = sanguinius::AudioFormat::wav,
-           .content_type = "audio/wav",
-           .provider_request_id = {}},
-          limits, std::stop_token{}),
+      normalizer.normalize({.bytes = mono_wav(),
+                            .format = sanguinius::AudioFormat::wav,
+                            .content_type = "audio/wav",
+                            .provider_request_id = {}},
+                           limits, std::stop_token{}),
       sanguinius::TtsError);
 
   std::ifstream pid_input{descendant_pid_file};
@@ -339,16 +342,14 @@ TEST_CASE("Filesystem TTS cache purges orphans expiry and oldest entries",
   REQUIRE(hard_bound.removed_keys == std::vector<std::string>{first});
   REQUIRE(cache.health().bytes == 4);
   {
-    std::ofstream orphan{temporary.path() /
-                         ".sanguinius-tts-tmp-123-456"};
+    std::ofstream orphan{temporary.path() / ".sanguinius-tts-tmp-123-456"};
     orphan << "orphan";
   }
   REQUIRE(cache.purge().removed_keys.empty());
   REQUIRE_FALSE(cache.read(first, checksum).has_value());
   REQUIRE(cache.read(second, checksum).has_value());
-  REQUIRE_FALSE(
-      std::filesystem::exists(temporary.path() /
-                              ".sanguinius-tts-tmp-123-456"));
+  REQUIRE_FALSE(std::filesystem::exists(temporary.path() /
+                                        ".sanguinius-tts-tmp-123-456"));
 
   std::filesystem::last_write_time(
       temporary.path() / (second + ".pcm"),
@@ -363,6 +364,9 @@ TEST_CASE("Filesystem TTS cache purges orphans expiry and oldest entries",
 TEST_CASE("Filesystem TTS cache refuses unowned directory contents",
           "[tts][cache][security]") {
   TemporaryDirectory temporary;
+  std::filesystem::permissions(temporary.path(),
+                               std::filesystem::perms::group_read,
+                               std::filesystem::perm_options::add);
   const auto unrelated = temporary.path() / "unrelated.db";
   {
     std::ofstream output{unrelated};
@@ -371,6 +375,11 @@ TEST_CASE("Filesystem TTS cache refuses unowned directory contents",
   REQUIRE_THROWS_AS(sanguinius::FilesystemTtsCache{temporary.path()},
                     sanguinius::TtsError);
   REQUIRE(std::filesystem::exists(unrelated));
+  REQUIRE((std::filesystem::status(temporary.path()).permissions() &
+           std::filesystem::perms::group_read) != std::filesystem::perms::none);
+  std::filesystem::permissions(temporary.path(),
+                               std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace);
 }
 
 TEST_CASE("Filesystem TTS cache never purges unknown owned-directory entries",
@@ -427,8 +436,7 @@ TEST_CASE("Static Vox assets require an approved exact provenance manifest",
     std::ofstream output{temporary.path() / "fallbacks-v1.json"};
     output << manifest.dump();
   }
-  const auto assets =
-      sanguinius::load_static_speech_assets(temporary.path());
+  const auto assets = sanguinius::load_static_speech_assets(temporary.path());
   REQUIRE(assets.entrance.samples.size() == 2);
   REQUIRE(assets.error.samples.size() == 2);
   REQUIRE(assets.farewell.samples.size() == 2);
@@ -459,21 +467,53 @@ TEST_CASE("Vox runtime validation requires an owner-only cache directory",
   config.tts.fallback_directory = SANGUINIUS_TEST_VOX_ASSET_DIRECTORY;
   config.paths.database_file = temporary.path().parent_path() /
                                "sanguinius-runtime-config-state.sqlite3";
-  config.paths.message_log = temporary.path().parent_path() /
-                             "sanguinius-runtime-config-messages.log";
+  config.paths.message_log =
+      temporary.path().parent_path() / "sanguinius-runtime-config-messages.log";
 
-  std::filesystem::permissions(
-      temporary.path(), std::filesystem::perms::owner_all,
-      std::filesystem::perm_options::replace);
+  std::filesystem::permissions(temporary.path(),
+                               std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace);
   REQUIRE_NOTHROW(sanguinius::validate_runtime_configuration(config));
 
-  std::filesystem::permissions(
-      temporary.path(), std::filesystem::perms::group_read |
-                            std::filesystem::perms::group_exec,
-      std::filesystem::perm_options::add);
+  std::filesystem::permissions(temporary.path(),
+                               std::filesystem::perms::group_read |
+                                   std::filesystem::perms::group_exec,
+                               std::filesystem::perm_options::add);
   REQUIRE_THROWS(sanguinius::validate_runtime_configuration(config));
 
-  std::filesystem::permissions(
-      temporary.path(), std::filesystem::perms::owner_all,
-      std::filesystem::perm_options::replace);
+  std::filesystem::permissions(temporary.path(),
+                               std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace);
+}
+
+TEST_CASE("TTS cache validation remains active while Vox is disabled",
+          "[tts][cache][config][security][disabled]") {
+  TemporaryDirectory temporary;
+  sanguinius::Config config;
+  config.features.vox_enabled = false;
+  config.tts.cache_directory = temporary.path();
+  config.paths.database_file =
+      temporary.path().parent_path() / "sanguinius-disabled-vox-state.sqlite3";
+  config.paths.message_log =
+      temporary.path().parent_path() / "sanguinius-disabled-vox-messages.log";
+
+  std::filesystem::permissions(temporary.path(),
+                               std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace);
+  REQUIRE_NOTHROW(sanguinius::validate_runtime_configuration(config));
+
+  std::filesystem::permissions(temporary.path(),
+                               std::filesystem::perms::group_read,
+                               std::filesystem::perm_options::add);
+  REQUIRE_THROWS(sanguinius::validate_runtime_configuration(config));
+  const auto permissions =
+      std::filesystem::status(temporary.path()).permissions();
+  REQUIRE((permissions & std::filesystem::perms::group_read) !=
+          std::filesystem::perms::none);
+
+  std::filesystem::permissions(temporary.path(),
+                               std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace);
+  config.tts.cache_directory = config.paths.database_file.parent_path();
+  REQUIRE_THROWS(sanguinius::validate_runtime_configuration(config));
 }

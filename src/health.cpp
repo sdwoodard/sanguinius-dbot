@@ -96,10 +96,12 @@ HealthSnapshot HealthService::snapshot(const QueueSnapshot message_queue,
       .wagers = runtime_.wagers ? runtime_.wagers() : std::nullopt,
       .house = runtime_.house ? runtime_.house() : std::nullopt,
       .vox = runtime_.vox ? runtime_.vox() : std::nullopt,
-      .vox_narration = runtime_.vox_narration ? runtime_.vox_narration()
-                                               : std::nullopt,
-      .voice_input = runtime_.voice_input ? runtime_.voice_input()
-                                           : std::nullopt,
+      .vox_narration =
+          runtime_.vox_narration ? runtime_.vox_narration() : std::nullopt,
+      .voice_input =
+          runtime_.voice_input ? runtime_.voice_input() : std::nullopt,
+      .cross_feature =
+          runtime_.cross_feature ? runtime_.cross_feature() : std::nullopt,
       .scope_matched = scope_matched,
   };
 }
@@ -179,8 +181,8 @@ std::string render_health(const HealthSnapshot &snapshot) {
            << '\n';
   }
   if (snapshot.wagers) {
-    output << "wager_invariants="
-           << (snapshot.wagers->valid ? "ok" : "failed") << '\n'
+    output << "wager_invariants=" << (snapshot.wagers->valid ? "ok" : "failed")
+           << '\n'
            << "wager_open_funded="
            << snapshot.wagers->open_funded_obligation_count << '\n'
            << "wager_obligation_fate="
@@ -194,8 +196,8 @@ std::string render_health(const HealthSnapshot &snapshot) {
            << '\n';
   }
   if (snapshot.house) {
-    output << "house_invariants="
-           << (snapshot.house->valid ? "ok" : "failed") << '\n'
+    output << "house_invariants=" << (snapshot.house->valid ? "ok" : "failed")
+           << '\n'
            << "fate_issued=" << snapshot.house->issued_fate << '\n'
            << "fate_account_total=" << snapshot.house->account_total << '\n'
            << "fate_human_holdings=" << snapshot.house->human_fate << '\n'
@@ -231,6 +233,8 @@ std::string render_health(const HealthSnapshot &snapshot) {
     if (snapshot.vox->speech) {
       const auto &speech = *snapshot.vox->speech;
       output << "tts_provider=" << enabled(speech.provider_enabled) << '\n'
+             << "tts_circuit="
+             << safe_build_metadata(speech.provider_circuit_state) << '\n'
              << "tts_voice=" << safe_build_metadata(speech.voice) << '\n'
              << "tts_day_attempts="
              << speech.repository.usage.rolling_day_attempts << '\n'
@@ -289,8 +293,8 @@ std::string render_health(const HealthSnapshot &snapshot) {
            << "vox_narration_session_features="
            << narration.session_feature_count << '\n'
            << "vox_narration_cursor_lag="
-           << std::max<std::int64_t>(
-                  0, narration.journal_head_rowid - narration.cursor_rowid)
+           << std::max<std::int64_t>(0, narration.journal_head_rowid -
+                                            narration.cursor_rowid)
            << '\n';
   }
   if (snapshot.voice_input) {
@@ -299,12 +303,13 @@ std::string render_health(const HealthSnapshot &snapshot) {
            << voice_input_capability_name(voice.capability) << '\n'
            << "voice_input_kill_switch="
            << enabled(voice.repository.kill_switch) << '\n'
-           << "voice_input_day_windows=" << voice.repository.day_windows
-           << '\n'
+           << "voice_input_day_windows=" << voice.repository.day_windows << '\n'
            << "voice_input_day_micro_usd=" << voice.repository.day_micro_usd
            << '\n'
-           << "voice_input_month_micro_usd="
-           << voice.repository.month_micro_usd << '\n'
+           << "voice_input_month_micro_usd=" << voice.repository.month_micro_usd
+           << '\n'
+           << "voice_input_circuit="
+           << safe_build_metadata(voice.provider_circuit_state) << '\n'
            << "voice_input_control_queue=" << voice.control_queue.queued << '/'
            << voice.control_queue.capacity << '\n'
            << "voice_input_privacy_queue=" << voice.privacy_queue.queued << '/'
@@ -325,6 +330,21 @@ std::string render_health(const HealthSnapshot &snapshot) {
       output << "voice_input_last_failure="
              << safe_build_metadata(*voice.last_failure_category) << '\n';
   }
+  if (snapshot.cross_feature) {
+    const auto &cross_feature = *snapshot.cross_feature;
+    output << "cross_feature="
+           << (cross_feature.running ? "running" : "stopped") << '\n'
+           << "cross_feature_passes=" << cross_feature.completed_passes << '\n'
+           << "cross_feature_failures=" << cross_feature.failed_consumers
+           << '\n';
+    for (const auto &consumer : cross_feature.consumers) {
+      output << "cross_feature_" << safe_build_metadata(consumer.name) << '='
+             << (consumer.degraded  ? "degraded"
+                 : consumer.backlog ? "backlogged"
+                                    : "ready")
+             << ", failures=" << consumer.failures << '\n';
+    }
+  }
   output << "admin_commands="
          << enabled(snapshot.controls.admin_commands_enabled) << '\n'
          << "test_mode=" << enabled(snapshot.controls.test_mode) << '\n'
@@ -333,8 +353,8 @@ std::string render_health(const HealthSnapshot &snapshot) {
          << "appearances="
          << appearance_mode_name(snapshot.features.appearances_mode) << '\n'
          << "vox=" << enabled(snapshot.features.vox_enabled) << '\n'
-         << "vox_narration="
-         << enabled(snapshot.features.vox_narration_enabled) << '\n'
+         << "vox_narration=" << enabled(snapshot.features.vox_narration_enabled)
+         << '\n'
          << "voice_input=" << enabled(snapshot.features.voice_input_enabled)
          << '\n';
   return bounded_health_message(output.str());

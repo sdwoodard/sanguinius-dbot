@@ -69,27 +69,33 @@ int deny_v11_chronicle_swap(void *, const int action, const char *object_name,
   return SQLITE_OK;
 }
 
-int deny_v12_transition_table(void *, const int action,
-                              const char *object_name, const char *,
-                              const char *, const char *) {
+int deny_v12_transition_table(void *, const int action, const char *object_name,
+                              const char *, const char *, const char *) {
   if (action == SQLITE_CREATE_TABLE && object_name != nullptr &&
       std::string_view{object_name} == "voice_session_transition")
     return SQLITE_DENY;
   return SQLITE_OK;
 }
 
-int deny_v14_narration_table(void *, const int action,
-                             const char *object_name, const char *,
-                             const char *, const char *) {
+int deny_v14_narration_table(void *, const int action, const char *object_name,
+                             const char *, const char *, const char *) {
   if (action == SQLITE_CREATE_TABLE && object_name != nullptr &&
       std::string_view{object_name} == "voice_narration_intent")
     return SQLITE_DENY;
   return SQLITE_OK;
 }
 
+int deny_v16_ai_table(void *, const int action, const char *object_name,
+                      const char *, const char *, const char *) {
+  if (action == SQLITE_CREATE_TABLE && object_name != nullptr &&
+      std::string_view{object_name} == "ai_generation_attempt")
+    return SQLITE_DENY;
+  return SQLITE_OK;
+}
+
 } // namespace
 
-TEST_CASE("production migration moves an empty database to version fifteen",
+TEST_CASE("production migration moves an empty database to version sixteen",
           "[migration]") {
   sanguinius::test::TemporaryDatabase temporary;
   sanguinius::test::FakeClock clock{
@@ -100,12 +106,12 @@ TEST_CASE("production migration moves an empty database to version fifteen",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::uninitialized);
   REQUIRE(before.current_version == 0);
-  REQUIRE(before.target_version == 15);
+  REQUIRE(before.target_version == 16);
 
   const auto applied = migrator.apply(database.connection());
   REQUIRE(applied.state == SchemaState::current);
-  REQUIRE(applied.current_version == 15);
-  REQUIRE(count(database.connection(), "schema_migrations") == 15);
+  REQUIRE(applied.current_version == 16);
+  REQUIRE(count(database.connection(), "schema_migrations") == 16);
   REQUIRE(count(database.connection(), "application_instance") == 0);
   REQUIRE(count(database.connection(), "guild_config") == 0);
   REQUIRE(count(database.connection(), "pending_notice") == 0);
@@ -248,12 +254,16 @@ TEST_CASE("production migration moves an empty database to version fifteen",
   REQUIRE(history.column_text(0) == "voice_input");
   REQUIRE(history.column_text(1).size() == 64);
   REQUIRE(history.column_int64(2) == 123'000);
+  REQUIRE(history.step());
+  REQUIRE(history.column_text(0) == "cross_feature_reliability");
+  REQUIRE(history.column_text(1).size() == 64);
+  REQUIRE(history.column_int64(2) == 123'000);
   REQUIRE_FALSE(history.step());
 
   clock.set(std::chrono::sys_seconds{std::chrono::seconds{456}});
   const auto repeated = migrator.apply(database.connection());
   REQUIRE(repeated.state == SchemaState::current);
-  REQUIRE(count(database.connection(), "schema_migrations") == 15);
+  REQUIRE(count(database.connection(), "schema_migrations") == 16);
   auto unchanged = database.connection().prepare(
       "SELECT applied_at_ms FROM schema_migrations");
   REQUIRE(unchanged.step());
@@ -309,17 +319,18 @@ TEST_CASE("production migration upgrades version one atomically",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::pending);
   REQUIRE(before.current_version == 1);
-  REQUIRE(before.pending_count == 14);
+  REQUIRE(before.pending_count == 15);
 
   const auto applied = migrator.apply(database.connection());
   REQUIRE(applied.state == SchemaState::current);
-  REQUIRE(applied.current_version == 15);
+  REQUIRE(applied.current_version == 16);
   REQUIRE(count(database.connection(), "pending_notice") == 0);
   REQUIRE(count(database.connection(), "interaction_token") == 0);
   REQUIRE(count(database.connection(), "notice_reveal_attempt") == 0);
 }
 
-TEST_CASE("voice input migration upgrades every accepted prior schema to version fifteen",
+TEST_CASE("production migration upgrades every accepted prior schema to "
+          "version sixteen",
           "[migration][voice-input][upgrade-matrix]") {
   const auto production = sanguinius::persistence::production_migrations();
   for (std::size_t prior_version = 1; prior_version < production.size();
@@ -330,20 +341,138 @@ TEST_CASE("voice input migration upgrades every accepted prior schema to version
       auto database = Database::open_migration(temporary.path(), 25ms);
       const Migrator prior{
           std::span<const Migration>{production.data(), prior_version},
-          {"test-version", "test-revision"}, clock};
+          {"test-version", "test-revision"},
+          clock};
       REQUIRE(prior.apply(database.connection()).current_version ==
               static_cast<std::int64_t>(prior_version));
 
       const auto upgraded =
           production_migrator(clock).apply(database.connection());
       REQUIRE(upgraded.state == SchemaState::current);
-      REQUIRE(upgraded.current_version == 15);
+      REQUIRE(upgraded.current_version == 16);
       auto foreign_keys =
           database.connection().prepare("PRAGMA foreign_key_check");
       REQUIRE_FALSE(foreign_keys.step());
       REQUIRE(count(database.connection(), "voice_session") == 0);
     }
   }
+}
+
+TEST_CASE("version sixteen preserves populated v15 work and consumer cursors",
+          "[migration][m18][preservation][no-replay]") {
+  const auto production = sanguinius::persistence::production_migrations();
+  sanguinius::test::TemporaryDatabase temporary;
+  sanguinius::test::FakeClock clock{
+      std::chrono::sys_seconds{std::chrono::seconds{123}}};
+  auto database = Database::open_migration(temporary.path(), 25ms);
+  const Migrator version_fifteen{
+      std::span<const Migration>{production.data(), 15},
+      {"test-version", "test-revision"},
+      clock};
+  REQUIRE(version_fifteen.apply(database.connection()).current_version == 15);
+  database.connection().execute_script(
+      "INSERT INTO discord_user(user_id,is_bot,first_seen_at_ms,"
+      "last_seen_at_ms,created_at_ms,updated_at_ms) "
+      "VALUES('30',0,1,1,1,1);"
+      "INSERT INTO guild_config(singleton,guild_id,primary_channel_id,"
+      "owner_user_id,created_at_ms,updated_at_ms) "
+      "VALUES(1,'10','20','30',1,1);"
+      "INSERT INTO application_instance(instance_id,application_version,"
+      "git_revision,hostname,process_id,started_at_ms) VALUES("
+      "'20000000-0000-4000-8000-000000000500','v15','accepted','host',1,100);"
+      "INSERT INTO scheduled_job(job_id,job_type,aggregate_type,aggregate_id,"
+      "payload_json,due_at_ms,state,attempt_count,max_attempts,idempotency_key,"
+      "created_at_ms,updated_at_ms) VALUES"
+      "('20000000-0000-4000-8000-000000000501','appearance.scan.v1',NULL,NULL,"
+      "'{}',200,'pending',0,5,'job:appearance-scan',100,100),"
+      "('20000000-0000-4000-8000-000000000502','maintenance.other.v1',NULL,"
+      "NULL,'{}',200,'pending',0,5,'job:preserved',100,100);"
+      "INSERT INTO "
+      "event_journal(event_id,event_type,aggregate_type,aggregate_id,"
+      "actor_user_id,guild_id,channel_id,occurred_at_ms,recorded_at_ms,"
+      "correlation_id,idempotency_key,payload_json) VALUES("
+      "'20000000-0000-4000-8000-000000000503',"
+      "'chronicle.session_started.v1','chronicle_session','session-1','30','10'"
+      ","
+      "'20',110,110,'migration-preservation','event:preserved','{}');");
+  REQUIRE(count(database.connection(), "appearance_event_observation") == 1);
+  REQUIRE(count(database.connection(), "voice_narration_intent") == 0);
+
+  const auto applied = production_migrator(clock).apply(database.connection());
+  REQUIRE(applied.current_version == 16);
+  REQUIRE(count(database.connection(), "event_journal") == 1);
+  REQUIRE(count(database.connection(), "appearance_event_observation") == 1);
+  REQUIRE(count(database.connection(), "voice_narration_intent") == 0);
+  auto cursor = database.connection().prepare(
+      "SELECT last_event_rowid FROM voice_narration_cursor WHERE singleton=1");
+  REQUIRE(cursor.step());
+  REQUIRE(cursor.column_int64(0) == 0);
+  auto jobs =
+      database.connection().prepare("SELECT job_type,state,last_error_code "
+                                    "FROM scheduled_job ORDER BY job_id");
+  REQUIRE(jobs.step());
+  REQUIRE(jobs.column_text(0) == "appearance.scan.v1");
+  REQUIRE(jobs.column_text(1) == "cancelled");
+  REQUIRE(jobs.column_text(2) == "orchestrator_cutover");
+  REQUIRE(jobs.step());
+  REQUIRE(jobs.column_text(0) == "maintenance.other.v1");
+  REQUIRE(jobs.column_text(1) == "pending");
+  auto heartbeat = database.connection().prepare(
+      "SELECT heartbeat_at_ms FROM application_instance WHERE instance_id="
+      "'20000000-0000-4000-8000-000000000500'");
+  REQUIRE(heartbeat.step());
+  REQUIRE(heartbeat.column_int64(0) == 100);
+}
+
+TEST_CASE("an injected version-sixteen failure leaves populated v15 exact",
+          "[migration][m18][rollback]") {
+  const auto production = sanguinius::persistence::production_migrations();
+  sanguinius::test::TemporaryDatabase temporary;
+  sanguinius::test::FakeClock clock;
+  auto database = Database::open_migration(temporary.path(), 25ms);
+  const Migrator version_fifteen{
+      std::span<const Migration>{production.data(), 15},
+      {"test-version", "test-revision"},
+      clock};
+  REQUIRE(version_fifteen.apply(database.connection()).current_version == 15);
+  database.connection().execute(
+      "INSERT INTO scheduled_job(job_id,job_type,aggregate_type,aggregate_id,"
+      "payload_json,due_at_ms,state,attempt_count,max_attempts,idempotency_key,"
+      "created_at_ms,updated_at_ms) VALUES("
+      "'20000000-0000-4000-8000-000000000510','appearance.scan.v1',NULL,NULL,"
+      "'{}',200,'pending',0,5,'job:rollback-v16',100,100)");
+
+  REQUIRE(sqlite3_set_authorizer(database.connection().native_handle(),
+                                 deny_v16_ai_table, nullptr) == SQLITE_OK);
+  REQUIRE_THROWS_AS(production_migrator(clock).apply(database.connection()),
+                    DatabaseError);
+  REQUIRE(sqlite3_set_authorizer(database.connection().native_handle(), nullptr,
+                                 nullptr) == SQLITE_OK);
+
+  REQUIRE(version_fifteen.inspect(database.connection()).state ==
+          SchemaState::current);
+  auto heartbeat_column = database.connection().prepare(
+      "SELECT COUNT(*) FROM pragma_table_info('application_instance') WHERE "
+      "name='heartbeat_at_ms'");
+  REQUIRE(heartbeat_column.step());
+  REQUIRE(heartbeat_column.column_int64(0) == 0);
+  auto ai_table = database.connection().prepare(
+      "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND "
+      "name='ai_generation_attempt'");
+  REQUIRE(ai_table.step());
+  REQUIRE(ai_table.column_int64(0) == 0);
+  auto trigger = database.connection().prepare(
+      "SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND "
+      "name='voice_transcription_usage_no_delete'");
+  REQUIRE(trigger.step());
+  REQUIRE(trigger.column_int64(0) == 1);
+  auto job = database.connection().prepare(
+      "SELECT state,last_error_code,terminal_at_ms FROM scheduled_job WHERE "
+      "job_id='20000000-0000-4000-8000-000000000510'");
+  REQUIRE(job.step());
+  REQUIRE(job.column_text(0) == "pending");
+  REQUIRE(job.column_is_null(1));
+  REQUIRE(job.column_is_null(2));
 }
 
 TEST_CASE("voice input migration preserves Tarot appearance source privacy",
@@ -406,7 +535,7 @@ TEST_CASE("voice input migration preserves Tarot appearance source privacy",
 
   REQUIRE(
       production_migrator(clock).apply(database.connection()).current_version ==
-      15);
+      16);
   auto rebuilt_view = database.connection().prepare(
       "SELECT sql FROM sqlite_schema WHERE type='view' AND "
       "name='appearance_candidate_source_user'");
@@ -438,8 +567,8 @@ TEST_CASE("production migration upgrades version two through Chronicle",
   const auto before = migrator.inspect(database.connection());
   REQUIRE(before.state == SchemaState::pending);
   REQUIRE(before.current_version == 2);
-  REQUIRE(before.pending_count == 13);
-  REQUIRE(migrator.apply(database.connection()).current_version == 15);
+  REQUIRE(before.pending_count == 14);
+  REQUIRE(migrator.apply(database.connection()).current_version == 16);
   REQUIRE(count(database.connection(), "event_journal") == 0);
   REQUIRE(count(database.connection(), "scheduled_job") == 0);
   REQUIRE(count(database.connection(), "outbox_message") == 0);
@@ -461,8 +590,8 @@ TEST_CASE("version four imports existing Chronicle consent once",
       "INSERT INTO user_preference (user_id,updated_at_ms) VALUES ('42',1)");
 
   auto migrator = production_migrator(clock);
-  REQUIRE(migrator.inspect(database.connection()).pending_count == 12);
-  REQUIRE(migrator.apply(database.connection()).current_version == 15);
+  REQUIRE(migrator.inspect(database.connection()).pending_count == 13);
+  REQUIRE(migrator.apply(database.connection()).current_version == 16);
   auto imported = database.connection().prepare(
       "SELECT chronicle_opt_in,memory_callback_opt_in FROM user_preference "
       "WHERE user_id='42'");
@@ -501,8 +630,8 @@ TEST_CASE(
   auto migrator = production_migrator(clock);
   const auto pending = migrator.inspect(database.connection());
   REQUIRE(pending.current_version == 4);
-  REQUIRE(pending.pending_count == 11);
-  REQUIRE(migrator.apply(database.connection()).current_version == 15);
+  REQUIRE(pending.pending_count == 12);
+  REQUIRE(migrator.apply(database.connection()).current_version == 16);
   REQUIRE(count(database.connection(), "relationship_event") == 0);
   REQUIRE(count(database.connection(), "relationship_state") == 0);
   REQUIRE(count(database.connection(), "ai_prompt_attempt") == 0);
@@ -574,7 +703,7 @@ TEST_CASE("version six preserves populated Chronicle children and projections",
       "projection_version,updated_at_ms) VALUES ('31',4,3,2,1,0,4,10,1,10);");
 
   const auto applied = production_migrator(clock).apply(database.connection());
-  REQUIRE(applied.current_version == 15);
+  REQUIRE(applied.current_version == 16);
   REQUIRE(count(database.connection(), "chronicle_entry") == 1);
   REQUIRE(count(database.connection(), "chronicle_participant") == 1);
   REQUIRE(count(database.connection(), "chronicle_tag") == 1);
@@ -650,9 +779,9 @@ TEST_CASE("version nine upgrades an accepted version-six database atomically",
       "INSERT INTO user_preference(user_id,updated_at_ms) VALUES('30',1)");
   const auto before = production_migrator(clock).inspect(database.connection());
   REQUIRE(before.current_version == 6);
-  REQUIRE(before.pending_count == 9);
+  REQUIRE(before.pending_count == 10);
   const auto applied = production_migrator(clock).apply(database.connection());
-  REQUIRE(applied.current_version == 15);
+  REQUIRE(applied.current_version == 16);
   REQUIRE(count(database.connection(), "discord_user") == 1);
   REQUIRE(count(database.connection(), "appearance_candidate") == 0);
   auto guard = database.connection().prepare(
@@ -703,7 +832,7 @@ TEST_CASE("version eight preserves accepted dry-run audit rows",
 
   REQUIRE(
       production_migrator(clock).apply(database.connection()).current_version ==
-      15);
+      16);
   REQUIRE(count(database.connection(), "appearance_candidate") == 1);
   REQUIRE(count(database.connection(), "appearance_decision") == 1);
   REQUIRE(count(database.connection(), "appearance_preview") == 1);
@@ -741,10 +870,10 @@ TEST_CASE(
       "updated_at_ms) VALUES('30',0,1)");
   const auto before = production_migrator(clock).inspect(database.connection());
   REQUIRE(before.current_version == 8);
-  REQUIRE(before.pending_count == 7);
+  REQUIRE(before.pending_count == 8);
   REQUIRE(
       production_migrator(clock).apply(database.connection()).current_version ==
-      15);
+      16);
   REQUIRE(count(database.connection(), "tarot_account") == 0);
   REQUIRE(count(database.connection(), "tarot_transaction") == 0);
   auto preference =
@@ -826,7 +955,7 @@ TEST_CASE(
 
   REQUIRE(
       production_migrator(clock).apply(database.connection()).current_version ==
-      15);
+      16);
   REQUIRE(count(database.connection(), "tarot_transaction") == 1);
   REQUIRE(count(database.connection(), "tarot_posting") == 2);
   REQUIRE(count(database.connection(), "tarot_recovery_claim") == 1);
@@ -986,7 +1115,7 @@ TEST_CASE(
   auto database = Database::open_migration(temporary.path(), 25ms);
   REQUIRE(
       production_migrator(clock).apply(database.connection()).current_version ==
-      15);
+      16);
   REQUIRE(count(database.connection(), "tarot_player_event") == 2);
   auto events = database.connection().prepare(
       "SELECT user_id,result,wager_kind,is_test,baseline FROM "
@@ -1090,7 +1219,8 @@ TEST_CASE("an injected version-twelve failure leaves version eleven intact",
   const auto production = sanguinius::persistence::production_migrations();
   const Migrator version_eleven{
       std::span<const Migration>{production.data(), 11},
-      {"test-version", "test-revision"}, clock};
+      {"test-version", "test-revision"},
+      clock};
   REQUIRE(version_eleven.apply(database.connection()).current_version == 11);
 
   REQUIRE(sqlite3_set_authorizer(database.connection().native_handle(),
@@ -1123,7 +1253,8 @@ TEST_CASE("version fourteen terminalizes legacy Vox intents without replay",
   const auto production = sanguinius::persistence::production_migrations();
   const Migrator version_thirteen{
       std::span<const Migration>{production.data(), 13},
-      {"test-version", "test-revision"}, clock};
+      {"test-version", "test-revision"},
+      clock};
   REQUIRE(version_thirteen.apply(database.connection()).current_version == 13);
   database.connection().execute_script(
       "INSERT INTO discord_user VALUES('30','Owner','owner',0,1,1,1,1);"
@@ -1143,7 +1274,7 @@ TEST_CASE("version fourteen terminalizes legacy Vox intents without replay",
       "'Preserved public-safe legacy text.',0,'pending',100,86400100);");
 
   const auto applied = production_migrator(clock).apply(database.connection());
-  REQUIRE(applied.current_version == 15);
+  REQUIRE(applied.current_version == 16);
   auto legacy = database.connection().prepare(
       "SELECT slot,feature,safe_input,state,terminal_reason,speech_id FROM "
       "voice_narration_intent WHERE intent_id="
@@ -1175,7 +1306,8 @@ TEST_CASE("an injected version-fourteen failure leaves version thirteen intact",
   const auto production = sanguinius::persistence::production_migrations();
   const Migrator version_thirteen{
       std::span<const Migration>{production.data(), 13},
-      {"test-version", "test-revision"}, clock};
+      {"test-version", "test-revision"},
+      clock};
   REQUIRE(version_thirteen.apply(database.connection()).current_version == 13);
 
   REQUIRE(sqlite3_set_authorizer(database.connection().native_handle(),

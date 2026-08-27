@@ -953,6 +953,41 @@ private:
 
 } // namespace
 
+TEST_CASE("Vox output safety kill rejects every new summon until enabled",
+          "[vox][safety][operator-kill]") {
+  FakeVoxRepository repository;
+  FakeVoiceGateway gateway;
+  sanguinius::test::FakeClock clock;
+  sanguinius::test::FakePersistentIdGenerator ids;
+  sanguinius::test::FakeDiagnostics diagnostics;
+  sanguinius::VoxService service{
+      repository,  gateway,      clock, ids,
+      diagnostics, {10, 20, 30}, {},    "00000000-0000-4000-8000-000000000919",
+      [] {},       [] {}};
+  service.start();
+  service.set_output_operator_disabled(true);
+
+  std::promise<sanguinius::VoxCommandResult> completed;
+  auto future = completed.get_future();
+  REQUIRE(service.summon({.guild_id = 10,
+                          .text_channel_id = 20,
+                          .actor_user_id = 31,
+                          .owner_user_id = 30,
+                          .interaction_idempotency_key = "disabled-summon",
+                          .correlation_id = "disabled-summon",
+                          .now_ms = 0},
+                         [&completed](sanguinius::VoxCommandResult result) {
+                           completed.set_value(std::move(result));
+                         }) == sanguinius::SubmitResult::accepted);
+  REQUIRE(future.wait_for(1s) == std::future_status::ready);
+  REQUIRE(future.get().code == sanguinius::VoxResultCode::feature_disabled);
+  REQUIRE(service.health().operator_disabled);
+
+  service.set_output_operator_disabled(false);
+  REQUIRE_FALSE(service.health().operator_disabled);
+  service.stop();
+}
+
 TEST_CASE("Vox worker failures complete commands with a safe diagnostic",
           "[vox][worker][failure]") {
   FakeVoxRepository repository;

@@ -36,7 +36,8 @@ public:
            const AppearanceSimulationRequest &request) override;
   [[nodiscard]] std::vector<AppearanceCandidate>
   scan_events(const AppearancePolicy &policy, std::int64_t now_ms,
-              std::string_view instance_id) override;
+              std::string_view instance_id, std::size_t limit = 50) override;
+  [[nodiscard]] bool event_scan_backlog() override;
   [[nodiscard]] bool
   record_final(const AppearancePolicy &policy, AppearanceMode mode,
                const AppearanceCandidate &candidate,
@@ -65,15 +66,13 @@ public:
                 const AppearanceEvaluation &evaluation, std::string decision_id,
                 std::string event_id, std::string_view instance_id,
                 std::int64_t now_ms) override;
-  [[nodiscard]] bool
-  complete_model(const AppearancePolicy &policy, AppearanceMode mode,
-                 const AppearanceCandidate &candidate,
-                 const AppearanceEvaluation &fresh_evaluation,
-                 std::string_view decision_id, std::string event_id,
-                 std::string model_status,
-                 std::optional<AppearanceModelResult> result,
-                 const AppearanceDeliveryIds &delivery_ids,
-                 std::int64_t now_ms) override;
+  [[nodiscard]] bool complete_model(
+      const AppearancePolicy &policy, AppearanceMode mode,
+      const AppearanceCandidate &candidate,
+      const AppearanceEvaluation &fresh_evaluation,
+      std::string_view decision_id, std::string event_id,
+      std::string model_status, std::optional<AppearanceModelResult> result,
+      const AppearanceDeliveryIds &delivery_ids, std::int64_t now_ms) override;
   [[nodiscard]] bool
   complete_model(const AppearancePolicy &policy, AppearanceMode mode,
                  const AppearanceCandidate &candidate,

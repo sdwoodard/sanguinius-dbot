@@ -72,51 +72,84 @@ TEST_CASE("health snapshot renders build queues and configured modes",
                  .last_outbox_error = "discord_transient",
              };
            },
-       .tarot = [] {
-         return std::optional<sanguinius::TarotInvariantReport>{
-             sanguinius::TarotInvariantReport{
-                 .valid = true,
-                 .account_count = 4,
-                 .committed_transaction_count = 2,
-                 .posting_count = 4}};
-       },
-       .wagers = [] {
-         return std::optional<sanguinius::WagerInvariantReport>{
-             sanguinius::WagerInvariantReport{
-                 .valid = true,
-                 .open_funded_obligation_count = 2,
-                 .open_funded_obligation_amount = 40,
-                 .escrow_balance = 40,
-                 .disputed_count = 1}};
-       },
+       .tarot =
+           [] {
+             return std::optional<sanguinius::TarotInvariantReport>{
+                 sanguinius::TarotInvariantReport{.valid = true,
+                                                  .account_count = 4,
+                                                  .committed_transaction_count =
+                                                      2,
+                                                  .posting_count = 4}};
+           },
+       .wagers =
+           [] {
+             return std::optional<sanguinius::WagerInvariantReport>{
+                 sanguinius::WagerInvariantReport{
+                     .valid = true,
+                     .open_funded_obligation_count = 2,
+                     .open_funded_obligation_amount = 40,
+                     .escrow_balance = 40,
+                     .disputed_count = 1}};
+           },
        .house = {},
-       .vox = [] {
-         return std::optional<sanguinius::VoxHealth>{sanguinius::VoxHealth{
-             .enabled = true,
-             .state = sanguinius::VoxState::reconnecting,
-             .fixture_state = sanguinius::VoxFixtureState::played,
-             .dave_active = true,
-             .reconnect_count = 1,
-             .callback_drops = 2,
-             .reconciliations = 1,
-             .queue = {.capacity = 64,
-                       .queued = 1,
-                       .active = 1,
-                       .accepting = true},
-             .last_failure_category = "transport_closed",
-             .speech = std::nullopt}};
-       },
-       .vox_narration = [] {
-         return std::optional<sanguinius::VoxNarrationHealth>{
-             sanguinius::VoxNarrationHealth{
-                 .pending = 2,
-                 .generating = 1,
-                 .queued = 1,
-                 .session_feature_count = 2,
-                 .cursor_rowid = 90,
-                 .journal_head_rowid = 93}};
-       },
-       .voice_input = {}}};
+       .vox =
+           [] {
+             return std::optional<sanguinius::VoxHealth>{sanguinius::VoxHealth{
+                 .enabled = true,
+                 .state = sanguinius::VoxState::reconnecting,
+                 .fixture_state = sanguinius::VoxFixtureState::played,
+                 .dave_active = true,
+                 .reconnect_count = 1,
+                 .callback_drops = 2,
+                 .reconciliations = 1,
+                 .queue = {.capacity = 64,
+                           .queued = 1,
+                           .active = 1,
+                           .accepting = true},
+                 .last_failure_category = "transport_closed",
+                 .speech = std::nullopt}};
+           },
+       .vox_narration =
+           [] {
+             return std::optional<sanguinius::VoxNarrationHealth>{
+                 sanguinius::VoxNarrationHealth{.pending = 2,
+                                                .generating = 1,
+                                                .queued = 1,
+                                                .session_feature_count = 2,
+                                                .cursor_rowid = 90,
+                                                .journal_head_rowid = 93}};
+           },
+       .voice_input =
+           [] {
+             return std::optional<sanguinius::VoiceListeningHealth>{
+                 sanguinius::VoiceListeningHealth{
+                     .capability = sanguinius::VoiceInputCapability::ready,
+                     .configured_enabled = true,
+                     .consent_attested = true,
+                     .provider_enabled = true,
+                     .state = std::nullopt,
+                     .repository = {},
+                     .control_queue = {},
+                     .privacy_queue = {},
+                     .transcription_queue = {},
+                     .callback_drops = 0,
+                     .volatile_transcript_drafts = 0,
+                     .provider_circuit_state = "open",
+                     .last_failure_category = std::nullopt}};
+           },
+       .cross_feature =
+           [] {
+             return std::optional<sanguinius::CrossFeatureHealth>{
+                 sanguinius::CrossFeatureHealth{
+                     .running = true,
+                     .consumer_count = 1,
+                     .completed_passes = 4,
+                     .failed_consumers = 2,
+                     .consumers = {{.name = "appearances",
+                                    .degraded = true,
+                                    .backlog = true,
+                                    .failures = 2}}}};
+           }}};
 
   const auto snapshot = service.snapshot(
       {.capacity = 64, .queued = 3, .active = 1, .accepting = true},
@@ -144,6 +177,7 @@ TEST_CASE("health snapshot renders build queues and configured modes",
                    "retries"));
   REQUIRE(contains(rendered, "scheduler_lag_ms=700"));
   REQUIRE(contains(rendered, "last_outbox_error=discord_transient"));
+  REQUIRE(contains(rendered, "voice_input_circuit=open"));
   REQUIRE(contains(rendered, "tarot_invariants=ok"));
   REQUIRE(contains(rendered, "tarot_accounts=4"));
   REQUIRE(contains(rendered, "wager_invariants=ok"));
@@ -158,6 +192,8 @@ TEST_CASE("health snapshot renders build queues and configured modes",
   REQUIRE(contains(rendered, "appearances=dry_run"));
   REQUIRE(contains(rendered, "vox_narration_cursor_lag=3"));
   REQUIRE(contains(rendered, "voice_input=disabled"));
+  REQUIRE(contains(rendered, "cross_feature=running"));
+  REQUIRE(contains(rendered, "cross_feature_appearances=degraded, failures=2"));
 
   const sanguinius::HealthService oversized_metadata{
       {std::string(4'000, 'v'),
@@ -176,7 +212,8 @@ TEST_CASE("health snapshot renders build queues and configured modes",
        .house = {},
        .vox = {},
        .vox_narration = {},
-       .voice_input = {}}};
+       .voice_input = {},
+       .cross_feature = {}}};
   const auto bounded = sanguinius::render_health(oversized_metadata.snapshot(
       {.capacity = 64, .queued = 1, .active = 1, .accepting = true},
       {.capacity = 64, .accepting = true}, true));
@@ -208,7 +245,8 @@ TEST_CASE("health types cannot expose secret configuration", "[health]") {
        .house = {},
        .vox = {},
        .vox_narration = {},
-       .voice_input = {}}};
+       .voice_input = {},
+       .cross_feature = {}}};
   const auto rendered = sanguinius::render_health(
       service.snapshot({.capacity = 1}, {.capacity = 1}, true));
 

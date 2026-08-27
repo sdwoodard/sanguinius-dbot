@@ -25,10 +25,10 @@ public:
   [[nodiscard]] std::optional<VoxNarrationCandidate>
   begin_generation(const VoxNarrationGenerationStartRequest &) override;
   void complete_generation(const VoxNarrationCompletion &) override;
-  std::size_t reconcile(std::int64_t now_ms,
-                        const std::function<std::string()> &next_id,
-                        const std::function<bool(std::string_view)>
-                            &generation_is_live = {}) override;
+  std::size_t reconcile(
+      std::int64_t now_ms, const std::function<std::string()> &next_id,
+      const std::function<bool(std::string_view)> &generation_is_live = {},
+      std::size_t limit = 50) override;
   [[nodiscard]] std::optional<VoxNarrationCandidate>
   preview(std::string_view source_event_id, std::int64_t now_ms) override;
   [[nodiscard]] std::vector<VoxNarrationRecent>
