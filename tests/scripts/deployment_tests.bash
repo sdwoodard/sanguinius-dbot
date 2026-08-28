@@ -118,6 +118,39 @@ if SANGUINIUS_SCRIPT_TESTING=true "$remote" policy-payload-tree \
 fi
 rm "$temporary/payload/unexpected-link"
 
+production_environment="$temporary/production.env"
+printf '%s\n' \
+  'SANGUINIUS_ADMIN_COMMANDS_ENABLED=false' \
+  'SANGUINIUS_TEST_MODE=false' \
+  'SANGUINIUS_VOICE_INPUT_ENABLED=false' \
+  'SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED=false' \
+  'SANGUINIUS_TRANSCRIPTION_PROVIDER=disabled' \
+  'SANGUINIUS_CHRONICLE_ENABLED=true' \
+  'SANGUINIUS_TAROT_ENABLED=true' \
+  'SANGUINIUS_VOX_ENABLED=true' \
+  'SANGUINIUS_VOX_NARRATION_ENABLED=true' \
+  'SANGUINIUS_TTS_PROVIDER=openai' \
+  'SANGUINIUS_APPEARANCES_MODE=dry_run' >"$production_environment"
+SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
+  "$remote" policy-production-environment "$production_environment"
+printf 'SANGUINIUS_TOKEN=forbidden\n' >>"$production_environment"
+if SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
+    "$remote" policy-production-environment "$production_environment" \
+    >/dev/null 2>&1; then
+  echo "production environment policy accepted a direct credential" >&2
+  exit 1
+fi
+sed -i '/SANGUINIUS_TOKEN=forbidden/d' "$production_environment"
+printf 'SANGUINIUS_TEST_MODE=true\n' >>"$production_environment"
+if SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
+    "$remote" policy-production-environment "$production_environment" \
+    >/dev/null 2>&1; then
+  echo "production environment policy accepted a duplicate safety setting" >&2
+  exit 1
+fi
+
+grep -Fq 'systemctl enable sanguinius.service' "$remote"
+
 SANGUINIUS_SCRIPT_TESTING=true "$remote" policy-capacity 1048576 1024
 if SANGUINIUS_SCRIPT_TESTING=true "$remote" policy-capacity 1048575 1024 \
     >/dev/null 2>&1; then

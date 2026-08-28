@@ -90,6 +90,53 @@ install_system_configuration_files() {
     "$etc_directory/tmpfiles.d/sanguinius.conf"
 }
 
+verify_production_environment() {
+  local environment_file=$1
+  [[ -f $environment_file && ! -L $environment_file ]] ||
+    die "production environment is unsafe"
+  ! grep -Eq '^(SANGUINIUS_TOKEN|OPENAI_API_KEY)=' "$environment_file" ||
+    die "environment file contains a credential value"
+  local setting key
+  for setting in \
+    SANGUINIUS_ADMIN_COMMANDS_ENABLED=false \
+    SANGUINIUS_TEST_MODE=false \
+    SANGUINIUS_VOICE_INPUT_ENABLED=false \
+    SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED=false \
+    SANGUINIUS_TRANSCRIPTION_PROVIDER=disabled \
+    SANGUINIUS_CHRONICLE_ENABLED=true \
+    SANGUINIUS_TAROT_ENABLED=true \
+    SANGUINIUS_VOX_ENABLED=true \
+    SANGUINIUS_VOX_NARRATION_ENABLED=true \
+    SANGUINIUS_TTS_PROVIDER=openai \
+    SANGUINIUS_APPEARANCES_MODE=dry_run; do
+    key=${setting%%=*}
+    [[ $(grep -Ec "^${key}=" "$environment_file") == 1 ]] ||
+      die "production environment setting is missing or duplicated"
+  done
+  grep -qx 'SANGUINIUS_ADMIN_COMMANDS_ENABLED=false' "$environment_file" ||
+    die "admin commands must be disabled"
+  grep -qx 'SANGUINIUS_TEST_MODE=false' "$environment_file" ||
+    die "test mode must be disabled"
+  grep -qx 'SANGUINIUS_VOICE_INPUT_ENABLED=false' "$environment_file" ||
+    die "voice input must be disabled"
+  grep -qx 'SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED=false' \
+    "$environment_file" || die "voice input consent must be disabled"
+  grep -qx 'SANGUINIUS_TRANSCRIPTION_PROVIDER=disabled' "$environment_file" ||
+    die "transcription must be disabled"
+  grep -qx 'SANGUINIUS_CHRONICLE_ENABLED=true' "$environment_file" ||
+    die "Chronicle must be enabled"
+  grep -qx 'SANGUINIUS_TAROT_ENABLED=true' "$environment_file" ||
+    die "Tarot must be enabled"
+  grep -qx 'SANGUINIUS_VOX_ENABLED=true' "$environment_file" ||
+    die "Vox output must be enabled"
+  grep -qx 'SANGUINIUS_VOX_NARRATION_ENABLED=true' "$environment_file" ||
+    die "Vox narration must be enabled"
+  grep -qx 'SANGUINIUS_TTS_PROVIDER=openai' "$environment_file" ||
+    die "TTS must be enabled"
+  grep -qx 'SANGUINIUS_APPEARANCES_MODE=dry_run' "$environment_file" ||
+    die "appearances must remain in dry-run mode"
+}
+
 retention_deletions() {
   local current_id=$1 previous_id=$2 candidate kept_inactive=1
   shift 2
@@ -155,6 +202,11 @@ if [[ ${SANGUINIUS_SCRIPT_TESTING:-false} == true && $EUID -ne 0 ]]; then
       [[ $# -eq 1 && -n ${SANGUINIUS_TEST_ROOT:-} &&
          $1 == "$SANGUINIUS_TEST_ROOT"/* ]] || exit 2
       install_system_configuration_files "$1" "$SANGUINIUS_TEST_ROOT"
+      exit ;;
+    policy-production-environment)
+      [[ $# -eq 1 && -n ${SANGUINIUS_TEST_ROOT:-} &&
+         $1 == "$SANGUINIUS_TEST_ROOT"/* ]] || exit 2
+      verify_production_environment "$1"
       exit ;;
     *) exit 2 ;;
   esac
@@ -439,30 +491,7 @@ bootstrap)
   verify_secret_source "$openai_key"
   [[ $message_log == /* && -f $message_log && ! -L $message_log ]] ||
     die "message log source is unsafe"
-  ! grep -Eq '^(SANGUINIUS_TOKEN|OPENAI_API_KEY)=' "$environment" ||
-    die "environment file contains a credential value"
-  grep -qx 'SANGUINIUS_ADMIN_COMMANDS_ENABLED=false' "$environment" ||
-    die "admin commands must be disabled at bootstrap"
-  grep -qx 'SANGUINIUS_TEST_MODE=false' "$environment" ||
-    die "test mode must be disabled at bootstrap"
-  grep -qx 'SANGUINIUS_VOICE_INPUT_ENABLED=false' "$environment" ||
-    die "voice input must be disabled at bootstrap"
-  grep -qx 'SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED=false' "$environment" ||
-    die "voice input consent must be disabled at bootstrap"
-  grep -qx 'SANGUINIUS_TRANSCRIPTION_PROVIDER=disabled' "$environment" ||
-    die "transcription must be disabled at bootstrap"
-  grep -qx 'SANGUINIUS_CHRONICLE_ENABLED=true' "$environment" ||
-    die "Chronicle must be enabled at bootstrap"
-  grep -qx 'SANGUINIUS_TAROT_ENABLED=true' "$environment" ||
-    die "Tarot must be enabled at bootstrap"
-  grep -qx 'SANGUINIUS_VOX_ENABLED=true' "$environment" ||
-    die "Vox output must be enabled at bootstrap"
-  grep -qx 'SANGUINIUS_VOX_NARRATION_ENABLED=true' "$environment" ||
-    die "Vox narration must be enabled at bootstrap"
-  grep -qx 'SANGUINIUS_TTS_PROVIDER=openai' "$environment" ||
-    die "TTS must be enabled at bootstrap"
-  grep -qx 'SANGUINIUS_APPEARANCES_MODE=dry_run' "$environment" ||
-    die "appearances must begin in dry-run mode"
+  verify_production_environment "$environment"
   release_root=$(verify_archive)
   if ! getent passwd sanguinius >/dev/null; then
     systemd-sysusers --inline \
@@ -528,6 +557,15 @@ deploy)
     die "schema arguments are invalid"
   [[ -d $runtime && -d $releases && ! -L $runtime && ! -L $releases ]] ||
     die "production layout is not bootstrapped"
+  verify_secret_source /etc/sanguinius/sanguinius.env
+  verify_secret_source /etc/sanguinius/bot.token
+  verify_secret_source /etc/sanguinius/openai.key
+  for credential_file in /etc/sanguinius/sanguinius.env \
+    /etc/sanguinius/bot.token /etc/sanguinius/openai.key; do
+    [[ $(stat -c '%U:%G' "$credential_file") == root:root ]] ||
+      die "production credential ownership is unsafe"
+  done
+  verify_production_environment /etc/sanguinius/sanguinius.env
   exec 9>"$lock_file"
   flock -n 9 || { echo "Another deployment or backup is active." >&2; exit 75; }
   write_status running "$expected_schema"
@@ -565,6 +603,12 @@ deploy)
   old_schema=$(sed -n 's/.*"schema_target":\([0-9]*\).*/\1/p' \
     "$old/RELEASE-METADATA.json")
   [[ $old_schema == "$expected_schema" ]] || die "active release schema mismatch"
+  old_unit=$(sed -n 's/.*"service_unit":"\([A-Za-z0-9.-]*\)".*/\1/p' \
+    "$old/RELEASE-METADATA.json")
+  [[ $old_unit == sanguinius.service || $old_unit == sanguinius-compat.service ]] ||
+    die "active release service unit is invalid"
+  cmp -s "$old/systemd/$old_unit" /etc/systemd/system/sanguinius.service ||
+    die "installed service unit does not match the active release"
   disposable=$(mktemp -d "$runtime/deploy-$new_id.XXXXXXXX")
   raw="$disposable/schema$expected_schema.sqlite3"
   SANGUINIUS_DATABASE_FILE="$database" "$old/bin/sanguinius" db backup "$raw"
@@ -581,8 +625,6 @@ deploy)
   zstd -q -t "$pre"
   pre_sha=$(sha256sum "$pre" | awk '{print $1}')
   printf '%s  %s\n' "$pre_sha" "$(basename "$pre")" >"$pre.sha256"
-  printf '{"format_version":1,"class":"pre-migration","schema":%s,"revision":"%s","compressed_sha256":"%s","integrity":"ok","domain_invariants":"ok","restore_copy":"ok"}\n' \
-    "$expected_schema" "$old_revision" "$pre_sha" >"${pre%.zst}.json"
   rehearsal="$disposable/rehearsal.sqlite3"
   cp --reflink=auto "$raw" "$rehearsal"
   SANGUINIUS_DATABASE_FILE="$rehearsal" "$new/bin/sanguinius" db migrate
@@ -611,6 +653,8 @@ deploy)
   SANGUINIUS_DATABASE_FILE="$rollback_restored" "$old/bin/sanguinius" db tarot check
   [[ $(safe_counts "$rollback_restored") == "$before_counts" ]] ||
     die "restored schema-13 backup changed authoritative entity counts"
+  printf '{"format_version":1,"class":"pre-migration","schema":%s,"revision":"%s","compressed_sha256":"%s","integrity":"ok","domain_invariants":"ok","restore_copy":"ok"}\n' \
+    "$expected_schema" "$old_revision" "$pre_sha" >"${pre%.zst}.json"
   if [[ $active_state == active ]]; then
     systemctl stop sanguinius.service
   fi
@@ -699,6 +743,7 @@ deploy)
     die "schema-changing candidate failed readiness; schema and diagnostics are preserved"
   fi
   atomic_link "releases/$(basename "$old")" "$previous"
+  systemctl enable sanguinius.service
   systemctl enable --now sanguinius-backup.timer
   printf '%s\n' "$target_schema" >$state/state-version
   chown sanguinius:sanguinius $state/state-version
