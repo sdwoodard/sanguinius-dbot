@@ -35,6 +35,7 @@ install -d "$systemd_root/etc/systemd/system" \
   "$systemd_root/opt/sanguinius/current/bin" \
   "$systemd_root/opt/sanguinius/current/libexec" \
   "$systemd_root/etc/sanguinius"
+install -D -m 0755 /usr/bin/env "$systemd_root/usr/bin/env"
 install -m 0755 /usr/bin/true \
   "$systemd_root/opt/sanguinius/current/bin/sanguinius"
 install -m 0755 /usr/bin/true \
