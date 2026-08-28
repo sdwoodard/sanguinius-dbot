@@ -162,6 +162,11 @@ failure_action() {
   fi
 }
 
+safe_counts() {
+  sqlite3 -readonly "$1" \
+    'SELECT (SELECT count(*) FROM discord_user)||char(58)||(SELECT count(*) FROM chronicle_entry)||char(58)||(SELECT count(*) FROM relationship_event)||char(58)||(SELECT count(*) FROM tarot_transaction)||char(58)||(SELECT count(*) FROM tarot_posting)||char(58)||(SELECT count(*) FROM tarot_wager)||char(58)||(SELECT count(*) FROM voice_session)||char(58)||(SELECT count(*) FROM speech_item);'
+}
+
 if [[ ${SANGUINIUS_SCRIPT_TESTING:-false} == true && $EUID -ne 0 ]]; then
   test_operation=${1:-}
   shift || true
@@ -207,6 +212,11 @@ if [[ ${SANGUINIUS_SCRIPT_TESTING:-false} == true && $EUID -ne 0 ]]; then
       [[ $# -eq 1 && -n ${SANGUINIUS_TEST_ROOT:-} &&
          $1 == "$SANGUINIUS_TEST_ROOT"/* ]] || exit 2
       verify_production_environment "$1"
+      exit ;;
+    policy-safe-counts)
+      [[ $# -eq 1 && -n ${SANGUINIUS_TEST_ROOT:-} &&
+         $1 == "$SANGUINIUS_TEST_ROOT"/* && -f $1 && ! -L $1 ]] || exit 2
+      safe_counts "$1"
       exit ;;
     *) exit 2 ;;
   esac
@@ -305,11 +315,6 @@ assert_database_exclusive() {
         die "database is still open by another process" ;;
     esac
   done
-}
-
-safe_counts() {
-  sqlite3 -readonly "$1" \
-    'SELECT (SELECT count(*) FROM discord_user)||":"||(SELECT count(*) FROM chronicle_entry)||":"||(SELECT count(*) FROM relationship_event)||":"||(SELECT count(*) FROM tarot_transaction)||":"||(SELECT count(*) FROM tarot_posting)||":"||(SELECT count(*) FROM tarot_wager)||":"||(SELECT count(*) FROM voice_session)||":"||(SELECT count(*) FROM speech_item);'
 }
 
 verify_secret_source() {
@@ -587,7 +592,7 @@ deploy)
   [[ $(schema_version "$database") == "$expected_schema" ]] ||
     die "unexpected production schema"
   release_root=$(verify_archive)
-  new_id=$(install_release "$release_root")
+  new_id=$(install_release "$release_root" true)
   new="$releases/$new_id"
   metadata_schema=$(sed -n 's/.*"schema_target":\([0-9]*\).*/\1/p' \
     "$new/RELEASE-METADATA.json")

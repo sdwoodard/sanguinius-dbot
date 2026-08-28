@@ -150,6 +150,14 @@ if SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
 fi
 
 grep -Fq 'systemctl enable sanguinius.service' "$remote"
+grep -Fq 'new_id=$(install_release "$release_root" true)' "$remote"
+
+counts_database="$temporary/counts.sqlite3"
+sqlite3 "$counts_database" \
+  'CREATE TABLE discord_user(value); CREATE TABLE chronicle_entry(value); CREATE TABLE relationship_event(value); CREATE TABLE tarot_transaction(value); CREATE TABLE tarot_posting(value); CREATE TABLE tarot_wager(value); CREATE TABLE voice_session(value); CREATE TABLE speech_item(value); INSERT INTO discord_user VALUES(1); INSERT INTO tarot_transaction VALUES(1); INSERT INTO tarot_transaction VALUES(2); INSERT INTO speech_item VALUES(1);'
+counts=$(SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
+  "$remote" policy-safe-counts "$counts_database")
+[[ $counts == 1:0:0:2:0:0:0:1 ]]
 
 SANGUINIUS_SCRIPT_TESTING=true "$remote" policy-capacity 1048576 1024
 if SANGUINIUS_SCRIPT_TESTING=true "$remote" policy-capacity 1048575 1024 \
