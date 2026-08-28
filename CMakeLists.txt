@@ -312,8 +312,8 @@ target_link_libraries(sanguinius_runtime
     PUBLIC
         sanguinius_core
         sanguinius_persistence
-    PRIVATE
         dpp::dpp
+    PRIVATE
         CURL::libcurl
         nlohmann_json::nlohmann_json
 )

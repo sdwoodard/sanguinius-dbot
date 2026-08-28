@@ -74,8 +74,7 @@ cmake -S /src -B /tmp/sanguinius-build -G Ninja \
   -DCMAKE_INSTALL_PREFIX=/ \
   -DCMAKE_INSTALL_RPATH="\$ORIGIN/../lib" \
   -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=FALSE \
-  -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG -march=x86-64-v3 -mtune=generic -ffile-prefix-map=/src=. -fdebug-prefix-map=/src=." \
-  -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG -march=x86-64-v3 -mtune=generic -ffile-prefix-map=/src=. -fdebug-prefix-map=/src=." \
+  -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG -march=x86-64-v3 -mtune=generic -ffile-prefix-map=/src=. -fdebug-prefix-map=/src=. -isystem /opt/dpp/include" \
   -DSANGUINIUS_REVISION_OVERRIDE="${SANGUINIUS_REVISION}" \
   "${release_metadata_options[@]}"
 cmake --build /tmp/sanguinius-build --parallel 2
