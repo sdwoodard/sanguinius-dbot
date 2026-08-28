@@ -75,6 +75,8 @@ COPY scripts/lib/remote_deploy.bash \
      /opt/sanguinius-release-support/scripts/lib/remote_deploy.bash
 COPY tests/scripts/ /opt/sanguinius-release-support/tests/scripts/
 COPY packaging/systemd/ /opt/sanguinius-release-support/packaging/systemd/
+COPY packaging/set-rpath.cmake \
+     /opt/sanguinius-release-support/packaging/set-rpath.cmake
 COPY packaging/container-build.bash /usr/local/bin/sanguinius-container-build
 RUN chmod 0755 /usr/local/bin/sanguinius-container-build
 

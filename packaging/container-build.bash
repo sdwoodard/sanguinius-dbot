@@ -159,3 +159,15 @@ SANGUINIUS_DATABASE_FILE="$offline_database" \
 DESTDIR=/out/stage cmake --install /tmp/sanguinius-build
 install -D -m 0755 /opt/dpp/lib/libdpp.so.10.1.7 \
   /out/stage/lib/libdpp.so.10.1.7
+installed_rpath=$(readelf -d /out/stage/bin/sanguinius | \
+  sed -n 's/.*\(RUNPATH\|RPATH\).*\[\(.*\)\].*/\2/p')
+if [[ $SANGUINIUS_COMPATIBILITY_RELEASE == true ]]; then
+  [[ $installed_rpath == '$ORIGIN/../lib:/opt/dpp/lib' ]]
+  cmake -DINPUT_FILE=/out/stage/bin/sanguinius \
+    "-DOLD_RPATH=$installed_rpath" \
+    '-DNEW_RPATH=$ORIGIN/../lib' \
+    -P /opt/sanguinius-release-support/packaging/set-rpath.cmake
+fi
+[[ $(readelf -d /out/stage/bin/sanguinius | \
+  sed -n 's/.*\(RUNPATH\|RPATH\).*\[\(.*\)\].*/\2/p') == \
+  '$ORIGIN/../lib' ]]

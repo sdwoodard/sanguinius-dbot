@@ -36,7 +36,8 @@ image_tag() {
   digest=$(
     cd "$repository"
     find packaging/Containerfile packaging/container-build.bash \
-      packaging/systemd scripts/release.bash scripts/deploy_nuln.bash \
+      packaging/set-rpath.cmake packaging/systemd \
+      scripts/release.bash scripts/deploy_nuln.bash \
       scripts/sanguinius-backup.bash scripts/sanguinius-restore.bash \
       scripts/lib/remote_deploy.bash tests/scripts \
       packaging/release-toolchain.lock -type f -print0 | \
