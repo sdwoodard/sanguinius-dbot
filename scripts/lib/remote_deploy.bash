@@ -45,6 +45,8 @@ managed_payload_directory() {
 verify_payload_tree() {
   local release=$1 manifest="$1/SHARE-MANIFEST.sha256"
   [[ -f $manifest && ! -L $manifest ]] || die "payload manifest is missing"
+  [[ -z $(find "$release" -mindepth 1 ! -type f ! -type d -print -quit) ]] ||
+    die "payload contains an unsupported filesystem entry"
   local hash entry extra relative count=0
   declare -A listed=()
   while read -r hash entry extra; do
@@ -69,6 +71,23 @@ verify_payload_tree() {
   done < <(find "$release" -type d -printf '%P\n')
   (cd "$release" && sha256sum --quiet -c SHARE-MANIFEST.sha256) ||
     die "payload manifest mismatch"
+}
+
+install_system_configuration_files() {
+  local release=$1 configuration_root=${2:-} etc_directory=/etc
+  if [[ -n $configuration_root ]]; then
+    [[ $configuration_root == /* && -d $configuration_root &&
+       ! -L $configuration_root ]] || die "system configuration root is unsafe"
+    etc_directory="$configuration_root/etc"
+  fi
+  [[ -f $release/sysusers.d/sanguinius.conf &&
+     -f $release/tmpfiles.d/sanguinius.conf ]] ||
+    die "system configuration payload is incomplete"
+  install -d -m 0755 "$etc_directory/sysusers.d" "$etc_directory/tmpfiles.d"
+  install -m 0644 "$release/sysusers.d/sanguinius.conf" \
+    "$etc_directory/sysusers.d/sanguinius.conf"
+  install -m 0644 "$release/tmpfiles.d/sanguinius.conf" \
+    "$etc_directory/tmpfiles.d/sanguinius.conf"
 }
 
 retention_deletions() {
@@ -131,6 +150,11 @@ if [[ ${SANGUINIUS_SCRIPT_TESTING:-false} == true && $EUID -ne 0 ]]; then
       [[ $# -eq 2 && -n ${SANGUINIUS_TEST_ROOT:-} &&
          $2 == "$SANGUINIUS_TEST_ROOT"/* ]] || exit 2
       atomic_link "$1" "$2"
+      exit ;;
+    policy-system-configuration)
+      [[ $# -eq 1 && -n ${SANGUINIUS_TEST_ROOT:-} &&
+         $1 == "$SANGUINIUS_TEST_ROOT"/* ]] || exit 2
+      install_system_configuration_files "$1" "$SANGUINIUS_TEST_ROOT"
       exit ;;
     *) exit 2 ;;
   esac
@@ -265,8 +289,28 @@ verify_archive() {
 
 install_release() {
   local root=$1
+  local allow_existing=${2:-false}
   local id=${root#sanguinius-}
   local incoming="$releases/.incoming-$id"
+  local installed="$releases/$id"
+  if [[ $allow_existing == true && -d $installed && ! -L $installed &&
+        ! -e $incoming ]]; then
+    verify_payload_tree "$installed"
+    [[ $(sha256sum "$installed/RELEASE-METADATA.json" | awk '{print $1}') == \
+       $(tar --zstd -xOf "$archive" "$root/RELEASE-METADATA.json" | \
+         sha256sum | awk '{print $1}') ]] || die "existing release metadata conflicts"
+    [[ $(sha256sum "$installed/SHARE-MANIFEST.sha256" | awk '{print $1}') == \
+       $(tar --zstd -xOf "$archive" "$root/SHARE-MANIFEST.sha256" | \
+         sha256sum | awk '{print $1}') ]] || die "existing release manifest conflicts"
+    [[ $(stat -c '%U:%G' "$installed") == root:root &&
+       -z $(find "$installed" -xdev \
+         \( ! -user root -o ! -group root -o -perm /022 \) -print -quit) ]] ||
+      die "existing release ownership or permissions are unsafe"
+    printf '%s\n' "$id"
+    return
+  fi
+  [[ $allow_existing == false || $allow_existing == true ]] ||
+    die "invalid existing-release policy"
   local incoming_committed=false
   # Invoked indirectly by the RETURN/EXIT paths in the command-substitution
   # subshell used by callers.
@@ -280,7 +324,7 @@ install_release() {
     fi
   }
   trap cleanup_incoming EXIT
-  [[ ! -e $releases/$id && ! -e $incoming ]] || die "release ID already exists"
+  [[ ! -e $installed && ! -e $incoming ]] || die "release ID already exists"
   mkdir -m 0700 "$incoming"
   tar --zstd -xf "$archive" -C "$incoming" --strip-components=1 \
     --no-same-owner --no-same-permissions
@@ -332,8 +376,9 @@ install_release() {
   chmod 0555 "$incoming/bin/sanguinius" "$incoming/lib/libdpp.so.10.1.7"
   [[ ! -d $incoming/libexec ]] || chmod 0555 "$incoming/libexec"/*
   chown -R root:root "$incoming"
-  mv -T "$incoming" "$releases/$id"
+  mv -T "$incoming" "$installed"
   incoming_committed=true
+  trap - EXIT
   printf '%s\n' "$id"
 }
 
@@ -431,7 +476,7 @@ bootstrap)
   verify_capacity
   exec 9>"$lock_file"
   flock -n 9 || die "operations lock is held"
-  rollback_id=$(install_release "$release_root")
+  rollback_id=$(install_release "$release_root" true)
   rollback="$releases/$rollback_id"
   [[ $(sed -n 's/.*"schema_target":\([0-9]*\).*/\1/p' \
       "$rollback/RELEASE-METADATA.json") == 13 ]] || die "rollback schema mismatch"
@@ -472,10 +517,7 @@ bootstrap)
   chown sanguinius:sanguinius /var/lib/sanguinius/state-version
   atomic_link "releases/$rollback_id" "$previous"
   install_service_unit "$rollback"
-  install -m 0644 "$rollback/sysusers.d/sanguinius.conf" \
-    /etc/sysusers.d/sanguinius.conf
-  install -m 0644 "$rollback/tmpfiles.d/sanguinius.conf" \
-    /etc/tmpfiles.d/sanguinius.conf
+  install_system_configuration_files "$rollback"
   systemctl daemon-reload
   write_status succeeded 13 backup-succeeded
   echo "bootstrap=complete"
@@ -606,10 +648,7 @@ deploy)
     /etc/systemd/system/sanguinius-backup.service
   install -m 0644 "$new/systemd/sanguinius-backup.timer" \
     /etc/systemd/system/sanguinius-backup.timer
-  install -m 0644 "$new/sysusers.d/sanguinius.conf" \
-    /etc/sysusers.d/sanguinius.conf
-  install -m 0644 "$new/tmpfiles.d/sanguinius.conf" \
-    /etc/tmpfiles.d/sanguinius.conf
+  install_system_configuration_files "$new"
   systemctl daemon-reload
   systemctl start sanguinius.service || {
     systemctl stop sanguinius.service 2>/dev/null || true

@@ -95,6 +95,29 @@ fi
 rm -f "$temporary/payload/docs/OPERATIONS.md"
 rmdir "$temporary/payload/docs"
 
+mkdir -p "$temporary/system-release/sysusers.d" \
+  "$temporary/system-release/tmpfiles.d"
+printf 'u sanguinius - test\n' \
+  >"$temporary/system-release/sysusers.d/sanguinius.conf"
+printf 'd /var/lib/sanguinius 0750 sanguinius sanguinius -\n' \
+  >"$temporary/system-release/tmpfiles.d/sanguinius.conf"
+SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
+  "$remote" policy-system-configuration "$temporary/system-release"
+[[ -d $temporary/etc/sysusers.d && -d $temporary/etc/tmpfiles.d ]]
+[[ $(stat -c %a "$temporary/etc/sysusers.d") == 755 ]]
+cmp "$temporary/system-release/sysusers.d/sanguinius.conf" \
+  "$temporary/etc/sysusers.d/sanguinius.conf"
+cmp "$temporary/system-release/tmpfiles.d/sanguinius.conf" \
+  "$temporary/etc/tmpfiles.d/sanguinius.conf"
+
+ln -s RELEASE-METADATA.json "$temporary/payload/unexpected-link"
+if SANGUINIUS_SCRIPT_TESTING=true "$remote" policy-payload-tree \
+    "$temporary/payload" >/dev/null 2>&1; then
+  echo "remote payload policy accepted a symlink" >&2
+  exit 1
+fi
+rm "$temporary/payload/unexpected-link"
+
 SANGUINIUS_SCRIPT_TESTING=true "$remote" policy-capacity 1048576 1024
 if SANGUINIUS_SCRIPT_TESTING=true "$remote" policy-capacity 1048575 1024 \
     >/dev/null 2>&1; then
