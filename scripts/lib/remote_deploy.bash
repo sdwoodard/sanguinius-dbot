@@ -354,9 +354,12 @@ verify_production_environment() {
 
 retention_deletions() {
   local current_id=$1 previous_id=$2 candidate kept_inactive=1
+  declare -A seen=()
   shift 2
   for candidate in "$@"; do
     managed_release_name "$candidate" || continue
+    [[ -z ${seen[$candidate]+present} ]] || continue
+    seen[$candidate]=1
     [[ $candidate != "$current_id" && $candidate != "$previous_id" ]] ||
       continue
     ((kept_inactive += 1))
@@ -375,17 +378,26 @@ managed_release_directory() {
 
 release_retention_deletions() {
   local release_directory=$1 current_id=$2 previous_id=$3 candidate
-  local -a recognized=()
+  local compatibility metadata
+  local -a recognized=() prioritized=()
   [[ -d $release_directory && ! -L $release_directory ]] || return 1
   while IFS= read -r candidate; do
     managed_release_directory "$release_directory/$candidate" "$candidate" ||
       continue
     recognized+=("$candidate")
+    metadata="$release_directory/$candidate/RELEASE-METADATA.json"
+    compatibility=$(sed -n \
+      's/.*"compatibility_release":\(true\|false\).*/\1/p' "$metadata")
+    [[ $compatibility != true ]] || prioritized+=("$candidate")
   done < <(
     find "$release_directory" -mindepth 1 -maxdepth 1 -type d \
       ! -name '.incoming-*' -printf '%f\n' | LC_ALL=C sort -r
   )
-  retention_deletions "$current_id" "$previous_id" "${recognized[@]}"
+  # A compatibility release is the executable half of a forward-only restore.
+  # Count it inside the three inactive slots, but select it before newer
+  # same-schema candidates so a retained pre-migration backup stays usable.
+  retention_deletions "$current_id" "$previous_id" \
+    "${prioritized[@]}" "${recognized[@]}"
 }
 
 prune_recognized_releases() {
@@ -1391,6 +1403,79 @@ bootstrap)
   write_status succeeded 13 backup-succeeded
   echo "bootstrap=complete"
   echo "rollback_release=$rollback_id"
+  ;;
+stage-compatibility)
+  [[ -d $runtime && ! -L $runtime && -d $releases && ! -L $releases &&
+     -d $backups && ! -L $backups && -L $current && -L $previous &&
+     -L $operations ]] || die "production layout is incomplete"
+  [[ $(stat -c '%U:%G:%a' "$runtime") == root:sanguinius:750 ]] ||
+    die "operations directory ownership or permissions are unsafe"
+  verify_database_filesystem_entries "$database"
+  [[ $(schema_version "$database") == 16 ]] ||
+    die "compatibility staging requires production schema 16"
+  active_state=$(systemctl is-active sanguinius.service 2>/dev/null || true)
+  assert_process_state "$active_state"
+  verify_capacity
+  open_operations_lock "$runtime" "$lock_file"
+  release_root=$(verify_archive)
+  compatibility_id=${release_root#sanguinius-}
+  compatibility_path="$releases/$compatibility_id"
+  compatibility_existed=false
+  [[ ! -d $compatibility_path || -L $compatibility_path ]] ||
+    compatibility_existed=true
+  compatibility_committed=false
+  cleanup_compatibility_stage() {
+    if [[ $compatibility_existed != true &&
+          $compatibility_committed != true &&
+          -d $compatibility_path && ! -L $compatibility_path ]]; then
+      find "$compatibility_path" -xdev -depth -type f -delete
+      find "$compatibility_path" -xdev -depth -type d -empty -delete
+    fi
+  }
+  trap cleanup_compatibility_stage EXIT
+  installed_id=$(install_release "$release_root" true)
+  [[ $installed_id == "$compatibility_id" ]] ||
+    die "compatibility release identity changed during installation"
+  compatibility_metadata="$compatibility_path/RELEASE-METADATA.json"
+  compatibility_flag=$(sed -n \
+    's/.*"compatibility_release":\(true\|false\).*/\1/p' \
+    "$compatibility_metadata")
+  compatibility_schema=$(sed -n \
+    's/.*"schema_target":\([0-9][0-9]*\).*/\1/p' \
+    "$compatibility_metadata")
+  compatibility_revision=$(sed -n \
+    's/.*"revision":"\([0-9a-f]*\)".*/\1/p' \
+    "$compatibility_metadata")
+  [[ $compatibility_flag == true && $compatibility_schema == 13 &&
+     $compatibility_revision =~ ^[0-9a-f]{40}$ ]] ||
+    die "staged release is not the schema-13 compatibility release"
+  backup_archive=$(find "$backups" -maxdepth 1 -type f \
+    -name "*-schema13-${compatibility_revision:0:12}-pre-migration.sqlite3.zst" \
+    -printf '%p\n' | LC_ALL=C sort | tail -n1)
+  [[ -n $backup_archive && -f ${backup_archive%.zst}.json &&
+     ! -L ${backup_archive%.zst}.json &&
+     -f ${backup_archive%.zst}.sha256 &&
+     ! -L ${backup_archive%.zst}.sha256 ]] ||
+    die "matching pre-migration backup is unavailable"
+  operations_path=$(readlink -f -- "$operations")
+  [[ $operations_path == "$releases/"* &&
+     $(dirname "$operations_path") == "$releases" &&
+     -x $operations_path/libexec/sanguinius-restore.bash ]] ||
+    die "stable restore helper is unavailable"
+  "$operations_path/libexec/sanguinius-restore.bash" verify \
+    "$backup_archive" --release "$compatibility_path"
+  compatibility_committed=true
+  trap - EXIT
+  current_id=$(basename "$(readlink -f -- "$current")")
+  previous_id=$(basename "$(readlink -f -- "$previous")")
+  managed_release_directory "$releases/$current_id" "$current_id" ||
+    die "current release identity is unsafe"
+  managed_release_directory "$releases/$previous_id" "$previous_id" ||
+    die "previous release identity is unsafe"
+  prune_recognized_releases "$releases" "$current_id" "$previous_id" ||
+    die "release retention failed after compatibility staging"
+  echo "compatibility_stage=complete"
+  echo "release=$compatibility_id"
   ;;
 deploy)
   [[ $expected_schema =~ ^[0-9]+$ && $target_schema =~ ^[0-9]+$ ]] ||

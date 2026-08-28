@@ -348,8 +348,8 @@ bootstrap_companion_ownership_line=${database_ownership_lines[0]}
 deploy_companion_ownership_line=${database_ownership_lines[1]}
 mapfile -t operation_lock_lines < <(grep -nF \
   'open_operations_lock "$runtime" "$lock_file"' "$remote" | cut -d: -f1)
-[[ ${#operation_lock_lines[@]} -eq 3 ]]
-deploy_lock_line=${operation_lock_lines[1]}
+[[ ${#operation_lock_lines[@]} -eq 4 ]]
+deploy_lock_line=${operation_lock_lines[2]}
 deploy_process_line=$(grep -nF 'assert_process_state "$active_state"' \
   "$remote" | tail -n 1 | cut -d: -f1)
 [[ $bootstrap_backup_line =~ ^[0-9]+$ &&
@@ -484,10 +484,12 @@ retention=$(SANGUINIUS_SCRIPT_TESTING=true "$remote" policy-retention \
   current previous current previous keep-b keep-a delete-me ../unrelated)
 [[ $retention == delete-me ]]
 retention_releases="$temporary/retention-releases"
-for candidate in current previous keep-b keep-a delete-me; do
+for candidate in current previous keep-b keep-a delete-me compat-old; do
   mkdir -p "$retention_releases/$candidate"
-  printf '{"release_id":"%s","deployment_id":"%s"}\n' \
-    "$candidate" "$candidate" \
+  compatibility=false
+  [[ $candidate != compat-old ]] || compatibility=true
+  printf '{"release_id":"%s","deployment_id":"%s","compatibility_release":%s}\n' \
+    "$candidate" "$candidate" "$compatibility" \
     >"$retention_releases/$candidate/RELEASE-METADATA.json"
 done
 mkdir -p "$retention_releases/zz-unrecognized" \
@@ -497,13 +499,16 @@ printf '{"release_id":"other","deployment_id":"other"}\n' \
 retention=$(SANGUINIUS_SCRIPT_TESTING=true \
   SANGUINIUS_TEST_ROOT="$temporary" "$remote" policy-release-retention \
   "$retention_releases" current previous)
-[[ $retention == delete-me ]]
+[[ $retention == $'keep-a\ndelete-me' ]]
 
 prune_releases="$temporary/prune-releases"
-for candidate in zz-current zy-previous zx-keep zw-keep aa-old-previous; do
+for candidate in zz-current zy-previous zx-keep zw-keep aa-old-previous \
+    ab-compat; do
   mkdir -p "$prune_releases/$candidate"
-  printf '{"release_id":"%s","deployment_id":"%s"}\n' \
-    "$candidate" "$candidate" \
+  compatibility=false
+  [[ $candidate != ab-compat ]] || compatibility=true
+  printf '{"release_id":"%s","deployment_id":"%s","compatibility_release":%s}\n' \
+    "$candidate" "$candidate" "$compatibility" \
     >"$prune_releases/$candidate/RELEASE-METADATA.json"
 done
 mkdir -p "$prune_releases/unrecognized"
@@ -516,8 +521,12 @@ SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
   zz-current zy-previous
 [[ ! -e $prune_releases/aa-old-previous &&
    -d $prune_releases/zz-current && -d $prune_releases/zy-previous &&
-   -d $prune_releases/zx-keep && -d $prune_releases/zw-keep &&
+   -d $prune_releases/zx-keep && ! -e $prune_releases/zw-keep &&
+   -d $prune_releases/ab-compat &&
    -d $prune_releases/unrecognized ]]
+grep -Fq 'stage-compatibility --archive <archive>' \
+  "$repository/scripts/deploy_nuln.bash"
+grep -Fq '"$operations_path/libexec/sanguinius-restore.bash" verify' "$remote"
 [[ $(SANGUINIUS_SCRIPT_TESTING=true "$remote" policy-failure 16 16 true) == \
    rollback-release ]]
 [[ $(SANGUINIUS_SCRIPT_TESTING=true "$remote" policy-failure 13 16 false) == \

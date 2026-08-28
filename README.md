@@ -940,6 +940,11 @@ schema-13 compatibility release. The root backup unit retains only
 `CAP_DAC_OVERRIDE` so it can open the service-owned database; the bot units
 retain no capabilities. Rolling retention counts only complete managed triples,
 and release retention counts only directories with matching release metadata.
+Within the three inactive release slots, the schema-13 compatibility release
+is retained ahead of newer same-schema candidates so preserved pre-migration
+backups never lose their compatible executable. The guarded
+`stage-compatibility` deployment command can re-establish that immutable
+release without switching the active service or database.
 Deployment publishes its authoritative rollback backup only after stopping the
 service and proving exclusive database ownership, then repeats the exact
 migration/restore rehearsal against that snapshot. Interrupted retention stages

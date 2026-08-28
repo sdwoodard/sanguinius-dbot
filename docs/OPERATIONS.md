@@ -127,6 +127,20 @@ Deploy schema 16 with:
   --expected-schema 13 --target-schema 16
 ```
 
+If a later retention audit finds that the immutable schema-13 compatibility
+release is absent while its pre-migration backup remains, restage it without
+changing the service, database, or active release:
+
+```bash
+./scripts/deploy_nuln.bash stage-compatibility \
+  --archive "$PWD/dist/sanguinius-2.1.0-g8a5f7cf7582c.tar.zst"
+```
+
+This command requires production schema 16, the operations lock, a single
+systemd-owned bot process, exact compatibility metadata, and a matching
+pre-migration backup. It re-verifies that backup through the stable restore
+helper before committing retention.
+
 The local wrapper revalidates the clean source revision, archive, manifest, and
 container evidence. The privileged helper verifies its own expected checksum,
 acquires `/var/lib/sanguinius/runtime/operations.lock`, checks host/process/disk
@@ -148,9 +162,11 @@ synchronization, followed by a fresh verified backup made by the active release.
 The helper snapshots `NRestarts` before startup and, after backup and timer
 finalization, rechecks the exact READY status, main-PID ownership, and unchanged
 restart count before recording success. Recognized releases are pruned to
-current plus three inactive releases; rollback-required targets are protected
-before commit and any newly expired former target is removed immediately after
-the successful deployment transaction commits.
+current plus three inactive releases. The schema-13 compatibility release is
+selected inside those three slots before newer same-schema candidates, because
+it is the executable half of a forward-only restore. Rollback-required targets
+are protected before commit and any newly expired former target is removed
+immediately after the successful deployment transaction commits.
 For a same-schema error in that post-readiness finalization window, the helper
 stops the candidate and restores the prior current/previous/operations links,
 matching units, enablement, timer state, and prior active state. For a

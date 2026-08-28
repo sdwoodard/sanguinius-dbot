@@ -9,6 +9,7 @@ helper="$repository/scripts/lib/remote_deploy.bash"
 usage() {
   echo "Usage: $0 inspect" >&2
   echo "       $0 bootstrap --rollback-archive <archive> --environment <remote-path> --token <remote-path> --openai-key <remote-path> --message-log <remote-path>" >&2
+  echo "       $0 stage-compatibility --archive <archive>" >&2
   echo "       $0 deploy --archive <archive> --expected-schema <n> --target-schema <n>" >&2
   echo "       $0 rollback-same-schema --release-id <id>" >&2
   exit 2
@@ -70,7 +71,8 @@ if [[ $command == rollback-same-schema ]]; then
   exit 0
 fi
 
-[[ $command == bootstrap || $command == deploy ]] || usage
+[[ $command == bootstrap || $command == stage-compatibility ||
+   $command == deploy ]] || usage
 [[ $archive == /* && -f $archive && ! -L $archive ]] || usage
 "$repository/scripts/release.bash" verify --archive "$archive"
 [[ -z $(git -C "$repository" status --porcelain=v1 --untracked-files=all) ]] || {
@@ -132,6 +134,10 @@ if [[ $command == bootstrap ]]; then
     --expected-helper-sha "$helper_sha" --archive "$archive_remote" \
     --expected-archive-sha "$archive_sha" --environment "$environment" \
     --token "$token" --openai-key "$openai_key" --message-log "$message_log"
+elif [[ $command == stage-compatibility ]]; then
+  ssh -t "$host" sudo /bin/bash "$helper_remote" stage-compatibility \
+    --expected-helper-sha "$helper_sha" --archive "$archive_remote" \
+    --expected-archive-sha "$archive_sha"
 else
   [[ $expected_schema =~ ^[0-9]+$ && $target_schema =~ ^[0-9]+$ ]] || usage
   [[ $metadata_revision == "$(git -C "$repository" rev-parse HEAD)" ]] || {
