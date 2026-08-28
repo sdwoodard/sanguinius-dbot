@@ -209,7 +209,10 @@ SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
   "$repository/scripts/sanguinius-backup.bash" pre-migration >/dev/null
 archive13=$(find "$backups" -type f -name '*-schema13-*-pre-migration.sqlite3.zst' -print -quit)
 [[ -n $archive13 ]]
-! grep -q '^invariants ' "$releases/$release13/invocations.log"
+if grep -q '^invariants ' "$releases/$release13/invocations.log"; then
+  echo "schema-13 backup invoked schema-16 umbrella invariants" >&2
+  exit 1
+fi
 set_active "$release16" "$release13" 16 production-schema16
 find "$backups" -maxdepth 1 -type f -name '*-manual.sqlite3.*' -delete
 
@@ -248,7 +251,10 @@ SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
 [[ $(readlink "$previous") == releases/$release16 ]]
 [[ $(<"$state/state-version") == 13 ]]
 grep -q 'Type=simple' "$unit"
-! grep -q '^invariants ' "$releases/$release13/invocations.log"
+if grep -q '^invariants ' "$releases/$release13/invocations.log"; then
+  echo "schema-13 restore invoked schema-16 umbrella invariants" >&2
+  exit 1
+fi
 find "$backups" -maxdepth 1 -type f -name '*-schema16-*-manual.sqlite3.zst' | grep -q .
 
 corrupt="$temporary/corrupt.sqlite3.zst"

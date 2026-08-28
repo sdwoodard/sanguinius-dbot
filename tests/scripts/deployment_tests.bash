@@ -203,7 +203,7 @@ grep -Fq '"original_sha256"' "$temporary/pre.sqlite3.json"
 
 grep -Fq 'systemctl enable sanguinius.service' "$remote"
 grep -Fq 'new_id=$(install_release "$release_root" true)' "$remote"
-grep -Fq '/usr/bin/env \' "$remote"
+grep -Fq '/usr/bin/env' "$remote"
 grep -Fq 'run_candidate_config_check "$new"' "$remote"
 
 counts_database="$temporary/counts.sqlite3"

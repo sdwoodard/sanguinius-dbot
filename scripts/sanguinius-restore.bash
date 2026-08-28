@@ -84,11 +84,11 @@ if [[ $test_mode != true && $operation == apply ]]; then
   }
   for restore_input in "$archive" "$metadata" "$checksum"; do
     restore_mode=$(stat -c %a "$restore_input")
-    [[ $(stat -c '%U:%G' "$restore_input") == root:root ]] &&
-      (( (8#$restore_mode & 0022) == 0 )) || {
+    if [[ $(stat -c '%U:%G' "$restore_input") != root:root ]] ||
+       (( (8#$restore_mode & 0022) != 0 )); then
       echo "A restore artifact has unsafe ownership or permissions." >&2
       exit 1
-    }
+    fi
   done
 fi
 
