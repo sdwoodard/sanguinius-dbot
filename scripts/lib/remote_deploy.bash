@@ -731,6 +731,8 @@ run_candidate_config_check() {
     --working-directory "$release" \
     --property=NoNewPrivileges=yes --property=PrivateTmp=yes \
     --property=ProtectHome=yes --property=ProtectSystem=strict \
+    --property=CacheDirectory=sanguinius \
+    --property=CacheDirectoryMode=0700 \
     --property=EnvironmentFile=/etc/sanguinius/sanguinius.env \
     --property=LoadCredential=discord-token:/etc/sanguinius/bot.token \
     --property=LoadCredential=openai-key:/etc/sanguinius/openai.key \

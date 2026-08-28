@@ -97,6 +97,8 @@ chmod 0755 "$candidate_release/bin/sanguinius"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
+  '[[ " $* " == *" --property=CacheDirectory=sanguinius "* ]]' \
+  '[[ " $* " == *" --property=CacheDirectoryMode=0700 "* ]]' \
   'while (( $# )); do' \
   '  case "$1" in' \
   '    --unit|--uid|--gid|--working-directory) shift 2 ;;' \
