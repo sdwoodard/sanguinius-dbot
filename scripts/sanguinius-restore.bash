@@ -338,10 +338,18 @@ mapfile -t checksum_fields < <(awk 'NF == 2 {print $1; print $2}' "$checksum")
   echo "Backup checksum sidecar is invalid." >&2
   exit 1
 }
-[[ $(sha256sum "$archive" | awk '{print $1}') == "$expected_sha" ]]
+actual_sha=$(sha256sum "$archive" | awk '{print $1}')
+[[ $actual_sha == "$expected_sha" ]] || {
+  echo "Backup archive checksum does not match its metadata." >&2
+  exit 1
+}
 zstd -q -t "$archive"
 zstd -q -d -o "$raw" "$archive"
-[[ $(sha256sum "$raw" | awk '{print $1}') == "$original_sha" ]]
+actual_sha=$(sha256sum "$raw" | awk '{print $1}')
+[[ $actual_sha == "$original_sha" ]] || {
+  echo "Decompressed backup checksum does not match its metadata." >&2
+  exit 1
+}
 
 release_metadata="$release/RELEASE-METADATA.json"
 [[ -f $release_metadata && ! -L $release_metadata ]] || {
@@ -374,7 +382,10 @@ if [[ $compatibility == false ]]; then
     "$release_metadata")
   selected_catalog=$(sed -n 's/.*"command_catalog_version":\([0-9]*\).*/\1/p' \
     "$release_metadata")
-  selected_identity=$("$binary" --version --json)
+  if ! selected_identity=$("$binary" --version --json); then
+    echo "Selected release binary identity is unavailable." >&2
+    exit 1
+  fi
   [[ $selected_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ &&
      $selected_revision =~ ^[0-9a-f]{40}$ &&
      $selected_catalog =~ ^[0-9]+$ &&
@@ -387,14 +398,6 @@ if [[ $compatibility == false ]]; then
     exit 1
   }
 fi
-
-selected_status=$(SANGUINIUS_DATABASE_FILE="$raw" "$binary" db status)
-selected_target=$(sed -n 's/^target_schema=\([0-9][0-9]*\)$/\1/p' \
-  <<<"$selected_status")
-[[ $selected_target == "$schema" ]] || {
-  echo "Selected release binary and metadata disagree on schema target." >&2
-  exit 1
-}
 
 run_domain_checks "$raw" "$schema" "$binary"
 SANGUINIUS_DATABASE_FILE="$raw" "$binary" db migrate

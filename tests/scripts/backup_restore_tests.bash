@@ -44,7 +44,7 @@ printf '%s\n' \
   '[[ ${1:-} == db && -n $database ]] || exit 2' \
   'current=$(sqlite3 "$database" "SELECT COALESCE(MAX(version),0) FROM schema_migrations;")' \
   'case ${2:-} in' \
-  '  status) printf "database=current\ncurrent_schema=%s\ntarget_schema=%s\npending_migrations=%s\nsqlite=test\n" "$current" "$target" "$((target-current))" ;;' \
+  '  status) mode=$(sqlite3 "$database" "PRAGMA journal_mode;"); if [[ $mode != wal ]]; then printf "database=incompatible\ncurrent_schema=%s\ntarget_schema=%s\npending_migrations=0\nsqlite=test\n" "$current" "$target"; exit 1; fi; printf "database=current\ncurrent_schema=%s\ntarget_schema=%s\npending_migrations=%s\nsqlite=test\n" "$current" "$target" "$((target-current))" ;;' \
   '  backup) if [[ -f $release/fail-backup ]]; then printf partial >"$3"; exit 1; fi; sqlite3 "$database" ".backup $3" ;;' \
   '  migrate) [[ ! -f $release/fail-migrate ]] || exit 1; sqlite3 "$database" "DELETE FROM schema_migrations; INSERT INTO schema_migrations(version) VALUES($target); PRAGMA journal_mode=WAL;" >/dev/null ;;' \
   '  check) [[ $current == "$target" ]]; [[ ! -f $release/fail-production-check || $database != */var/lib/sanguinius/sanguinius.sqlite3 ]] ;;' \
@@ -413,17 +413,21 @@ if grep -q '^invariants ' "$releases/$release13/invocations.log"; then
 fi
 find "$backups" -maxdepth 1 -type f -name '*-schema16-*-manual.sqlite3.zst' | grep -q .
 
-corrupt="$temporary/corrupt.sqlite3.zst"
+mkdir "$temporary/corrupt-backup"
+corrupt="$temporary/corrupt-backup/$(basename "$archive13")"
 cp "$archive13" "$corrupt"
 cp "${archive13%.zst}.json" "${corrupt%.zst}.json"
 cp "${archive13%.zst}.sha256" "${corrupt%.zst}.sha256"
 printf corruption >>"$corrupt"
 if SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
     "$repository/scripts/sanguinius-restore.bash" verify "$corrupt" \
-    --release "$releases/$release13" >/dev/null 2>&1; then
+    --release "$releases/$release13" >"$temporary/corrupt.out" \
+    2>"$temporary/corrupt.err"; then
   echo "restore verification accepted a corrupted archive" >&2
   exit 1
 fi
+grep -Fxq 'Backup archive checksum does not match its metadata.' \
+  "$temporary/corrupt.err"
 [[ $(sqlite3 "$database" 'SELECT value FROM marker;') == schema13-fixture ]]
 
 echo "backup/restore shell tests passed"
