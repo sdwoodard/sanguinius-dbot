@@ -318,3 +318,33 @@ TEST_CASE("clean shutdown records one application instance terminal state",
   REQUIRE(fixture.instances->stops()[0].reason ==
           sanguinius::ApplicationStopReason::clean_shutdown);
 }
+
+TEST_CASE("service readiness follows Discord and command synchronization once",
+          "[application][m19][systemd]") {
+  sanguinius::test::ApplicationFixture fixture;
+  fixture.discord->set_ready_on_start(false);
+  fixture.application->start();
+  REQUIRE(fixture.service_notifier->ready_count() == 0);
+
+  fixture.discord->set_status(
+      {.ready = true,
+       .command_registration =
+           sanguinius::CommandRegistrationState::synchronizing,
+       .command_catalog_version = 16});
+  REQUIRE(fixture.service_notifier->ready_count() == 0);
+  fixture.discord->set_status(
+      {.ready = true,
+       .command_registration =
+           sanguinius::CommandRegistrationState::synchronized,
+       .command_catalog_version = 16});
+  fixture.discord->set_status(
+      {.ready = true,
+       .command_registration =
+           sanguinius::CommandRegistrationState::synchronized,
+       .command_catalog_version = 16});
+  REQUIRE(fixture.service_notifier->ready_count() == 1);
+
+  fixture.application->stop();
+  fixture.application->stop();
+  REQUIRE(fixture.service_notifier->stopping_count() == 1);
+}

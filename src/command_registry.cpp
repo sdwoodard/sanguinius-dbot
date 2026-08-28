@@ -8,8 +8,8 @@ namespace sanguinius {
 
 CommandCatalog command_catalog(const bool admin_commands_enabled,
                                const bool chronicle_enabled,
-                               const bool tarot_enabled,
-                               const bool vox_enabled) {
+                               const bool tarot_enabled, const bool vox_enabled,
+                               const bool test_mode) {
   CommandCatalog catalog{
       .version = command_catalog_version,
       .commands =
@@ -567,6 +567,22 @@ CommandCatalog command_catalog(const bool admin_commands_enabled,
          "Schedule a private self-targeted test notice."},
         {"test-public-retry", "Exercise one synthetic public delivery retry."},
     };
+    if (test_mode) {
+      owner_controls.subcommand_groups.push_back(
+          CommandSubcommandGroupDefinition{
+              .name = "reliability-test",
+              .description = "Run provider-free reliability probes.",
+              .subcommands =
+                  {
+                      {"text-timeout",
+                       "Verify conservative text-timeout accounting."},
+                      {"ai-saturation",
+                       "Verify bounded AI admission under saturation."},
+                      {"discord-unknown",
+                       "Verify unknown Discord outcomes enter quarantine."},
+                  },
+          });
+    }
     owner_controls.subcommand_groups.push_back(CommandSubcommandGroupDefinition{
         .name = "appearance",
         .description = "Inspect and test appearances.",

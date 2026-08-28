@@ -59,6 +59,11 @@ slash_operation(const IncomingInteraction &interaction) {
       return InteractionOperation::appearance_feedback;
   }
   if (interaction.command_name == "sang-admin") {
+    if (interaction.subcommand_group_name == "reliability-test" &&
+        (interaction.subcommand_name == "text-timeout" ||
+         interaction.subcommand_name == "ai-saturation" ||
+         interaction.subcommand_name == "discord-unknown"))
+      return InteractionOperation::reliability_test;
     if (interaction.subcommand_group_name == "safety" &&
         interaction.subcommand_name == "status")
       return InteractionOperation::safety_status;
@@ -271,7 +276,7 @@ slash_operation(const IncomingInteraction &interaction) {
 }
 
 [[nodiscard]] bool valid_slash_shape(const IncomingInteraction &interaction) {
-  const auto catalog = command_catalog(true, true, true, true);
+  const auto catalog = command_catalog(true, true, true, true, true);
   const auto command = std::ranges::find(
       catalog.commands, interaction.command_name, &CommandDefinition::name);
   if (command == catalog.commands.end() ||
@@ -680,6 +685,7 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::test_notice ||
       *operation == InteractionOperation::test_schedule_notice ||
       *operation == InteractionOperation::test_public_retry ||
+      *operation == InteractionOperation::reliability_test ||
       *operation == InteractionOperation::appearance_simulate ||
       *operation == InteractionOperation::appearance_preview ||
       *operation == InteractionOperation::appearance_recent ||
@@ -720,6 +726,7 @@ void InteractionRouter::route(IncomingInteraction interaction) const {
       *operation == InteractionOperation::test_notice ||
       *operation == InteractionOperation::test_schedule_notice ||
       *operation == InteractionOperation::test_public_retry ||
+      *operation == InteractionOperation::reliability_test ||
       *operation == InteractionOperation::appearance_simulate ||
       *operation == InteractionOperation::appearance_trigger ||
       *operation == InteractionOperation::tarot_adjust ||

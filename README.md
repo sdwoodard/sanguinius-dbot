@@ -20,7 +20,7 @@ channel, and one owner.
 | `/help [topic]` | Show an ephemeral, feature-aware member command guide. Owner, admin, debug, and test operations are always omitted. |
 | `/repo` | Show the source repository ephemerally. |
 
-The configured guild receives command catalog version 15. Chronicle, Tarot,
+The configured guild receives command catalog version 16. Chronicle, Tarot,
 and Vox
 commands are registered only when their corresponding feature flag is enabled;
 owner commands remain separately gated:
@@ -85,6 +85,7 @@ owner commands remain separately gated:
 | `/sang-admin test-notice` | Owner-only, test-mode-gated durable queueing of a fixed, self-targeted 24-hour notice. |
 | `/sang-admin test-schedule-notice` | Owner-only, test-mode-gated scheduling of the same self-targeted notice for 60 seconds later. |
 | `/sang-admin test-public-retry` | Owner-only, test-mode-gated neutral card whose first attempt fails before Discord submission and then retries once. |
+| `/sang-admin reliability-test text-timeout\|ai-saturation\|discord-unknown` | Owner-only, admin/test-mode provider-free probes for conservative timeout accounting, bounded AI admission, and Discord unknown-outcome quarantine. |
 | `/sang-admin test-anniversary` | Owner-only, test-mode-gated exactly-once anniversary delivery using the newest eligible owner-test entry. |
 | `/sang-admin appearance simulate fixture:<choice>` | Owner-only, test-mode and `dry_run`-gated creation of an idempotent sanitized candidate. Returns immediately with its reference. |
 | `/sang-admin appearance preview reference:<uuid>` | Owner-only ephemeral inspection of a stored decision, including gates, score components, model status, shortened memory references, and any retained preview. Available in `off`. |
@@ -798,8 +799,8 @@ output.
 in both debug and release by default. Pass `debug` or `release` to limit it to
 one configuration.
 
-For routine background operation, the helper scripts preserve the process ID
-and stop the bot cleanly:
+For local development or legacy rollback only, the helper scripts preserve the
+process ID and stop the bot cleanly:
 
 ```bash
 ./scripts/start_bot.bash
@@ -811,6 +812,10 @@ and the three required scope IDs described above, unless their environment
 overrides are set. It runs the offline configuration and exact-schema checks
 before starting; it never runs a migration.
 Console output goes to `logs/console.log`.
+
+Production uses the hardened `Type=notify` systemd service and immutable
+release layout documented in `docs/OPERATIONS.md`; do not run `start_bot.bash`
+alongside that service.
 
 Discord gateway callbacks translate messages and interactions into
 project-owned values. Messages enter a bounded 64-item application queue; a
@@ -902,6 +907,24 @@ scope policy: configured guild, then primary channel, then owner identity.
 Rejected requests generate no Discord response. The retired exact `!help` and
 `!repo` messages are silent; leading mentions retain their configured scope and
 deterministic safety checks.
+
+## Production packaging and service operation
+
+Milestone 19 packages clean commits in a digest-pinned Arch builder with an
+x86-64-v3 ceiling. `scripts/release.bash image` prepares the rootless Podman
+image; `package` runs its Release tests and creates a deterministic immutable
+`dist/sanguinius-<release-id>.tar.zst` plus an external SHA-256 file. The
+archive contains release metadata, a complete payload manifest, the executable,
+only `libdpp.so.10.1.7`, fixed configuration/assets/migrations, systemd files,
+and the backup/restore helpers. `--version --json` reports only safe build,
+schema, and command-catalog identity.
+
+The production service is `Type=notify` and reaches READY only after Discord
+READY and successful/no-op guild command synchronization. The fixed layout,
+atomic SSH deployment, daily verified online backup, migration-aware rollback,
+restore quarantine, resource ceilings, and final safety flags are documented in
+[`docs/OPERATIONS.md`](docs/OPERATIONS.md). Never place credentials, databases,
+message logs, caches, or remote backups in a release archive.
 
 ## Architecture
 

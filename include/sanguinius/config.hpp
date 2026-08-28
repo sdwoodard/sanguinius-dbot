@@ -43,6 +43,7 @@ struct DiscordCommandConfiguration {
   DiscordSnowflake guild_id;
   std::chrono::seconds request_timeout{10};
   bool admin_commands_enabled{};
+  bool test_mode{};
   bool chronicle_enabled{};
   bool tarot_enabled{};
   bool vox_enabled{};
@@ -91,6 +92,9 @@ struct PathConfiguration {
       "config/appearance-policy-v2.json"};
   std::filesystem::path tarot_deck_file{"config/emperor-tarot-v1.json"};
   std::filesystem::path tarot_house_file{"config/tarot-house-v1.json"};
+  std::filesystem::path operations_status_file{
+      "/var/lib/sanguinius/runtime/operations-status.json"};
+  std::filesystem::path backup_directory{"/var/backups/sanguinius"};
 };
 
 enum class ConfigurationOrigin {

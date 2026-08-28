@@ -82,6 +82,7 @@ enum class InteractionOperation {
   test_notice,
   test_schedule_notice,
   test_public_retry,
+  reliability_test,
   open_component,
   chronicle_canonize,
   chronicle_memory_preview,
@@ -199,7 +200,8 @@ public:
       TarotIntegrationService *tarot_integration = nullptr,
       VoxService *vox = nullptr, VoxNarrationService *vox_narration = nullptr,
       VoiceListeningService *voice_listening = nullptr,
-      SafetyControlService *safety_controls = nullptr);
+      SafetyControlService *safety_controls = nullptr,
+      std::function<std::string(std::string_view)> reliability_test = {});
   ~InteractionHandler();
 
   InteractionHandler(const InteractionHandler &) = delete;
@@ -252,6 +254,7 @@ private:
   SanguiniusOverviewService &overview_;
   std::function<QueueSnapshot()> message_queue_;
   std::function<QueueSnapshot()> ai_queue_;
+  std::function<std::string(std::string_view)> reliability_test_;
   std::shared_ptr<CallbackFence> callbacks_;
   BoundedExecutor worker_;
   BoundedExecutor privacy_worker_;

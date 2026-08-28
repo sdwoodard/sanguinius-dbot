@@ -8,6 +8,8 @@
 #include "sanguinius/dpp_discord_adapter.hpp"
 #include "sanguinius/process_signals.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -19,7 +21,8 @@
 namespace {
 
 void print_usage(std::ostream &stream, const std::string_view executable) {
-  stream << "Usage: " << executable << " [--check-config|--help]\n"
+  stream << "Usage: " << executable
+         << " [--check-config|--help|--version [--json]]\n"
          << "       " << executable << " db <status|check|migrate|integrity>\n"
          << "       " << executable << " db backup <destination>\n"
          << "       " << executable << " db relationships check\n"
@@ -31,6 +34,29 @@ void print_usage(std::ostream &stream, const std::string_view executable) {
          << "       " << executable << " db relationships rebuild --confirm\n"
          << "       " << executable << " discord commands sync\n"
          << "       " << executable << " discord commands clear --confirm\n";
+}
+
+void print_version(std::ostream &stream, const bool json) {
+  const auto build = sanguinius::current_build_info();
+  if (json) {
+    stream << nlohmann::json{{"version", build.version},
+                             {"revision", build.revision},
+                             {"release_id", build.release_id},
+                             {"build_timestamp", build.build_timestamp},
+                             {"toolchain", build.toolchain_id},
+                             {"schema_target", build.schema_target},
+                             {"command_catalog_version",
+                              build.command_catalog_version}}
+                  .dump()
+           << '\n';
+    return;
+  }
+  stream << "sanguinius " << build.version << " (" << build.revision << ")\n"
+         << "release=" << build.release_id << '\n'
+         << "built=" << build.build_timestamp << '\n'
+         << "toolchain=" << build.toolchain_id << '\n'
+         << "schema_target=" << build.schema_target << '\n'
+         << "command_catalog=" << build.command_catalog_version << '\n';
 }
 
 [[nodiscard]] std::optional<sanguinius::DatabaseCommand>
@@ -103,6 +129,14 @@ database_command(const int argc, char **argv) {
 
 int main(const int argc, char **argv) {
   try {
+    if (argc >= 2 && std::string_view{argv[1]} == "--version") {
+      if (argc > 3 || (argc == 3 && std::string_view{argv[2]} != "--json")) {
+        print_usage(std::cerr, argv[0]);
+        return 2;
+      }
+      print_version(std::cout, argc == 3);
+      return EXIT_SUCCESS;
+    }
     if (argc >= 2 && std::string_view{argv[1]} == "db") {
       const auto command = database_command(argc, argv);
       if (!command.has_value()) {
@@ -131,10 +165,10 @@ int main(const int argc, char **argv) {
           *operation, std::move(command_config.token),
           command_config.request_timeout,
           sanguinius::DiscordId{command_config.guild_id.value()},
-          sanguinius::command_catalog(command_config.admin_commands_enabled,
-                                      command_config.chronicle_enabled,
-                                      command_config.tarot_enabled,
-                                      command_config.vox_enabled),
+          sanguinius::command_catalog(
+              command_config.admin_commands_enabled,
+              command_config.chronicle_enabled, command_config.tarot_enabled,
+              command_config.vox_enabled, command_config.test_mode),
           std::cout, std::cerr);
     }
     if (argc > 2) {

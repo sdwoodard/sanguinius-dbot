@@ -41,6 +41,17 @@ enum class AiGenerationAdmission {
 
 enum class ProviderCircuitAdmission { allowed, open };
 
+enum class AiFailureAccounting { cancel_reservation, fail_attempt };
+
+struct AiProviderFailureAccounting {
+  AiFailureAccounting action{AiFailureAccounting::cancel_reservation};
+  std::string_view result_code;
+};
+
+[[nodiscard]] AiProviderFailureAccounting
+classify_ai_provider_failure(AiProviderErrorCategory category,
+                             bool transmission_started) noexcept;
+
 struct AiGenerationReservation {
   std::string attempt_id;
   std::string idempotency_key;

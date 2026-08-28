@@ -4,8 +4,8 @@
 #include "sanguinius/discord_command_cli.hpp"
 #include "sanguinius/discord_interfaces.hpp"
 
-#include <dpp/message.h>
 #include <dpp/appcommand.h>
+#include <dpp/message.h>
 
 #include <chrono>
 #include <memory>
@@ -21,8 +21,7 @@ namespace dpp_adapter_detail {
 [[nodiscard]] std::string
 durable_public_message_json(const PublicMessageRequest &request,
                             std::string_view provider_nonce);
-[[nodiscard]] std::string_view
-durable_public_message_base_path() noexcept;
+[[nodiscard]] std::string_view durable_public_message_base_path() noexcept;
 [[nodiscard]] DeliveryResult
 classify_http_delivery(bool succeeded, int http_status,
                        bool transport_failed) noexcept;
@@ -54,7 +53,8 @@ public:
 
   void start(MessageCallback message_callback,
              InteractionCallback interaction_callback,
-             CommandCatalog command_catalog) override;
+             CommandCatalog command_catalog,
+             StatusCallback status_callback = {}) override;
   void stop_accepting() noexcept override;
   void shutdown() noexcept override;
 

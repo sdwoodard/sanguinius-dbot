@@ -7,12 +7,13 @@
 
 namespace sanguinius {
 
-inline constexpr std::uint32_t command_catalog_version = 15;
+inline constexpr std::uint32_t command_catalog_version = 16;
 
 [[nodiscard]] CommandCatalog command_catalog(bool admin_commands_enabled,
                                              bool chronicle_enabled = false,
                                              bool tarot_enabled = false,
-                                             bool vox_enabled = false);
+                                             bool vox_enabled = false,
+                                             bool test_mode = false);
 [[nodiscard]] std::string
 canonical_command_snapshot(const CommandCatalog &catalog);
 

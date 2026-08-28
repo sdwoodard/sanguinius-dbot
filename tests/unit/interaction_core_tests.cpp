@@ -10,6 +10,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <memory>
@@ -93,10 +94,10 @@ TEST_CASE("voice interaction privacy overwrite is coalesced and sent last",
   }
 }
 
-TEST_CASE("command catalog version fifteen is deterministic and feature gated",
+TEST_CASE("command catalog version sixteen is deterministic and feature gated",
           "[interaction][commands]") {
   const auto public_catalog = sanguinius::command_catalog(false);
-  REQUIRE(public_catalog.version == 15);
+  REQUIRE(public_catalog.version == 16);
   REQUIRE(public_catalog.commands.size() == 4);
   REQUIRE(public_catalog.commands[0].name == "help");
   REQUIRE(public_catalog.commands[1].name == "repo");
@@ -115,16 +116,21 @@ TEST_CASE("command catalog version fifteen is deterministic and feature gated",
   REQUIRE(safety[0].name == "status");
   REQUIRE(safety[1].name == "set");
 
-  const auto admin_catalog = sanguinius::command_catalog(true);
+  const auto admin_catalog =
+      sanguinius::command_catalog(true, false, false, false, true);
   REQUIRE(admin_catalog.commands.size() == 4);
   REQUIRE(admin_catalog.commands[3].name == "sang-admin");
   REQUIRE(admin_catalog.commands[3].subcommands.size() == 6);
-  REQUIRE(admin_catalog.commands[3].subcommand_groups.size() == 2);
-  REQUIRE(admin_catalog.commands[3].subcommand_groups[1].name == "appearance");
+  REQUIRE(admin_catalog.commands[3].subcommand_groups.size() == 3);
+  REQUIRE(admin_catalog.commands[3].subcommand_groups[1].name ==
+          "reliability-test");
   REQUIRE(admin_catalog.commands[3].subcommand_groups[1].subcommands.size() ==
+          3);
+  REQUIRE(admin_catalog.commands[3].subcommand_groups[2].name == "appearance");
+  REQUIRE(admin_catalog.commands[3].subcommand_groups[2].subcommands.size() ==
           4);
   const auto &appearance =
-      admin_catalog.commands[3].subcommand_groups[1].subcommands;
+      admin_catalog.commands[3].subcommand_groups[2].subcommands;
   REQUIRE(appearance[0].name == "simulate");
   REQUIRE(appearance[1].name == "preview");
   REQUIRE(appearance[2].name == "recent");
@@ -133,9 +139,16 @@ TEST_CASE("command catalog version fifteen is deterministic and feature gated",
     REQUIRE(subcommand.name != "force");
   REQUIRE(sanguinius::canonical_command_snapshot(admin_catalog) ==
           sanguinius::canonical_command_snapshot(
-              sanguinius::command_catalog(true)));
+              sanguinius::command_catalog(true, false, false, false, true)));
   REQUIRE(sanguinius::canonical_command_snapshot(public_catalog) !=
           sanguinius::canonical_command_snapshot(admin_catalog));
+
+  const auto non_test_admin_catalog = sanguinius::command_catalog(true);
+  const auto &non_test_admin = non_test_admin_catalog.commands[3];
+  REQUIRE(non_test_admin.subcommand_groups.size() == 2);
+  REQUIRE(std::ranges::none_of(
+      non_test_admin.subcommand_groups,
+      [](const auto &group) { return group.name == "reliability-test"; }));
 
   const auto chronicle_catalog = sanguinius::command_catalog(false, true);
   REQUIRE(chronicle_catalog.commands.size() == 6);
@@ -146,8 +159,9 @@ TEST_CASE("command catalog version fifteen is deterministic and feature gated",
   REQUIRE(chronicle_catalog.commands[4].name == "Canonize in the Chronicle");
   REQUIRE(chronicle_catalog.commands[5].name == "sang-admin");
 
-  const auto tarot_catalog = sanguinius::command_catalog(true, false, true);
-  REQUIRE(tarot_catalog.version == 15);
+  const auto tarot_catalog =
+      sanguinius::command_catalog(true, false, true, false, true);
+  REQUIRE(tarot_catalog.version == 16);
   REQUIRE(tarot_catalog.commands.size() == 5);
   REQUIRE(tarot_catalog.commands[3].name == "tarot");
   REQUIRE(tarot_catalog.commands[3].subcommands.size() == 15);
@@ -159,8 +173,8 @@ TEST_CASE("command catalog version fifteen is deterministic and feature gated",
       tarot_catalog.commands[3].subcommands[4].options[0];
   REQUIRE(grace_visibility.choices[0].name == "Public flavor");
   REQUIRE(tarot_catalog.commands[4].name == "sang-admin");
-  REQUIRE(tarot_catalog.commands[4].subcommand_groups.size() == 3);
-  const auto &tarot_admin = tarot_catalog.commands[4].subcommand_groups[2];
+  REQUIRE(tarot_catalog.commands[4].subcommand_groups.size() == 4);
+  const auto &tarot_admin = tarot_catalog.commands[4].subcommand_groups[3];
   REQUIRE(tarot_admin.name == "tarot");
   REQUIRE(tarot_admin.subcommands.size() == 14);
   REQUIRE(tarot_admin.subcommands[0].options[0].kind ==
@@ -176,7 +190,7 @@ TEST_CASE("command catalog version fifteen is deterministic and feature gated",
   REQUIRE(tarot_catalog.commands[3].subcommands[14].name == "disputes");
 
   const auto vox_catalog =
-      sanguinius::command_catalog(true, false, false, true);
+      sanguinius::command_catalog(true, false, false, true, true);
   REQUIRE(vox_catalog.commands.size() == 5);
   REQUIRE(vox_catalog.commands[3].name == "vox");
   REQUIRE(vox_catalog.commands[3].subcommands.size() == 8);
@@ -188,18 +202,18 @@ TEST_CASE("command catalog version fifteen is deterministic and feature gated",
   REQUIRE(vox_catalog.commands[3].subcommands[5].name == "voice");
   REQUIRE(vox_catalog.commands[3].subcommands[6].name == "listen-start");
   REQUIRE(vox_catalog.commands[3].subcommands[7].name == "listen-stop");
-  REQUIRE(vox_catalog.commands[4].subcommand_groups.size() == 3);
-  REQUIRE(vox_catalog.commands[4].subcommand_groups[2].subcommands.size() == 5);
-  REQUIRE(vox_catalog.commands[4].subcommand_groups[2].name == "vox");
-  REQUIRE(vox_catalog.commands[4].subcommand_groups[2].subcommands[0].name ==
+  REQUIRE(vox_catalog.commands[4].subcommand_groups.size() == 4);
+  REQUIRE(vox_catalog.commands[4].subcommand_groups[3].subcommands.size() == 5);
+  REQUIRE(vox_catalog.commands[4].subcommand_groups[3].name == "vox");
+  REQUIRE(vox_catalog.commands[4].subcommand_groups[3].subcommands[0].name ==
           "disconnect");
-  REQUIRE(vox_catalog.commands[4].subcommand_groups[2].subcommands[1].name ==
+  REQUIRE(vox_catalog.commands[4].subcommand_groups[3].subcommands[1].name ==
           "speech-test");
-  REQUIRE(vox_catalog.commands[4].subcommand_groups[2].subcommands[2].name ==
+  REQUIRE(vox_catalog.commands[4].subcommand_groups[3].subcommands[2].name ==
           "narration-preview");
-  REQUIRE(vox_catalog.commands[4].subcommand_groups[2].subcommands[3].name ==
+  REQUIRE(vox_catalog.commands[4].subcommand_groups[3].subcommands[3].name ==
           "narration-enqueue");
-  REQUIRE(vox_catalog.commands[4].subcommand_groups[2].subcommands[4].name ==
+  REQUIRE(vox_catalog.commands[4].subcommand_groups[3].subcommands[4].name ==
           "narration-recent");
   const auto vox_safety_catalog =
       sanguinius::command_catalog(false, false, false, true);

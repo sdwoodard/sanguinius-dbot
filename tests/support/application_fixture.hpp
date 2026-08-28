@@ -16,6 +16,7 @@
 #include "support/fake_relationship_repository.hpp"
 #include "support/fake_repositories.hpp"
 #include "support/fake_safety.hpp"
+#include "support/fake_service_notifier.hpp"
 #include "support/fake_speech.hpp"
 #include "support/fake_tarot_house_repository.hpp"
 #include "support/fake_tarot_repository.hpp"
@@ -109,6 +110,7 @@ public:
     auto owned_tts_cache = std::make_unique<FakeTtsCache>();
     auto owned_runtime_controls =
         std::make_unique<FakeRuntimeFeatureControlRepository>();
+    auto owned_service_notifier = std::make_unique<FakeServiceNotifier>();
 
     clock = owned_clock.get();
     ids = owned_ids.get();
@@ -135,6 +137,7 @@ public:
     ai = owned_ai.get();
     discord = owned_discord.get();
     voice_gateway = owned_voice_gateway.get();
+    service_notifier = owned_service_notifier.get();
 
     application = std::make_unique<Application>(
         std::move(options),
@@ -174,6 +177,7 @@ public:
             .tts_cache = std::move(owned_tts_cache),
             .runtime_feature_controls = std::move(owned_runtime_controls),
             .retention = nullptr,
+            .service_notifier = std::move(owned_service_notifier),
         });
   }
 
@@ -212,6 +216,7 @@ public:
   FakeAiClient *ai{};
   FakeDiscord *discord{};
   FakeVoiceGateway *voice_gateway{};
+  FakeServiceNotifier *service_notifier{};
   std::unique_ptr<Application> application;
 };
 

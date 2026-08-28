@@ -1,0 +1,83 @@
+ARG ARCH_IMAGE
+FROM ${ARCH_IMAGE}
+
+ARG ARCH_SNAPSHOT
+ARG DPP_REVISION
+ARG GCC_VERSION
+ARG GCC_LIBS_VERSION
+ARG GLIBC_VERSION
+ARG SQLITE_VERSION
+ARG FFMPEG_VERSION
+ARG OPENSSL_VERSION
+ARG CURL_VERSION
+ARG SYSTEMD_VERSION
+ARG SYSTEMD_LIBS_VERSION
+ARG ZSTD_VERSION
+ARG ZLIB_VERSION
+ARG ZLIB_NG_VERSION
+ARG OPUS_VERSION
+ARG LIBSODIUM_VERSION
+ARG CATCH2_VERSION
+ARG CMAKE_VERSION
+ARG NINJA_VERSION
+ARG NLOHMANN_JSON_VERSION
+ARG SHELLCHECK_VERSION
+
+RUN printf 'Server = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' \
+      "${ARCH_SNAPSHOT}" >/etc/pacman.d/mirrorlist \
+    && pacman -Syu --noconfirm --needed \
+      base-devel catch2 cmake curl ffmpeg git libsystemd libsodium ninja \
+      nlohmann-json openssl opus sqlite zstd \
+    && pacman -Scc --noconfirm
+
+RUN test "$(pacman -Q gcc)" = "gcc ${GCC_VERSION}" \
+    && test "$(pacman -Q gcc-libs)" = "gcc-libs ${GCC_LIBS_VERSION}" \
+    && test "$(pacman -Q glibc)" = "glibc ${GLIBC_VERSION}" \
+    && test "$(pacman -Q sqlite)" = "sqlite ${SQLITE_VERSION}" \
+    && test "$(pacman -Q ffmpeg)" = "ffmpeg ${FFMPEG_VERSION}" \
+    && test "$(pacman -Q openssl)" = "openssl ${OPENSSL_VERSION}" \
+    && test "$(pacman -Q curl)" = "curl ${CURL_VERSION}" \
+    && test "$(pacman -Q systemd)" = "systemd ${SYSTEMD_VERSION}" \
+    && test "$(pacman -Q systemd-libs)" = "systemd-libs ${SYSTEMD_LIBS_VERSION}" \
+    && test "$(pacman -Q zstd)" = "zstd ${ZSTD_VERSION}" \
+    && test "$(pacman -Q zlib)" = "zlib ${ZLIB_VERSION}" \
+    && test "$(pacman -Q zlib-ng)" = "zlib-ng ${ZLIB_NG_VERSION}" \
+    && test "$(pacman -Q opus)" = "opus ${OPUS_VERSION}" \
+    && test "$(pacman -Q libsodium)" = "libsodium ${LIBSODIUM_VERSION}" \
+    && test "$(pacman -Q catch2)" = "catch2 ${CATCH2_VERSION}" \
+    && test "$(pacman -Q cmake)" = "cmake ${CMAKE_VERSION}" \
+    && test "$(pacman -Q ninja)" = "ninja ${NINJA_VERSION}" \
+    && test "$(pacman -Q nlohmann-json)" = "nlohmann-json ${NLOHMANN_JSON_VERSION}"
+
+RUN git clone --no-tags https://github.com/brainboxdotcc/DPP.git /tmp/dpp \
+    && git -C /tmp/dpp checkout --detach "${DPP_REVISION}" \
+    && cmake -S /tmp/dpp -B /tmp/dpp-build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_C_FLAGS_RELEASE='-O2 -DNDEBUG -march=x86-64-v3 -mtune=generic' \
+      -DCMAKE_CXX_FLAGS_RELEASE='-O2 -DNDEBUG -march=x86-64-v3 -mtune=generic' \
+      -DCMAKE_INSTALL_PREFIX=/opt/dpp \
+      -DBUILD_SHARED_LIBS=ON \
+      -DBUILD_VOICE_SUPPORT=ON \
+      -DDPP_BUILD_TEST=OFF \
+      -DRUN_LDCONFIG=OFF \
+    && cmake --build /tmp/dpp-build --parallel 2 \
+    && cmake --install /tmp/dpp-build \
+    && test -f /opt/dpp/lib/libdpp.so.10.1.7 \
+    && rm -rf /tmp/dpp /tmp/dpp-build
+
+RUN pacman -Sy --noconfirm --needed shellcheck \
+    && test "$(pacman -Q shellcheck)" = "shellcheck ${SHELLCHECK_VERSION}" \
+    && pacman -Scc --noconfirm
+
+COPY scripts/release.bash scripts/deploy_nuln.bash \
+     scripts/sanguinius-backup.bash scripts/sanguinius-restore.bash \
+     /opt/sanguinius-release-support/scripts/
+COPY scripts/lib/remote_deploy.bash \
+     /opt/sanguinius-release-support/scripts/lib/remote_deploy.bash
+COPY tests/scripts/ /opt/sanguinius-release-support/tests/scripts/
+COPY packaging/systemd/ /opt/sanguinius-release-support/packaging/systemd/
+COPY packaging/container-build.bash /usr/local/bin/sanguinius-container-build
+RUN chmod 0755 /usr/local/bin/sanguinius-container-build
+
+WORKDIR /src
+ENTRYPOINT ["/usr/local/bin/sanguinius-container-build"]

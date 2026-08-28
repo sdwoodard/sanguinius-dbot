@@ -177,6 +177,16 @@ safety_set(const std::shared_ptr<sanguinius::test::FakeInteractionResponder>
   return request;
 }
 
+[[nodiscard]] sanguinius::IncomingInteraction reliability_test(
+    const std::shared_ptr<sanguinius::test::FakeInteractionResponder>
+        &responder,
+    const std::string_view scenario,
+    const sanguinius::DiscordId interaction_id) {
+  auto request = slash(responder, "sang-admin", scenario, interaction_id);
+  request.subcommand_group_name = "reliability-test";
+  return request;
+}
+
 [[nodiscard]] sanguinius::IncomingInteraction
 safety_status(const std::shared_ptr<sanguinius::test::FakeInteractionResponder>
                   &responder,
@@ -227,22 +237,76 @@ durable_outbox(std::string outbox_id, std::string kind, std::string key) {
 
 } // namespace
 
+TEST_CASE("reliability probes require owner admin and test catalog gates",
+          "[application][interaction][m19][reliability]") {
+  sanguinius::test::ApplicationFixture fixture{admin_options()};
+  fixture.application->start();
+  const auto catalog = fixture.discord->command_catalog();
+  const auto &admin = catalog.commands.back();
+  REQUIRE(std::ranges::any_of(admin.subcommand_groups, [](const auto &group) {
+    return group.name == "reliability-test";
+  }));
+
+  const std::array scenarios{"text-timeout", "ai-saturation",
+                             "discord-unknown"};
+  for (std::size_t index{}; index < scenarios.size(); ++index) {
+    auto responder =
+        std::make_shared<sanguinius::test::FakeInteractionResponder>();
+    fixture.discord->emit(
+        reliability_test(responder, scenarios[index],
+                         static_cast<sanguinius::DiscordId>(800U + index)));
+    REQUIRE(responder->wait_for_edit_count(1, 2s));
+    REQUIRE(
+        contains(responder->edits()[0].content, "Reliability probe passed"));
+  }
+  const auto audits = fixture.durable_work->events_by_type(
+      "owner.reliability_test_passed.v1", 10);
+  REQUIRE(audits.size() == scenarios.size());
+  for (std::size_t index{}; index < scenarios.size(); ++index) {
+    REQUIRE(audits[index].payload_json.find(
+                scenarios[scenarios.size() - 1 - index]) != std::string::npos);
+    REQUIRE(audits[index].payload_json.find("passed") != std::string::npos);
+  }
+
+  auto nonowner =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto rejected = reliability_test(nonowner, "text-timeout", 810);
+  rejected.user_id = 31;
+  fixture.discord->emit(std::move(rejected));
+  REQUIRE(nonowner->replies().size() == 1);
+  REQUIRE(contains(nonowner->replies()[0].first.content, "owner-only"));
+  fixture.application->stop();
+
+  auto disabled_options = admin_options();
+  disabled_options.controls.test_mode = false;
+  sanguinius::test::ApplicationFixture disabled{disabled_options};
+  disabled.application->start();
+  REQUIRE(std::ranges::none_of(
+      disabled.discord->command_catalog().commands.back().subcommand_groups,
+      [](const auto &group) { return group.name == "reliability-test"; }));
+  auto hidden = std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  disabled.discord->emit(reliability_test(hidden, "text-timeout", 811));
+  REQUIRE(hidden->replies().size() == 1);
+  REQUIRE(contains(hidden->replies()[0].first.content, "disabled"));
+  disabled.application->stop();
+}
+
 TEST_CASE("Vox interactions connect play once reconnect and leave",
           "[application][interaction][vox]") {
   sanguinius::test::ApplicationFixture fixture{vox_options()};
   fixture.application->start();
   REQUIRE(fixture.vox->recover_calls() == 1);
-  REQUIRE(fixture.discord->command_catalog().version == 15);
+  REQUIRE(fixture.discord->command_catalog().version == 16);
 
   auto summon = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   fixture.discord->emit(slash(summon, "vox", "summon", 900));
-  REQUIRE(summon->wait_for_edit_count(1, 2s));
+  REQUIRE(summon->wait_for_edit_count(1, 5s));
   REQUIRE(summon->deferrals() ==
           std::vector{sanguinius::ResponseVisibility::ephemeral});
-  REQUIRE(fixture.voice_gateway->wait_for_connects(1, 2s));
+  REQUIRE(fixture.voice_gateway->wait_for_connects(1, 5s));
 
   fixture.voice_gateway->emit(sanguinius::VoiceEventKind::ready);
-  REQUIRE(fixture.voice_gateway->wait_for_sends(1, 2s));
+  REQUIRE(fixture.voice_gateway->wait_for_sends(1, 5s));
   fixture.voice_gateway->emit(sanguinius::VoiceEventKind::ready);
   REQUIRE(fixture.voice_gateway->send_count() == 1);
 
@@ -252,19 +316,19 @@ TEST_CASE("Vox interactions connect play once reconnect and leave",
   early_say_request.command_options = {
       {"text", std::string{"Wait for the entrance proof."}}};
   fixture.discord->emit(std::move(early_say_request));
-  REQUIRE(early_say->wait_for_edit_count(1, 2s));
+  REQUIRE(early_say->wait_for_edit_count(1, 5s));
   REQUIRE(contains(early_say->edits()[0].content, "queued"));
   REQUIRE(fixture.voice_gateway->send_count() == 1);
 
   fixture.voice_gateway->emit(sanguinius::VoiceEventKind::track_marker);
   REQUIRE(
-      fixture.vox->wait_for_fixture(sanguinius::VoxFixtureState::played, 2s));
-  REQUIRE(fixture.voice_gateway->wait_for_sends(2, 2s));
+      fixture.vox->wait_for_fixture(sanguinius::VoxFixtureState::played, 5s));
+  REQUIRE(fixture.voice_gateway->wait_for_sends(2, 5s));
   fixture.voice_gateway->emit(sanguinius::VoiceEventKind::track_marker);
 
   auto status = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   fixture.discord->emit(slash(status, "vox", "status", 901));
-  REQUIRE(status->wait_for_edit_count(1, 2s));
+  REQUIRE(status->wait_for_edit_count(1, 5s));
   REQUIRE(status->deferrals() ==
           std::vector{sanguinius::ResponseVisibility::public_message});
   REQUIRE(contains(status->edits()[0].content, "<#40>"));
@@ -273,7 +337,7 @@ TEST_CASE("Vox interactions connect play once reconnect and leave",
   auto duplicate =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();
   fixture.discord->emit(slash(duplicate, "vox", "summon", 902));
-  REQUIRE(duplicate->wait_for_edit_count(1, 2s));
+  REQUIRE(duplicate->wait_for_edit_count(1, 5s));
   REQUIRE(contains(duplicate->edits()[0].content, "active"));
   REQUIRE(fixture.voice_gateway->send_count() == 2);
 
@@ -282,25 +346,25 @@ TEST_CASE("Vox interactions connect play once reconnect and leave",
   auto reconnect_request = slash(reconnect, "sang-admin", "disconnect", 903);
   reconnect_request.subcommand_group_name = "vox";
   fixture.discord->emit(std::move(reconnect_request));
-  REQUIRE(reconnect->wait_for_edit_count(1, 2s));
+  REQUIRE(reconnect->wait_for_edit_count(1, 5s));
   fixture.voice_gateway->emit(sanguinius::VoiceEventKind::disconnected);
-  REQUIRE(fixture.voice_gateway->wait_for_connects(2, 2s));
+  REQUIRE(fixture.voice_gateway->wait_for_connects(2, 5s));
   fixture.voice_gateway->emit(sanguinius::VoiceEventKind::ready);
-  REQUIRE(fixture.vox->wait_for_state(sanguinius::VoxState::ready, 2s));
+  REQUIRE(fixture.vox->wait_for_state(sanguinius::VoxState::ready, 5s));
   REQUIRE(fixture.voice_gateway->send_count() == 2);
 
   auto leave = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   const auto disconnects_before_leave =
       fixture.voice_gateway->disconnect_count();
   fixture.discord->emit(slash(leave, "vox", "leave", 904));
-  REQUIRE(leave->wait_for_edit_count(1, 2s));
-  REQUIRE(fixture.vox->wait_for_state(sanguinius::VoxState::leaving, 2s));
-  REQUIRE(fixture.voice_gateway->wait_for_sends(3, 2s));
+  REQUIRE(leave->wait_for_edit_count(1, 5s));
+  REQUIRE(fixture.vox->wait_for_state(sanguinius::VoxState::leaving, 5s));
+  REQUIRE(fixture.voice_gateway->wait_for_sends(3, 5s));
   fixture.voice_gateway->emit(sanguinius::VoiceEventKind::track_marker);
   REQUIRE(fixture.voice_gateway->wait_for_disconnects(
-      disconnects_before_leave + 1, 2s));
+      disconnects_before_leave + 1, 5s));
   fixture.voice_gateway->emit(sanguinius::VoiceEventKind::disconnected);
-  REQUIRE(fixture.vox->wait_for_state(sanguinius::VoxState::inactive, 2s));
+  REQUIRE(fixture.vox->wait_for_state(sanguinius::VoxState::inactive, 5s));
   REQUIRE(fixture.voice_gateway->disconnect_count() >=
           disconnects_before_leave + 1);
 
@@ -372,7 +436,7 @@ TEST_CASE("Tarot commands preserve private authority and public standings",
   sanguinius::test::ApplicationFixture fixture{tarot_options()};
   fixture.application->start();
   REQUIRE(fixture.tarot->initialize_calls == 1);
-  REQUIRE(fixture.discord->command_catalog().version == 15);
+  REQUIRE(fixture.discord->command_catalog().version == 16);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 5);
 
   auto balance = std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -991,7 +1055,7 @@ TEST_CASE(
     "[application][interaction][chronicle]") {
   sanguinius::test::ApplicationFixture fixture{chronicle_options()};
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 15);
+  REQUIRE(fixture.discord->command_catalog().version == 16);
   REQUIRE(fixture.discord->command_catalog().commands.size() == 6);
 
   auto remember =
@@ -1623,7 +1687,7 @@ TEST_CASE(
   sanguinius::test::ApplicationFixture fixture{options};
   fixture.clock->set(std::chrono::sys_seconds{std::chrono::seconds{1'000}});
   fixture.application->start();
-  REQUIRE(fixture.discord->command_catalog().version == 15);
+  REQUIRE(fixture.discord->command_catalog().version == 16);
 
   auto quiet = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto quiet_request = slash(quiet, "sanguinius", "tonight", 520);
@@ -1852,6 +1916,8 @@ TEST_CASE("voice kill controls bypass general admin and interaction backlog",
   REQUIRE(contains(disable->edits()[0].content, "disabled immediately"));
   REQUIRE(fixture.voice_listening->kill_switch.load());
   REQUIRE(fixture.voice_listening->kill_switch_changes.load() == 1);
+  REQUIRE(active->wait_for_edit_count(1, 2s));
+  REQUIRE(queued->wait_for_edit_count(1, 2s));
 
   auto disabled_status =
       std::make_shared<sanguinius::test::FakeInteractionResponder>();

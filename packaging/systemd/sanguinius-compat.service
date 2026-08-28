@@ -1,0 +1,68 @@
+[Unit]
+Description=Sanguinius Discord bot (schema-13 compatibility rollback)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=sanguinius
+Group=sanguinius
+WorkingDirectory=/opt/sanguinius/current
+EnvironmentFile=/etc/sanguinius/sanguinius.env
+LoadCredential=discord-token:/etc/sanguinius/bot.token
+LoadCredential=openai-key:/etc/sanguinius/openai.key
+Environment=SANGUINIUS_TOKEN_FILE=%d/discord-token
+Environment=SANGUINIUS_OPENAI_API_KEY_FILE=%d/openai-key
+ExecStartPre=/opt/sanguinius/current/bin/sanguinius --check-config
+ExecStartPre=/opt/sanguinius/current/bin/sanguinius db check
+ExecStartPre=/opt/sanguinius/current/bin/sanguinius db integrity
+ExecStartPre=/opt/sanguinius/current/bin/sanguinius db relationships check
+ExecStartPre=/opt/sanguinius/current/bin/sanguinius db tarot check
+ExecStart=/opt/sanguinius/current/bin/sanguinius
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=180
+UMask=0077
+StateDirectory=sanguinius
+StateDirectoryMode=0750
+CacheDirectory=sanguinius
+CacheDirectoryMode=0700
+LogsDirectory=sanguinius
+LogsDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service @network-io
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitCORE=0
+LimitMEMLOCK=16M
+LimitNOFILE=2048
+MemoryHigh=512M
+MemoryMax=768M
+TasksMax=64
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

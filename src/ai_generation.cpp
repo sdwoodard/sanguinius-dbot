@@ -56,6 +56,16 @@ namespace {
 
 } // namespace
 
+AiProviderFailureAccounting
+classify_ai_provider_failure(const AiProviderErrorCategory category,
+                             const bool transmission_started) noexcept {
+  return {.action = transmission_started
+                        ? AiFailureAccounting::fail_attempt
+                        : AiFailureAccounting::cancel_reservation,
+          .result_code = transmission_started ? failure_code(category)
+                                              : "provider_not_sent"};
+}
+
 std::int64_t estimated_ai_cost_micro_usd(const std::size_t input_tokens,
                                          const std::size_t output_tokens,
                                          const std::int64_t input_rate,
@@ -215,11 +225,13 @@ AiResult AiGenerationService::generate(
     }
     return result;
   } catch (const AiProviderError &error) {
-    if (!submitted) {
-      release_unsent("provider_not_sent");
+    const auto accounting =
+        classify_ai_provider_failure(error.category(), submitted);
+    if (accounting.action == AiFailureAccounting::cancel_reservation) {
+      release_unsent(accounting.result_code);
       throw;
     }
-    repository_->fail(active_attempt, failure_code(error.category()),
+    repository_->fail(active_attempt, accounting.result_code,
                       error.provider_request_id(), now_ms(clock_));
     try {
       repository_->provider_failed(error.category(), now_ms(clock_),

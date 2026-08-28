@@ -186,19 +186,27 @@ class FakeDiscord final : public DiscordRuntime {
 public:
   void start(MessageCallback message_callback,
              InteractionCallback interaction_callback,
-             CommandCatalog command_catalog) override {
-    const std::scoped_lock lock{mutex_};
-    lifecycle_.push_back("gateway.start");
-    callback_ = std::move(message_callback);
-    interaction_callback_ = std::move(interaction_callback);
-    command_catalog_ = std::move(command_catalog);
-    accepting_ = true;
-    status_ = {.ready = ready_on_start_,
-               .command_registration = CommandRegistrationState::synchronized,
-               .command_catalog_version = command_catalog_.version};
-    if (fail_start_) {
-      throw std::runtime_error{"scripted gateway startup failure"};
+             CommandCatalog command_catalog,
+             StatusCallback status_callback = {}) override {
+    DiscordRuntimeStatus current;
+    {
+      const std::scoped_lock lock{mutex_};
+      lifecycle_.push_back("gateway.start");
+      callback_ = std::move(message_callback);
+      interaction_callback_ = std::move(interaction_callback);
+      command_catalog_ = std::move(command_catalog);
+      status_callback_ = std::move(status_callback);
+      accepting_ = true;
+      status_ = {.ready = ready_on_start_,
+                 .command_registration = CommandRegistrationState::synchronized,
+                 .command_catalog_version = command_catalog_.version};
+      if (fail_start_) {
+        throw std::runtime_error{"scripted gateway startup failure"};
+      }
+      current = status_;
     }
+    if (status_callback_)
+      status_callback_(current);
   }
 
   void stop_accepting() noexcept override {
@@ -223,6 +231,7 @@ public:
         accepting_ = false;
         callback_ = {};
         interaction_callback_ = {};
+        status_callback_ = {};
         status_.ready = false;
         observer = shutdown_observer_;
       }
@@ -399,6 +408,17 @@ public:
     ready_on_start_ = ready;
   }
 
+  void set_status(const DiscordRuntimeStatus status) {
+    StatusCallback callback;
+    {
+      const std::scoped_lock lock{mutex_};
+      status_ = status;
+      callback = status_callback_;
+    }
+    if (callback)
+      callback(status);
+  }
+
   void release_public_callbacks() {
     std::vector<std::pair<PublicDeliveryCallback, PublicDeliveryReceipt>> held;
     {
@@ -469,8 +489,8 @@ public:
   wait_for_public_edit_count(const std::size_t count,
                              const std::chrono::milliseconds timeout) const {
     std::unique_lock lock{mutex_};
-    return changed_.wait_for(lock, timeout,
-                             [this, count] { return public_edits_.size() >= count; });
+    return changed_.wait_for(
+        lock, timeout, [this, count] { return public_edits_.size() >= count; });
   }
 
   [[nodiscard]] std::vector<ReplyRequest> replies() const {
@@ -518,6 +538,7 @@ private:
   mutable std::condition_variable changed_;
   MessageCallback callback_;
   InteractionCallback interaction_callback_;
+  StatusCallback status_callback_;
   CommandCatalog command_catalog_;
   DiscordRuntimeStatus status_;
   std::vector<ConversationEntry> recent_;

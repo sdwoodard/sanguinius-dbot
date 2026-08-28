@@ -275,6 +275,7 @@ discord_command_configuration_from_source(const ConfigSource &source) {
   config.request_timeout = request_timeout(source, ignored_origin);
   config.admin_commands_enabled =
       optional_boolean(source, "SANGUINIUS_ADMIN_COMMANDS_ENABLED", false);
+  config.test_mode = optional_boolean(source, "SANGUINIUS_TEST_MODE", false);
   config.chronicle_enabled =
       optional_boolean(source, "SANGUINIUS_CHRONICLE_ENABLED", false);
   config.tarot_enabled =
@@ -332,6 +333,10 @@ Config Config::from_source(const ConfigSource &source) {
     config.paths.database_file = *database_file;
     config.origins.database_file = ConfigurationOrigin::configured;
   }
+  optional_absolute_path(source, "SANGUINIUS_OPERATIONS_STATUS_FILE",
+                         config.paths.operations_status_file);
+  optional_absolute_path(source, "SANGUINIUS_BACKUP_DIRECTORY",
+                         config.paths.backup_directory);
 
   if (const auto prefix =
           optional_nonempty(source, "SANGUINIUS_COMMAND_PREFIX");

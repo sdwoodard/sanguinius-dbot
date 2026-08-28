@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <string>
@@ -32,6 +33,25 @@ struct PersistenceHealth {
   std::string sqlite_version;
   std::string instance_id;
 };
+
+struct OperationsHealth {
+  bool status_available{};
+  std::optional<std::int64_t> status_age_seconds;
+  std::string operation_result{"unknown"};
+  std::optional<std::int64_t> backup_age_seconds;
+  std::optional<std::int64_t> backup_schema;
+  std::string backup_result{"unknown"};
+  std::optional<bool> state_disk_warning;
+  std::optional<bool> cache_disk_warning;
+  std::optional<bool> backup_disk_warning;
+};
+
+[[nodiscard]] OperationsHealth
+read_operations_health(const std::filesystem::path &status_file,
+                       const std::filesystem::path &state_directory,
+                       const std::filesystem::path &cache_directory,
+                       const std::filesystem::path &backup_directory,
+                       std::int64_t now_ms) noexcept;
 
 struct HealthSnapshot {
   BuildInfo build;
@@ -53,6 +73,7 @@ struct HealthSnapshot {
   std::optional<VoxNarrationHealth> vox_narration;
   std::optional<VoiceListeningHealth> voice_input;
   std::optional<CrossFeatureHealth> cross_feature;
+  OperationsHealth operations;
   bool scope_matched{};
 };
 
@@ -70,6 +91,7 @@ struct HealthRuntimeProviders {
   std::function<std::optional<VoxNarrationHealth>()> vox_narration;
   std::function<std::optional<VoiceListeningHealth>()> voice_input;
   std::function<std::optional<CrossFeatureHealth>()> cross_feature;
+  std::function<OperationsHealth()> operations{};
 };
 
 class HealthService {

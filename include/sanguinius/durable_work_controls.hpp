@@ -25,6 +25,9 @@ public:
   schedule_test_notice(const IncomingInteraction &interaction);
   [[nodiscard]] bool
   queue_test_public_retry(const IncomingInteraction &interaction);
+  [[nodiscard]] bool
+  record_reliability_test(const IncomingInteraction &interaction,
+                          std::string_view scenario);
 
   [[nodiscard]] std::vector<WorkInspectionEntry> recent() const;
   [[nodiscard]] std::vector<WorkInspectionEntry> dead() const;

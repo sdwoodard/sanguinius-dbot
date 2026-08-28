@@ -143,7 +143,8 @@ InteractionHandler::InteractionHandler(
     TarotDrawService *tarot_draws, TarotHouseService *tarot_house,
     TarotIntegrationService *tarot_integration, VoxService *vox,
     VoxNarrationService *vox_narration, VoiceListeningService *voice_listening,
-    SafetyControlService *safety_controls)
+    SafetyControlService *safety_controls,
+    std::function<std::string(std::string_view)> reliability_test)
     : identities_{identities}, notices_{notices}, clock_{clock},
       durable_controls_{durable_controls}, chronicle_{chronicle},
       chronicle_sessions_{chronicle_sessions}, relationships_{relationships},
@@ -154,6 +155,7 @@ InteractionHandler::InteractionHandler(
       safety_controls_{safety_controls}, health_service_{health_service},
       diagnostics_{diagnostics}, features_{features}, overview_{overview},
       message_queue_{std::move(message_queue)}, ai_queue_{std::move(ai_queue)},
+      reliability_test_{std::move(reliability_test)},
       callbacks_{std::make_shared<CallbackFence>()}, worker_{queue_capacity, 1},
       privacy_worker_{queue_capacity, 1},
       kill_switch_worker_{queue_capacity, 1} {
@@ -832,6 +834,18 @@ void InteractionHandler::process(const RoutedInteraction &request) {
                             "attempt will fail before Discord submission."
                           : "That synthetic public retry was already queued."),
          "interaction.test_public_retry");
+    return;
+  }
+  case InteractionOperation::reliability_test: {
+    if (!reliability_test_)
+      throw std::runtime_error{"Reliability test service is unavailable."};
+    const auto result = reliability_test_(request.interaction.subcommand_name);
+    static_cast<void>(durable_controls_.record_reliability_test(
+        request.interaction, request.interaction.subcommand_name));
+    edit(request.interaction,
+         text_message(result + " The sanitized result was recorded in the "
+                               "durable audit journal."),
+         "interaction.reliability_test");
     return;
   }
   case InteractionOperation::appearance_simulate: {

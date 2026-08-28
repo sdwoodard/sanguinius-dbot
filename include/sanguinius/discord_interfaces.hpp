@@ -56,12 +56,14 @@ class DiscordGateway {
 public:
   using MessageCallback = std::function<void(IncomingMessage)>;
   using InteractionCallback = std::function<void(IncomingInteraction)>;
+  using StatusCallback = std::function<void(DiscordRuntimeStatus)>;
 
   virtual ~DiscordGateway() = default;
 
   virtual void start(MessageCallback message_callback,
                      InteractionCallback interaction_callback,
-                     CommandCatalog command_catalog) = 0;
+                     CommandCatalog command_catalog,
+                     StatusCallback status_callback = {}) = 0;
   virtual void stop_accepting() noexcept = 0;
   /**
    * Stop the gateway and fence every callback previously accepted by this

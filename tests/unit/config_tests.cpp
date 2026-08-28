@@ -162,6 +162,7 @@ TEST_CASE("Discord command configuration does not load application services",
   source.values.erase("SANGUINIUS_PRIMARY_CHANNEL_ID");
   source.values.erase("SANGUINIUS_OWNER_USER_ID");
   source.values["SANGUINIUS_ADMIN_COMMANDS_ENABLED"] = "true";
+  source.values["SANGUINIUS_TEST_MODE"] = "true";
   source.values["SANGUINIUS_CHRONICLE_ENABLED"] = "true";
   source.values["SANGUINIUS_TAROT_ENABLED"] = "true";
   source.values["SANGUINIUS_VOX_ENABLED"] = "true";
@@ -174,6 +175,7 @@ TEST_CASE("Discord command configuration does not load application services",
   REQUIRE(config.guild_id.str() == "18446744073709551615");
   REQUIRE(config.request_timeout == std::chrono::seconds{17});
   REQUIRE(config.admin_commands_enabled);
+  REQUIRE(config.test_mode);
   REQUIRE(config.chronicle_enabled);
   REQUIRE(config.tarot_enabled);
   REQUIRE(config.vox_enabled);

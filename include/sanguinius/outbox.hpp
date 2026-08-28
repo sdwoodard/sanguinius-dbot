@@ -20,6 +20,16 @@
 
 namespace sanguinius {
 
+struct DiscordDeliveryFailureDisposition {
+  std::string_view error_code;
+  OutboxFailureMode mode{OutboxFailureMode::failed};
+  bool retry{};
+};
+
+[[nodiscard]] DiscordDeliveryFailureDisposition
+classify_discord_delivery_failure(DeliveryResult result,
+                                  bool within_nonce_window) noexcept;
+
 class OutboxHandlerRegistry {
 public:
   using Handler =
@@ -37,15 +47,15 @@ private:
 
 class OutboxService {
 public:
-  OutboxService(DurableWorkRepository &repository, const Clock &clock,
-                PersistentIdGenerator &ids, Diagnostics &diagnostics,
-                DiscordPublicDelivery &delivery,
-                const DiscordStatusProvider &discord_status,
-                ServerScopeConfiguration scope, std::string instance_id,
-                std::size_t queue_capacity = 32,
-                std::chrono::milliseconds receipt_wait_timeout =
-                    std::chrono::seconds{90},
-                std::function<void()> completion_observer = {});
+  OutboxService(
+      DurableWorkRepository &repository, const Clock &clock,
+      PersistentIdGenerator &ids, Diagnostics &diagnostics,
+      DiscordPublicDelivery &delivery,
+      const DiscordStatusProvider &discord_status,
+      ServerScopeConfiguration scope, std::string instance_id,
+      std::size_t queue_capacity = 32,
+      std::chrono::milliseconds receipt_wait_timeout = std::chrono::seconds{90},
+      std::function<void()> completion_observer = {});
   ~OutboxService();
 
   OutboxService(const OutboxService &) = delete;

@@ -1,11 +1,17 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(sanguinius VERSION 2.1.0 LANGUAGES CXX)
+project(sanguinius VERSION 2.2.0 LANGUAGES CXX)
 
 include(CTest)
 
 set(SANGUINIUS_REVISION_OVERRIDE "" CACHE STRING
     "Git revision to embed instead of detecting the current checkout")
+set(SANGUINIUS_RELEASE_ID "development" CACHE STRING
+    "Immutable release identifier embedded in the binary")
+set(SANGUINIUS_BUILD_TIMESTAMP "unknown" CACHE STRING
+    "UTC build timestamp embedded in the binary")
+set(SANGUINIUS_TOOLCHAIN_ID "local" CACHE STRING
+    "Pinned release-toolchain identity embedded in the binary")
 if(SANGUINIUS_REVISION_OVERRIDE)
     set(sanguinius_build_revision "${SANGUINIUS_REVISION_OVERRIDE}")
 else()
@@ -28,6 +34,8 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(SYSTEMD REQUIRED IMPORTED_TARGET libsystemd)
 
 include(CheckCXXSourceCompiles)
 include(CheckCXXSourceRuns)
@@ -177,6 +185,7 @@ add_library(sanguinius_core STATIC
     src/message_logger.cpp
     src/owner_admin.cpp
     src/outbox.cpp
+    src/operations_health.cpp
     src/pending_notice.cpp
     src/persistent_id.cpp
     src/presentation.cpp
@@ -185,10 +194,12 @@ add_library(sanguinius_core STATIC
     src/random.cpp
     src/retention.cpp
     src/relationships.cpp
+    src/reliability_test.cpp
     src/safety_controls.cpp
     src/sanguinius_overview.cpp
     src/repositories.cpp
     src/scheduler.cpp
+    src/service_notifier.cpp
     src/server_scope_policy.cpp
     src/speech.cpp
     src/speech_service.cpp
@@ -212,6 +223,9 @@ target_include_directories(sanguinius_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/i
 target_compile_definitions(sanguinius_core PUBLIC
     SANGUINIUS_BUILD_VERSION="${PROJECT_VERSION}"
     SANGUINIUS_BUILD_REVISION="${sanguinius_build_revision}"
+    SANGUINIUS_RELEASE_ID="${SANGUINIUS_RELEASE_ID}"
+    SANGUINIUS_BUILD_TIMESTAMP="${SANGUINIUS_BUILD_TIMESTAMP}"
+    SANGUINIUS_TOOLCHAIN_ID="${SANGUINIUS_TOOLCHAIN_ID}"
 )
 sanguinius_enable_warnings(sanguinius_core)
 target_link_libraries(sanguinius_core
@@ -220,6 +234,7 @@ target_link_libraries(sanguinius_core
         OpenSSL::Crypto
     PRIVATE
         nlohmann_json::nlohmann_json
+        PkgConfig::SYSTEMD
 )
 
 add_library(sanguinius_persistence STATIC
@@ -306,11 +321,18 @@ target_link_libraries(sanguinius_runtime
 add_executable(sanguinius src/main.cpp)
 sanguinius_enable_warnings(sanguinius)
 target_link_libraries(sanguinius PRIVATE sanguinius_runtime)
-set_target_properties(sanguinius PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
+set_target_properties(sanguinius PROPERTIES
+    INSTALL_RPATH "$ORIGIN/../lib"
+    INSTALL_RPATH_USE_LINK_PATH FALSE
+)
 
 if(BUILD_TESTING)
     find_package(Catch2 3 CONFIG REQUIRED)
     include(Catch)
+
+    set(SANGUINIUS_TEST_CASE_TIMEOUT_SECONDS 10 CACHE STRING
+        "Per-case CTest timeout; sanitizer builds may raise this bounded limit"
+    )
 
     function(add_sanguinius_test target)
         add_executable(${target} ${ARGN})
@@ -324,7 +346,7 @@ if(BUILD_TESTING)
             Catch2::Catch2WithMain
         )
         catch_discover_tests(${target}
-            PROPERTIES TIMEOUT 10
+            PROPERTIES TIMEOUT ${SANGUINIUS_TEST_CASE_TIMEOUT_SECONDS}
         )
     endfunction()
 
@@ -341,6 +363,7 @@ if(BUILD_TESTING)
         tests/unit/mention_parse_tests.cpp
         tests/unit/message_logger_tests.cpp
         tests/unit/m18_reliability_tests.cpp
+        tests/unit/m19_operations_tests.cpp
         tests/unit/owner_admin_tests.cpp
         tests/unit/relationship_tests.cpp
         tests/unit/server_scope_policy_tests.cpp
@@ -391,7 +414,7 @@ if(BUILD_TESTING)
         Catch2::Catch2WithMain
     )
     catch_discover_tests(sanguinius_persistence_tests
-        PROPERTIES TIMEOUT 10
+        PROPERTIES TIMEOUT ${SANGUINIUS_TEST_CASE_TIMEOUT_SECONDS}
     )
 
     add_executable(sanguinius_runtime_tests
@@ -414,7 +437,7 @@ if(BUILD_TESTING)
         Catch2::Catch2WithMain
     )
     catch_discover_tests(sanguinius_runtime_tests
-        PROPERTIES TIMEOUT 10
+        PROPERTIES TIMEOUT ${SANGUINIUS_TEST_CASE_TIMEOUT_SECONDS}
     )
 
     set(sanguinius_config_environment_unsets
@@ -445,6 +468,8 @@ if(BUILD_TESTING)
         --unset=SANGUINIUS_TAROT_HOUSE_PROFIT_CAP
         --unset=SANGUINIUS_TAROT_INTEGRATION_ENABLED
         --unset=SANGUINIUS_DATABASE_FILE
+        --unset=SANGUINIUS_OPERATIONS_STATUS_FILE
+        --unset=SANGUINIUS_BACKUP_DIRECTORY
         --unset=SANGUINIUS_ADMIN_COMMANDS_ENABLED
         --unset=SANGUINIUS_TEST_MODE
         --unset=SANGUINIUS_CHRONICLE_ENABLED
@@ -496,6 +521,15 @@ if(BUILD_TESTING)
             SANGUINIUS_APPEARANCE_POLICY_FILE=${CMAKE_CURRENT_SOURCE_DIR}/config/appearance-policy-v2.json
             SANGUINIUS_DISCORD_REQUEST_TIMEOUT_SECONDS=1
             "$<TARGET_FILE:sanguinius>" --check-config
+    )
+
+    add_test(NAME sanguinius_version_json
+        COMMAND "$<TARGET_FILE:sanguinius>" --version --json
+    )
+    set_tests_properties(sanguinius_version_json PROPERTIES
+        TIMEOUT 3
+        PASS_REGULAR_EXPRESSION "\"version\":\"2.2.0\""
+        FAIL_REGULAR_EXPRESSION "DISCORD;OPENAI;token;api_key"
     )
     set_tests_properties(sanguinius_check_config PROPERTIES
         TIMEOUT 3
@@ -569,6 +603,18 @@ if(BUILD_TESTING)
             "missing-startup-test;DISCORD_SECRET_SENTINEL;OPENAI_SECRET_SENTINEL"
     )
 
+    add_test(NAME sanguinius_release_shell_tests
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/scripts/release_tests.bash)
+    add_test(NAME sanguinius_deployment_shell_tests
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/scripts/deployment_tests.bash)
+    add_test(NAME sanguinius_backup_restore_shell_tests
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/scripts/backup_restore_tests.bash)
+    set_tests_properties(
+        sanguinius_release_shell_tests
+        sanguinius_deployment_shell_tests
+        sanguinius_backup_restore_shell_tests
+        PROPERTIES TIMEOUT 30)
+
     add_test(NAME sanguinius_prepare_startup_database
         COMMAND "${CMAKE_COMMAND}" -E env
             ${sanguinius_config_environment_unsets}
@@ -611,8 +657,34 @@ endif()
 
 install(TARGETS sanguinius RUNTIME DESTINATION bin)
 install(DIRECTORY assets/vox/
-    DESTINATION share/sanguinius/vox
+    DESTINATION assets/vox
     FILES_MATCHING
     PATTERN "*.pcm"
     PATTERN "fallbacks-v1.json"
 )
+install(FILES
+    config/persona.txt
+    config/appearance-policy-v2.json
+    config/emperor-tarot-v1.json
+    config/tarot-house-v1.json
+    DESTINATION config
+)
+install(DIRECTORY migrations/
+    DESTINATION migrations
+    FILES_MATCHING PATTERN "*.sql"
+)
+install(PROGRAMS
+    scripts/sanguinius-backup.bash
+    scripts/sanguinius-restore.bash
+    DESTINATION libexec
+)
+install(FILES
+    packaging/systemd/sanguinius.service
+    packaging/systemd/sanguinius-compat.service
+    packaging/systemd/sanguinius-backup.service
+    packaging/systemd/sanguinius-backup.timer
+    DESTINATION systemd
+)
+install(FILES packaging/sysusers.d/sanguinius.conf DESTINATION sysusers.d)
+install(FILES packaging/tmpfiles.d/sanguinius.conf DESTINATION tmpfiles.d)
+install(FILES docs/OPERATIONS.md DESTINATION docs)

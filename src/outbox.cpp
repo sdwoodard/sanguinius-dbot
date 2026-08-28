@@ -74,6 +74,27 @@ struct AwaitedReceipt {
 
 } // namespace
 
+DiscordDeliveryFailureDisposition
+classify_discord_delivery_failure(const DeliveryResult result,
+                                  const bool within_nonce_window) noexcept {
+  if ((result == DeliveryResult::transient_failure ||
+       result == DeliveryResult::unknown_outcome) &&
+      within_nonce_window) {
+    return {.error_code = result == DeliveryResult::unknown_outcome
+                              ? "discord_unknown_outcome"
+                              : "discord_transient",
+            .mode = OutboxFailureMode::retryable,
+            .retry = true};
+  }
+  return {.error_code = result == DeliveryResult::permanent_failure
+                            ? "discord_permanent"
+                        : result == DeliveryResult::unknown_outcome
+                            ? "discord_unknown_outcome_stale"
+                            : "discord_retry_window_expired",
+          .mode = OutboxFailureMode::failed,
+          .retry = false};
+}
+
 void OutboxHandlerRegistry::add(std::string kind, Handler handler) {
   if (frozen_) {
     throw std::logic_error{"Outbox handler registry is frozen."};
@@ -491,22 +512,24 @@ void OutboxService::handle_public_edit(const ClaimedOutboxMessage &outbox,
         });
   } catch (...) {
     const auto retry_at = current + retry_delay_ms(outbox.attempt_count);
-    static_cast<void>(repository_.fail_outbox(
-        outbox, current, retry_at, "discord_edit_unknown",
-        OutboxFailureMode::retryable));
+    static_cast<void>(repository_.fail_outbox(outbox, current, retry_at,
+                                              "discord_edit_unknown",
+                                              OutboxFailureMode::retryable));
     wake();
     return;
   }
   std::optional<PublicDeliveryReceipt> receipt;
   {
     std::unique_lock lock{awaited->mutex};
-    if (awaited->changed.wait_for(lock, stop_token, receipt_wait_timeout_,
-                                  [&awaited] { return awaited->receipt.has_value(); }))
+    if (awaited->changed.wait_for(
+            lock, stop_token, receipt_wait_timeout_,
+            [&awaited] { return awaited->receipt.has_value(); }))
       receipt = awaited->receipt;
   }
   if (!receipt && stop_token.stop_requested())
     return;
-  const auto result = receipt ? receipt->result : DeliveryResult::unknown_outcome;
+  const auto result =
+      receipt ? receipt->result : DeliveryResult::unknown_outcome;
   if (result == DeliveryResult::success) {
     static_cast<void>(repository_.complete_public_outbox(
         outbox, *provider_message, now_ms(clock_)));
@@ -549,24 +572,18 @@ void OutboxService::handle_receipt(ClaimedOutboxMessage outbox,
     const bool within_window =
         outbox.first_attempt_at_ms.has_value() &&
         within_nonce_retry_window(outbox, current_attempt);
-    if ((outcome == DeliveryResult::transient_failure ||
-         outcome == DeliveryResult::unknown_outcome) &&
-        within_window) {
+    const auto disposition =
+        classify_discord_delivery_failure(outcome, within_window);
+    if (disposition.retry) {
       static_cast<void>(repository_.fail_outbox(
           outbox, current, current + retry_delay_ms(outbox.attempt_count),
-          outcome == DeliveryResult::unknown_outcome ? "discord_unknown_outcome"
-                                                     : "discord_transient",
-          OutboxFailureMode::retryable));
+          std::string{disposition.error_code}, disposition.mode));
       wake();
       return;
     }
     static_cast<void>(repository_.fail_outbox(
-        outbox, current, current,
-        outcome == DeliveryResult::permanent_failure ? "discord_permanent"
-        : outcome == DeliveryResult::unknown_outcome
-            ? "discord_unknown_outcome_stale"
-            : "discord_retry_window_expired",
-        OutboxFailureMode::failed));
+        outbox, current, current, std::string{disposition.error_code},
+        disposition.mode));
   } catch (const std::exception &error) {
     diagnostics_.emit({DiagnosticSeverity::error, "outbox.completion",
                        error.what(),

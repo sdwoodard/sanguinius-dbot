@@ -992,13 +992,14 @@ public:
 
   void start(MessageCallback message_callback,
              InteractionCallback interaction_callback,
-             CommandCatalog command_catalog) {
+             CommandCatalog command_catalog, StatusCallback status_callback) {
     if (started_.exchange(true)) {
       throw std::logic_error{"Discord gateway may only be started once."};
     }
 
     message_callback_ = std::move(message_callback);
     interaction_callback_ = std::move(interaction_callback);
+    status_callback_ = std::move(status_callback);
     command_catalog_ = std::move(command_catalog);
     command_catalog_version_.store(command_catalog_.version);
     log_handle_ =
@@ -1014,6 +1015,7 @@ public:
         bot_.on_ready([this, callbacks = callbacks_](const dpp::ready_t &) {
           invoke_callback(callbacks, [this] {
             ready_.store(true);
+            emit_runtime_status();
             diagnostics_.emit(
                 {DiagnosticSeverity::info,
                  "discord.ready",
@@ -1171,6 +1173,7 @@ public:
   void stop_accepting() noexcept {
     accepting_.store(false);
     ready_.store(false);
+    emit_runtime_status();
     try {
       if (message_handle_ != 0) {
         static_cast<void>(bot_.on_message_create.detach(message_handle_));
@@ -1236,6 +1239,7 @@ public:
     if (!registration_.begin()) {
       return;
     }
+    emit_runtime_status();
     const auto desired = dpp_adapter_detail::translate_command_catalog(
         command_catalog_, bot_.me.id);
     bot_.guild_commands_get(
@@ -1246,6 +1250,7 @@ public:
             try {
               if (shutdown_.load() || !accepting_.load()) {
                 registration_.cancel();
+                emit_runtime_status();
                 return;
               }
               if (confirmation.is_error()) {
@@ -1255,6 +1260,7 @@ public:
               const auto existing = confirmation.get<dpp::slashcommand_map>();
               if (dpp_adapter_detail::commands_match(existing, desired)) {
                 static_cast<void>(registration_.catalog_fetched(true, true));
+                emit_runtime_status();
                 diagnostics_.emit({DiagnosticSeverity::info,
                                    "discord.commands",
                                    "Guild command catalog is synchronized.",
@@ -1272,6 +1278,7 @@ public:
                     invoke_callback(callbacks, [this, &updated] {
                       if (shutdown_.load() || !accepting_.load()) {
                         registration_.cancel();
+                        emit_runtime_status();
                         return;
                       }
                       if (updated.is_error()) {
@@ -1280,6 +1287,7 @@ public:
                         return;
                       }
                       registration_.catalog_updated(true);
+                      emit_runtime_status();
                       diagnostics_.emit({DiagnosticSeverity::info,
                                          "discord.commands",
                                          "Guild command catalog was updated.",
@@ -1298,6 +1306,7 @@ public:
   void registration_failed(const std::string_view message) noexcept {
     static_cast<void>(registration_.catalog_fetched(false, false));
     registration_.catalog_updated(false);
+    emit_runtime_status();
     diagnostics_.emit({DiagnosticSeverity::error,
                        "discord.commands",
                        std::string{message},
@@ -1328,6 +1337,14 @@ public:
     };
   }
 
+  void emit_runtime_status() noexcept {
+    try {
+      if (status_callback_)
+        status_callback_(status());
+    } catch (...) {
+    }
+  }
+
   std::shared_ptr<DppClusterHost> cluster_host_;
   dpp::cluster &bot_;
   Diagnostics &diagnostics_;
@@ -1336,6 +1353,7 @@ public:
   std::shared_ptr<CallbackFence> callbacks_;
   MessageCallback message_callback_;
   InteractionCallback interaction_callback_;
+  StatusCallback status_callback_;
   CommandCatalog command_catalog_;
   std::atomic<bool> started_{false};
   std::atomic<bool> accepting_{false};
@@ -1373,9 +1391,10 @@ DppDiscordAdapter::~DppDiscordAdapter() { shutdown(); }
 
 void DppDiscordAdapter::start(MessageCallback message_callback,
                               InteractionCallback interaction_callback,
-                              CommandCatalog command_catalog) {
+                              CommandCatalog command_catalog,
+                              StatusCallback status_callback) {
   impl_->start(std::move(message_callback), std::move(interaction_callback),
-               std::move(command_catalog));
+               std::move(command_catalog), std::move(status_callback));
 }
 
 void DppDiscordAdapter::stop_accepting() noexcept { impl_->stop_accepting(); }

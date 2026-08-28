@@ -21,6 +21,7 @@
 #include "sanguinius/retention.hpp"
 #include "sanguinius/safety_controls.hpp"
 #include "sanguinius/server_scope_policy.hpp"
+#include "sanguinius/service_notifier.hpp"
 #include "sanguinius/speech_service.hpp"
 #include "sanguinius/tarot.hpp"
 #include "sanguinius/tarot_house.hpp"
@@ -33,6 +34,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -57,6 +59,11 @@ struct ApplicationOptions {
   std::string timezone{"America/New_York"};
   std::string hostname;
   std::int64_t process_id{};
+  std::filesystem::path operations_status_file{
+      "/var/lib/sanguinius/runtime/operations-status.json"};
+  std::filesystem::path state_directory{"/var/lib/sanguinius"};
+  std::filesystem::path cache_directory{"/var/cache/sanguinius"};
+  std::filesystem::path backup_directory{"/var/backups/sanguinius"};
   std::size_t message_queue_capacity{64};
   std::size_t ai_queue_capacity{64};
   std::size_t ai_worker_count{2};
@@ -104,6 +111,7 @@ struct ApplicationDependencies {
   std::unique_ptr<TtsCache> tts_cache;
   std::unique_ptr<RuntimeFeatureControlRepository> runtime_feature_controls;
   std::unique_ptr<RetentionRepository> retention;
+  std::unique_ptr<ServiceNotifier> service_notifier{};
 };
 
 class Application {

@@ -13,10 +13,12 @@
 #include "sanguinius/message_handler.hpp"
 #include "sanguinius/outbox.hpp"
 #include "sanguinius/owner_admin.hpp"
+#include "sanguinius/reliability_test.hpp"
 #include "sanguinius/sanguinius_overview.hpp"
 #include "sanguinius/scheduler.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <mutex>
@@ -145,6 +147,9 @@ public:
         runtime_feature_controls_{
             std::move(dependencies.runtime_feature_controls)},
         retention_repository_{std::move(dependencies.retention)} {
+    service_notifier_ = std::move(dependencies.service_notifier);
+    if (!service_notifier_)
+      service_notifier_ = std::make_unique<NoopServiceNotifier>();
     if (!clock_ || !id_generator_ || !persistent_id_generator_ ||
         !diagnostics_ || !message_log_ || !application_instances_ ||
         !identities_ || !pending_notices_ || !durable_work_ || !ai_client_ ||
@@ -790,6 +795,7 @@ public:
         *durable_work_, *clock_, *persistent_id_generator_,
         options_.server_scope, [this] { scheduler_->wake(); },
         [this] { outbox_->wake(); });
+    reliability_tests_ = std::make_unique<ReliabilityTestService>();
     health_service_ = std::make_unique<HealthService>(
         options_.build, options_.controls, options_.features,
         options_.persistence,
@@ -849,6 +855,13 @@ public:
                          ? std::optional{cross_feature_orchestrator_->health()}
                          : std::nullopt;
             },
+            .operations =
+                [this] {
+                  return read_operations_health(
+                      options_.operations_status_file, options_.state_directory,
+                      options_.cache_directory, options_.backup_directory,
+                      unix_milliseconds(*clock_));
+                },
         });
     owner_admin_ = std::make_unique<OwnerAdminService>(
         options_.controls, *scope_policy_, *health_service_);
@@ -881,7 +894,10 @@ public:
         tarot_draw_service_.get(), tarot_house_service_.get(),
         tarot_integration_service_.get(), vox_service_.get(),
         vox_narration_service_.get(), voice_listening_service_.get(),
-        safety_controls_.get());
+        safety_controls_.get(),
+        [this](const std::string_view scenario) {
+          return reliability_tests_->run(scenario);
+        });
     interaction_router_ = std::make_unique<InteractionRouter>(
         *scope_policy_, options_.controls, options_.features,
         *interaction_handler_, *diagnostics_);
@@ -897,6 +913,7 @@ public:
     }
 
     try {
+      service_notifier_->status("Starting runtime components");
       const auto started_at_ms = unix_milliseconds(*clock_);
       application_instances_->record_start(ApplicationInstanceRecord{
           .instance_id = options_.instance_id,
@@ -1003,7 +1020,25 @@ public:
           command_catalog(options_.controls.admin_commands_enabled,
                           options_.features.chronicle_enabled,
                           options_.features.tarot_enabled,
-                          options_.features.vox_enabled));
+                          options_.features.vox_enabled,
+                          options_.controls.test_mode),
+          [this](const DiscordRuntimeStatus status) {
+            if (status.ready && status.command_registration ==
+                                    CommandRegistrationState::synchronized) {
+              if (!service_ready_notified_.exchange(true))
+                service_notifier_->ready(
+                    "Ready; Discord connected and commands synchronized");
+            } else if (status.command_registration ==
+                       CommandRegistrationState::failed) {
+              service_notifier_->status(
+                  "Discord connected; command synchronization failed");
+            } else if (status.ready) {
+              service_notifier_->status(
+                  "Discord connected; synchronizing commands");
+            } else {
+              service_notifier_->status("Waiting for Discord readiness");
+            }
+          });
       const std::scoped_lock lock{state_mutex_};
       state_ = ApplicationState::running;
     } catch (...) {
@@ -1027,6 +1062,7 @@ public:
       state_ = ApplicationState::stopping;
     }
 
+    service_notifier_->stopping();
     stop_components();
     finish_instance(ApplicationStopReason::clean_shutdown);
 
@@ -1147,6 +1183,8 @@ private:
   std::unique_ptr<TtsCache> tts_cache_;
   std::unique_ptr<RuntimeFeatureControlRepository> runtime_feature_controls_;
   std::unique_ptr<RetentionRepository> retention_repository_;
+  std::unique_ptr<ServiceNotifier> service_notifier_;
+  std::atomic<bool> service_ready_notified_{false};
   std::unique_ptr<AiResponder> ai_responder_;
   std::unique_ptr<AiWorkService> ai_work_;
   std::unique_ptr<ServerScopePolicy> scope_policy_;
@@ -1172,6 +1210,7 @@ private:
   std::unique_ptr<SafetyControlService> safety_controls_;
   std::unique_ptr<RetentionService> retention_service_;
   std::unique_ptr<CrossFeatureOrchestrator> cross_feature_orchestrator_;
+  std::unique_ptr<ReliabilityTestService> reliability_tests_;
   std::unique_ptr<MessageObservationPipeline> message_observation_pipeline_;
   std::unique_ptr<SchedulerService> scheduler_;
   std::unique_ptr<DurableWorkControlService> durable_controls_;

@@ -153,6 +153,22 @@ bool DurableWorkControlService::queue_test_public_retry(
   return created;
 }
 
+bool DurableWorkControlService::record_reliability_test(
+    const IncomingInteraction &interaction, const std::string_view scenario) {
+  require_scoped_owner_interaction(interaction, scope_);
+  if (scenario != "text-timeout" && scenario != "ai-saturation" &&
+      scenario != "discord-unknown") {
+    throw std::invalid_argument{"Reliability test scenario is invalid."};
+  }
+  const auto current = now_ms(clock_);
+  auto event = control_event(
+      interaction, "owner.reliability_test_passed.v1",
+      "reliability-test:" + std::string{scenario} + ":event", current);
+  event.payload_json =
+      "{\"scenario\":\"" + std::string{scenario} + "\",\"result\":\"passed\"}";
+  return repository_.append_event(event);
+}
+
 std::vector<WorkInspectionEntry> DurableWorkControlService::recent() const {
   return repository_.recent(10);
 }

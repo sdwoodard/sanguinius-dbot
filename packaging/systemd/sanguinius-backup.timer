@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily verified Sanguinius backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 UTC
+Persistent=true
+RandomizedDelaySec=15m
+FixedRandomDelay=true
+AccuracySec=1m
+Unit=sanguinius-backup.service
+
+[Install]
+WantedBy=timers.target

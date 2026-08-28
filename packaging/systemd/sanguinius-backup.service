@@ -1,0 +1,46 @@
+[Unit]
+Description=Verified online Sanguinius backup
+After=local-fs.target
+ConditionFileIsExecutable=/opt/sanguinius/current/libexec/sanguinius-backup.bash
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+EnvironmentFile=/etc/sanguinius/sanguinius.env
+ExecStart=/opt/sanguinius/current/libexec/sanguinius-backup.bash rolling
+TimeoutStartSec=900
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/sanguinius /var/backups/sanguinius
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX
+LimitCORE=0
+LimitNOFILE=256
+MemoryMax=256M
+TasksMax=16
+
+[Install]
+WantedBy=multi-user.target

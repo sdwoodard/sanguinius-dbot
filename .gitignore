@@ -3,6 +3,7 @@
 /build-*/
 /CMakeFiles/
 /bin/
+/dist/
 compile_commands.json
 *.o
 *.a

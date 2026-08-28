@@ -37,6 +37,17 @@ constexpr std::size_t maximum_build_metadata_size = 128;
   return result;
 }
 
+[[nodiscard]] std::string health_revision(const std::string_view value) {
+  if (value.size() == 40U &&
+      std::ranges::all_of(value, [](const char character) {
+        return (character >= '0' && character <= '9') ||
+               (character >= 'a' && character <= 'f');
+      })) {
+    return std::string{value.substr(0, 12U)};
+  }
+  return safe_build_metadata(value);
+}
+
 [[nodiscard]] const char *enabled(const bool value) noexcept {
   return value ? "enabled" : "disabled";
 }
@@ -102,6 +113,8 @@ HealthSnapshot HealthService::snapshot(const QueueSnapshot message_queue,
           runtime_.voice_input ? runtime_.voice_input() : std::nullopt,
       .cross_feature =
           runtime_.cross_feature ? runtime_.cross_feature() : std::nullopt,
+      .operations =
+          runtime_.operations ? runtime_.operations() : OperationsHealth{},
       .scope_matched = scope_matched,
   };
 }
@@ -110,7 +123,8 @@ std::string render_health(const HealthSnapshot &snapshot) {
   std::ostringstream output;
   output << "Sanguinius health\n"
          << "version=" << safe_build_metadata(snapshot.build.version) << '\n'
-         << "revision=" << safe_build_metadata(snapshot.build.revision) << '\n'
+         << "revision=" << health_revision(snapshot.build.revision) << '\n'
+         << "release=" << safe_build_metadata(snapshot.build.release_id) << '\n'
          << "scope=" << (snapshot.scope_matched ? "matched" : "rejected")
          << '\n'
          << "database=" << (snapshot.persistence.ready ? "ready" : "failed")
@@ -118,9 +132,7 @@ std::string render_health(const HealthSnapshot &snapshot) {
          << "schema=" << snapshot.persistence.schema_version << '/'
          << snapshot.persistence.target_schema_version << '\n'
          << "sqlite="
-         << safe_build_metadata(snapshot.persistence.sqlite_version) << '\n'
-         << "instance=" << safe_build_metadata(snapshot.persistence.instance_id)
-         << '\n';
+         << safe_build_metadata(snapshot.persistence.sqlite_version) << '\n';
   append_queue(output, "message", snapshot.message_queue);
   append_queue(output, "ai", snapshot.ai_queue);
   if (snapshot.interaction_queue.capacity != 0) {
@@ -132,12 +144,66 @@ std::string render_health(const HealthSnapshot &snapshot) {
   if (snapshot.outbox_queue.capacity != 0) {
     append_queue(output, "outbox", snapshot.outbox_queue);
   }
-  output << "discord_ready=" << enabled(snapshot.discord.ready) << '\n'
-         << "command_catalog=" << snapshot.discord.command_catalog_version
+  output
+      << "discord_ready=" << enabled(snapshot.discord.ready) << '\n'
+      << "command_catalog=" << snapshot.discord.command_catalog_version << '\n'
+      << "command_registration="
+      << command_registration_state_name(snapshot.discord.command_registration)
+      << '\n'
+      << "systemd_readiness="
+      << (snapshot.discord.ready && snapshot.discord.command_registration ==
+                                        CommandRegistrationState::synchronized
+              ? "ready"
+          : snapshot.discord.command_registration ==
+                  CommandRegistrationState::failed
+              ? "failed"
+              : "waiting")
+      << '\n'
+      << "operations_status="
+      << (snapshot.operations.status_available
+              ? safe_build_metadata(snapshot.operations.operation_result)
+              : "unavailable")
+      << '\n';
+  if (snapshot.operations.status_age_seconds) {
+    output << "operations_status_age_seconds="
+           << *snapshot.operations.status_age_seconds << '\n';
+  }
+  if (snapshot.operations.status_available ||
+      snapshot.operations.backup_age_seconds ||
+      snapshot.operations.backup_schema) {
+    output << "backup_result="
+           << safe_build_metadata(snapshot.operations.backup_result) << '\n';
+  }
+  if (snapshot.operations.backup_age_seconds) {
+    output << "backup_age_seconds=" << *snapshot.operations.backup_age_seconds
+           << '\n';
+  }
+  if (snapshot.operations.backup_schema) {
+    output << "backup_schema=" << *snapshot.operations.backup_schema << '\n';
+  }
+  const auto append_disk = [&output](const char *name,
+                                     const std::optional<bool> warning) {
+    output << name
+           << "_disk=" << (warning ? (*warning ? "warning" : "ok") : "unknown")
+           << '\n';
+  };
+  if (snapshot.operations.state_disk_warning)
+    append_disk("state", snapshot.operations.state_disk_warning);
+  if (snapshot.operations.cache_disk_warning)
+    append_disk("cache", snapshot.operations.cache_disk_warning);
+  if (snapshot.operations.backup_disk_warning)
+    append_disk("backup", snapshot.operations.backup_disk_warning);
+  output << "admin_commands="
+         << enabled(snapshot.controls.admin_commands_enabled) << '\n'
+         << "test_mode=" << enabled(snapshot.controls.test_mode) << '\n'
+         << "chronicle=" << enabled(snapshot.features.chronicle_enabled) << '\n'
+         << "tarot=" << enabled(snapshot.features.tarot_enabled) << '\n'
+         << "appearances="
+         << appearance_mode_name(snapshot.features.appearances_mode) << '\n'
+         << "vox=" << enabled(snapshot.features.vox_enabled) << '\n'
+         << "vox_narration=" << enabled(snapshot.features.vox_narration_enabled)
          << '\n'
-         << "command_registration="
-         << command_registration_state_name(
-                snapshot.discord.command_registration)
+         << "voice_input=" << enabled(snapshot.features.voice_input_enabled)
          << '\n'
          << "pending_notices=" << snapshot.pending_notice_count << '\n'
          << "jobs=" << snapshot.durable_work.pending_jobs << " pending, "
@@ -161,6 +227,21 @@ std::string render_health(const HealthSnapshot &snapshot) {
     output << "last_outbox_error="
            << safe_build_metadata(*snapshot.durable_work.last_outbox_error)
            << '\n';
+  }
+  if (snapshot.cross_feature) {
+    const auto &cross_feature = *snapshot.cross_feature;
+    output << "cross_feature="
+           << (cross_feature.running ? "running" : "stopped") << '\n'
+           << "cross_feature_passes=" << cross_feature.completed_passes << '\n'
+           << "cross_feature_failures=" << cross_feature.failed_consumers
+           << '\n';
+    for (const auto &consumer : cross_feature.consumers) {
+      output << "cross_feature_" << safe_build_metadata(consumer.name) << '='
+             << (consumer.degraded  ? "degraded"
+                 : consumer.backlog ? "backlogged"
+                                    : "ready")
+             << ", failures=" << consumer.failures << '\n';
+    }
   }
   if (snapshot.tarot) {
     output << "tarot_invariants=" << (snapshot.tarot->valid ? "ok" : "failed")
@@ -330,33 +411,6 @@ std::string render_health(const HealthSnapshot &snapshot) {
       output << "voice_input_last_failure="
              << safe_build_metadata(*voice.last_failure_category) << '\n';
   }
-  if (snapshot.cross_feature) {
-    const auto &cross_feature = *snapshot.cross_feature;
-    output << "cross_feature="
-           << (cross_feature.running ? "running" : "stopped") << '\n'
-           << "cross_feature_passes=" << cross_feature.completed_passes << '\n'
-           << "cross_feature_failures=" << cross_feature.failed_consumers
-           << '\n';
-    for (const auto &consumer : cross_feature.consumers) {
-      output << "cross_feature_" << safe_build_metadata(consumer.name) << '='
-             << (consumer.degraded  ? "degraded"
-                 : consumer.backlog ? "backlogged"
-                                    : "ready")
-             << ", failures=" << consumer.failures << '\n';
-    }
-  }
-  output << "admin_commands="
-         << enabled(snapshot.controls.admin_commands_enabled) << '\n'
-         << "test_mode=" << enabled(snapshot.controls.test_mode) << '\n'
-         << "chronicle=" << enabled(snapshot.features.chronicle_enabled) << '\n'
-         << "tarot=" << enabled(snapshot.features.tarot_enabled) << '\n'
-         << "appearances="
-         << appearance_mode_name(snapshot.features.appearances_mode) << '\n'
-         << "vox=" << enabled(snapshot.features.vox_enabled) << '\n'
-         << "vox_narration=" << enabled(snapshot.features.vox_narration_enabled)
-         << '\n'
-         << "voice_input=" << enabled(snapshot.features.voice_input_enabled)
-         << '\n';
   return bounded_health_message(output.str());
 }
 

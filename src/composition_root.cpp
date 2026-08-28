@@ -34,6 +34,7 @@
 #include "sanguinius/persistent_id.hpp"
 #include "sanguinius/provider_circuit.hpp"
 #include "sanguinius/random.hpp"
+#include "sanguinius/service_notifier.hpp"
 #include "sanguinius/static_speech_assets.hpp"
 #include "sanguinius/tts_cache.hpp"
 
@@ -322,6 +323,10 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .timezone = config.timezone,
           .hostname = local_hostname(),
           .process_id = static_cast<std::int64_t>(::getpid()),
+          .operations_status_file = config.paths.operations_status_file,
+          .state_directory = config.paths.database_file.parent_path(),
+          .cache_directory = config.tts.cache_directory,
+          .backup_directory = config.paths.backup_directory,
           .message_queue_capacity = 64,
           .ai_queue_capacity = 64,
           .ai_worker_count = 2,
@@ -379,6 +384,7 @@ std::unique_ptr<Application> make_application(const Config &config) {
               repository_context),
           .retention = std::make_unique<persistence::SqliteRetentionRepository>(
               repository_context),
+          .service_notifier = std::make_unique<SystemdServiceNotifier>(),
       });
 }
 
