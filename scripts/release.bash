@@ -54,6 +54,13 @@ remove_temporary_tree() {
   find -P "$path" -xdev -depth -delete
 }
 
+remove_identity_tree() {
+  local path=$1
+  [[ $path =~ ^/tmp/sanguinius-release-identity\.[A-Za-z0-9]{8}$ &&
+     -d $path && ! -L $path ]] || return 1
+  find -P "$path" -xdev -depth -delete
+}
+
 managed_payload_path() {
   case "$1" in
     bin/sanguinius|lib/libdpp.so.10.1.7|RELEASE-METADATA.json|SHARE-MANIFEST.sha256|\
@@ -214,14 +221,15 @@ verify_binary_identity() {
       return
     fi
     local identity_directory status target
-    identity_directory=$(mktemp -d "$dist/identity.XXXXXXXX") || return 1
+    identity_directory=$(mktemp -d \
+      /tmp/sanguinius-release-identity.XXXXXXXX) || return 1
     status=$(SANGUINIUS_DATABASE_FILE="$identity_directory/absent.sqlite3" \
       "$release/bin/sanguinius" db status) || {
-        remove_temporary_tree "$identity_directory"
+        remove_identity_tree "$identity_directory"
         return 1
       }
     target=$(sed -n 's/^target_schema=\([0-9][0-9]*\)$/\1/p' <<<"$status")
-    remove_temporary_tree "$identity_directory"
+    remove_identity_tree "$identity_directory"
     [[ $target == "$schema" ]]
     return
   fi

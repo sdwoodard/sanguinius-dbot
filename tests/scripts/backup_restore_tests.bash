@@ -109,6 +109,13 @@ SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
   "$repository/scripts/sanguinius-restore.bash" apply "$archive16" \
   --release "$releases/$release16" --confirm >/dev/null
 [[ $(sqlite3 "$database" 'SELECT value FROM marker;') == schema16-fixture ]]
+initial_quarantine=$(find "$runtime" -mindepth 1 -maxdepth 1 -type d \
+  -name 'quarantine-*' -print -quit)
+[[ -n $initial_quarantine &&
+   $(sqlite3 "$initial_quarantine/sanguinius.sqlite3" \
+     'SELECT value FROM marker;') == changed-before-restore ]]
+find -P "$initial_quarantine" -maxdepth 1 -type f -delete
+rmdir "$initial_quarantine"
 
 find "$backups" -maxdepth 1 -type f -name '*-manual.sqlite3.*' -delete
 sqlite3 "$database" "UPDATE marker SET value='retained-after-failure';"
