@@ -79,6 +79,40 @@ if SANGUINIUS_SCRIPT_TESTING=true "$remote" policy-payload-directory cache \
   exit 1
 fi
 
+candidate_release="$temporary/candidate-release"
+candidate_credentials="$temporary/candidate-credentials"
+mkdir -p "$candidate_release/bin" "$candidate_release/config" \
+  "$candidate_release/assets/vox" "$candidate_credentials"
+printf 'sentinel\n' >"$candidate_credentials/discord-token"
+printf 'sentinel\n' >"$candidate_credentials/openai-key"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  '[[ ${1:-} == --check-config ]]' \
+  '[[ $SANGUINIUS_TOKEN_FILE == "$CREDENTIALS_DIRECTORY/discord-token" ]]' \
+  '[[ $SANGUINIUS_OPENAI_API_KEY_FILE == "$CREDENTIALS_DIRECTORY/openai-key" ]]' \
+  '[[ -r $SANGUINIUS_TOKEN_FILE && -r $SANGUINIUS_OPENAI_API_KEY_FILE ]]' \
+  >"$candidate_release/bin/sanguinius"
+chmod 0755 "$candidate_release/bin/sanguinius"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'while (( $# )); do' \
+  '  case "$1" in' \
+  '    --unit|--uid|--gid|--working-directory) shift 2 ;;' \
+  '    --quiet|--wait|--collect|--pipe|--service-type=*|--property=*) shift ;;' \
+  '    *) break ;;' \
+  '  esac' \
+  'done' \
+  'CREDENTIALS_DIRECTORY="$SANGUINIUS_FAKE_CREDENTIAL_DIRECTORY" "$@"' \
+  >"$temporary/bin/systemd-run"
+chmod 0755 "$temporary/bin/systemd-run"
+export SANGUINIUS_FAKE_CREDENTIAL_DIRECTORY="$candidate_credentials"
+PATH="$temporary/bin:$PATH" SANGUINIUS_SCRIPT_TESTING=true \
+  SANGUINIUS_TEST_ROOT="$temporary" "$remote" policy-candidate-config \
+  "$candidate_release"
+rm "$temporary/bin/systemd-run"
+
 mkdir "$temporary/payload"
 printf '{}\n' >"$temporary/payload/RELEASE-METADATA.json"
 (cd "$temporary/payload" && sha256sum ./RELEASE-METADATA.json \

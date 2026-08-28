@@ -720,6 +720,37 @@ recover_predeployment_durable_state() {
   fi
 }
 
+run_candidate_config_check() {
+  local release=$1 unit="sanguinius-config-check-$$"
+  [[ -d $release && ! -L $release && -x $release/bin/sanguinius ]] ||
+    die "candidate configuration check release is unsafe"
+  # The credential directory is intentionally expanded by the transient shell.
+  # shellcheck disable=SC2016
+  systemd-run --quiet --wait --collect --pipe --service-type=exec \
+    --unit "$unit" --uid sanguinius --gid sanguinius \
+    --working-directory "$release" \
+    --property=NoNewPrivileges=yes --property=PrivateTmp=yes \
+    --property=ProtectHome=yes --property=ProtectSystem=strict \
+    --property=EnvironmentFile=/etc/sanguinius/sanguinius.env \
+    --property=LoadCredential=discord-token:/etc/sanguinius/bot.token \
+    --property=LoadCredential=openai-key:/etc/sanguinius/openai.key \
+    /usr/bin/bash -c '
+      set -euo pipefail
+      : "${CREDENTIALS_DIRECTORY:?}"
+      exec /usr/bin/env \
+        "SANGUINIUS_TOKEN_FILE=$CREDENTIALS_DIRECTORY/discord-token" \
+        "SANGUINIUS_OPENAI_API_KEY_FILE=$CREDENTIALS_DIRECTORY/openai-key" \
+        "$@"
+    ' candidate-config \
+    "SANGUINIUS_PERSONA_FILE=$release/config/persona.txt" \
+    "SANGUINIUS_APPEARANCE_POLICY_FILE=$release/config/appearance-policy-v2.json" \
+    "SANGUINIUS_TAROT_DECK_FILE=$release/config/emperor-tarot-v1.json" \
+    "SANGUINIUS_TAROT_HOUSE_FILE=$release/config/tarot-house-v1.json" \
+    "SANGUINIUS_TTS_FALLBACK_DIRECTORY=$release/assets/vox" \
+    "$release/bin/sanguinius" --check-config ||
+    die "candidate production configuration is invalid"
+}
+
 if [[ ${SANGUINIUS_SCRIPT_TESTING:-false} == true && $EUID -ne 0 ]]; then
   test_operation=${1:-}
   shift || true
@@ -774,6 +805,11 @@ if [[ ${SANGUINIUS_SCRIPT_TESTING:-false} == true && $EUID -ne 0 ]]; then
     policy-candidate-health)
       [[ $# -eq 1 ]] || exit 2
       candidate_service_health_verified "$1"
+      exit ;;
+    policy-candidate-config)
+      [[ $# -eq 1 && -n ${SANGUINIUS_TEST_ROOT:-} &&
+         $1 == "$SANGUINIUS_TEST_ROOT"/* ]] || exit 2
+      run_candidate_config_check "$1"
       exit ;;
     policy-atomic-link)
       [[ $# -eq 2 && -n ${SANGUINIUS_TEST_ROOT:-} &&
@@ -1223,30 +1259,6 @@ write_status() {
   chmod 0644 "$temporary"
   chown root:root "$temporary"
   mv -T "$temporary" "$runtime/operations-status.json"
-}
-
-run_candidate_config_check() {
-  local release=$1 unit="sanguinius-config-check-$$"
-  [[ -d $release && ! -L $release && -x $release/bin/sanguinius ]] ||
-    die "candidate configuration check release is unsafe"
-  systemd-run --quiet --wait --collect --pipe --service-type=exec \
-    --unit "$unit" --uid sanguinius --gid sanguinius \
-    --working-directory "$release" \
-    --property=NoNewPrivileges=yes --property=PrivateTmp=yes \
-    --property=ProtectHome=yes --property=ProtectSystem=strict \
-    --property=EnvironmentFile=/etc/sanguinius/sanguinius.env \
-    --property=LoadCredential=discord-token:/etc/sanguinius/bot.token \
-    --property=LoadCredential=openai-key:/etc/sanguinius/openai.key \
-    /usr/bin/env \
-    'SANGUINIUS_TOKEN_FILE=%d/discord-token' \
-    'SANGUINIUS_OPENAI_API_KEY_FILE=%d/openai-key' \
-    "SANGUINIUS_PERSONA_FILE=$release/config/persona.txt" \
-    "SANGUINIUS_APPEARANCE_POLICY_FILE=$release/config/appearance-policy-v2.json" \
-    "SANGUINIUS_TAROT_DECK_FILE=$release/config/emperor-tarot-v1.json" \
-    "SANGUINIUS_TAROT_HOUSE_FILE=$release/config/tarot-house-v1.json" \
-    "SANGUINIUS_TTS_FALLBACK_DIRECTORY=$release/assets/vox" \
-    "$release/bin/sanguinius" --check-config ||
-    die "candidate production configuration is invalid"
 }
 
 select_release_for_schema() {
