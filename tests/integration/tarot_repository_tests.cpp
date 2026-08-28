@@ -1316,7 +1316,7 @@ TEST_CASE("Rejected Tarot admin mutations replay after balances change",
 }
 
 TEST_CASE("mixed Tarot property sequences preserve the reference ledger model",
-          "[tarot][property][recovery][reversal][idempotency]") {
+          "[tarot][property][recovery][reversal][idempotency][bounded-long]") {
   struct ReversibleTransaction {
     std::string transaction_id;
     std::int64_t human_amount{};

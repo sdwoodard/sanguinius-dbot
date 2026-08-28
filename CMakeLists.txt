@@ -336,6 +336,9 @@ if(BUILD_TESTING)
     set(SANGUINIUS_MIGRATION_MATRIX_TIMEOUT_SECONDS 30 CACHE STRING
         "Bounded timeout for the complete accepted-schema upgrade matrix"
     )
+    set(SANGUINIUS_PROPERTY_SEQUENCE_TIMEOUT_SECONDS 30 CACHE STRING
+        "Bounded timeout for the deterministic mixed-domain property sequence"
+    )
 
     function(add_sanguinius_test target)
         add_executable(${target} ${ARGN})
@@ -418,7 +421,7 @@ if(BUILD_TESTING)
         Catch2::Catch2WithMain
     )
     catch_discover_tests(sanguinius_persistence_tests
-        TEST_SPEC "~[upgrade-matrix]"
+        TEST_SPEC "~[upgrade-matrix]~[bounded-long]"
         PROPERTIES TIMEOUT ${SANGUINIUS_TEST_CASE_TIMEOUT_SECONDS}
     )
     add_test(
@@ -428,6 +431,14 @@ if(BUILD_TESTING)
     set_tests_properties(
         "production migration upgrades every accepted prior schema to version sixteen"
         PROPERTIES TIMEOUT ${SANGUINIUS_MIGRATION_MATRIX_TIMEOUT_SECONDS}
+    )
+    add_test(
+        NAME "mixed Tarot property sequences preserve the reference ledger model"
+        COMMAND "$<TARGET_FILE:sanguinius_persistence_tests>" "[bounded-long]"
+    )
+    set_tests_properties(
+        "mixed Tarot property sequences preserve the reference ledger model"
+        PROPERTIES TIMEOUT ${SANGUINIUS_PROPERTY_SEQUENCE_TIMEOUT_SECONDS}
     )
 
     add_executable(sanguinius_runtime_tests
