@@ -113,6 +113,27 @@ TEST_CASE("DPP translates Chronicle context commands and typed options",
   REQUIRE(title_list->options[0].type == dpp::co_user);
 }
 
+TEST_CASE("DPP serializes modal text inputs as direct Label children",
+          "[discord][modal][serialization]") {
+  const auto payload = sanguinius::ChronicleService::edit_entry_modal(
+      "00000000-0000-4000-8000-000000000001");
+  const auto response = nlohmann::json::parse(
+      sanguinius::dpp_adapter_detail::modal_response_json(payload));
+
+  REQUIRE(response.at("type") == dpp::ir_modal_dialog);
+  const auto &components = response.at("data").at("components");
+  REQUIRE(components.size() == payload.fields.size());
+  for (std::size_t index{}; index < payload.fields.size(); ++index) {
+    const auto &label = components.at(index);
+    REQUIRE(label.at("type") == dpp::cot_label);
+    REQUIRE(label.at("label") == payload.fields.at(index).label);
+    REQUIRE(label.at("component").at("type") == dpp::cot_text);
+    REQUIRE(label.at("component").at("custom_id") ==
+            payload.fields.at(index).custom_id);
+    REQUIRE_FALSE(label.at("component").contains("components"));
+  }
+}
+
 TEST_CASE("DPP translates owner appearance controls as one nested group",
           "[discord][commands][appearance]") {
   const auto translated =

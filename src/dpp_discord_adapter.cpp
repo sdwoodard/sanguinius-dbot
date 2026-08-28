@@ -216,9 +216,11 @@ discord_modal(const ModalPayload &source) {
         .set_min_length(static_cast<std::uint32_t>(source_field.minimum_length))
         .set_max_length(static_cast<std::uint32_t>(source_field.maximum_length))
         .set_required(source_field.required);
-    dpp::component row;
-    row.set_type(dpp::cot_action_row).add_component(field);
-    modal.add_component(row);
+    // D++ 10.1.7 serializes each component added to a modal inside Discord's
+    // top-level Label component. Supplying an Action Row here makes D++ wrap
+    // that row as the Label child, which Discord rejects because a Label must
+    // directly contain an interactive modal component.
+    modal.add_component(field);
   }
   return modal;
 }
@@ -683,6 +685,10 @@ DeliveryResult dpp_adapter_detail::classify_http_delivery(
     return DeliveryResult::transient_failure;
   }
   return DeliveryResult::permanent_failure;
+}
+
+std::string dpp_adapter_detail::modal_response_json(const ModalPayload &modal) {
+  return discord_modal(modal).build_json();
 }
 
 DiscordId dpp_adapter_detail::provider_message_id(const dpp::message &message) {

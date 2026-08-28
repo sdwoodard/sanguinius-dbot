@@ -25,6 +25,7 @@ durable_public_message_json(const PublicMessageRequest &request,
 [[nodiscard]] DeliveryResult
 classify_http_delivery(bool succeeded, int http_status,
                        bool transport_failed) noexcept;
+[[nodiscard]] std::string modal_response_json(const ModalPayload &modal);
 [[nodiscard]] DiscordId provider_message_id(const dpp::message &message);
 [[nodiscard]] ContextMessageSnapshot
 context_message_snapshot(const dpp::message &message);
