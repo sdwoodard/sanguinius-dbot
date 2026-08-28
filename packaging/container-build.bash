@@ -78,9 +78,11 @@ cmake -S /src -B /tmp/sanguinius-build -G Ninja \
   -DSANGUINIUS_REVISION_OVERRIDE="${SANGUINIUS_REVISION}" \
   "${release_metadata_options[@]}"
 cmake --build /tmp/sanguinius-build --parallel 2
-install -d /tmp/sanguinius-build/config /tmp/sanguinius-build/assets
+install -d /tmp/sanguinius-build/config /tmp/sanguinius-build/assets \
+  /tmp/sanguinius-build/tests/fixtures
 cp -a /src/config/. /tmp/sanguinius-build/config/
 cp -a /src/assets/. /tmp/sanguinius-build/assets/
+cp -a /src/tests/fixtures/. /tmp/sanguinius-build/tests/fixtures/
 ctest --test-dir /tmp/sanguinius-build --output-on-failure --timeout 120
 
 offline_root=$(mktemp -d /tmp/sanguinius-offline-self-check.XXXXXXXX)
