@@ -8,6 +8,8 @@
 #include <sqlite3.h>
 
 #include <chrono>
+#include <fstream>
+#include <string>
 #include <type_traits>
 
 namespace {
@@ -255,6 +257,37 @@ TEST_CASE("runtime shared lock excludes migration but permits inspection",
   REQUIRE_NOTHROW(Database::open_inspection(temporary.path(), 25ms));
 }
 
+TEST_CASE("database locks correct non-private permissions", "[sqlite][lock]") {
+  sanguinius::test::TemporaryDatabase temporary;
+  {
+    auto migration = Database::open_migration(temporary.path(), 25ms);
+    sanguinius::persistence::enable_wal_mode(migration.connection());
+  }
+  const auto lock = std::filesystem::path{temporary.path().string() + ".lock"};
+  std::filesystem::permissions(lock,
+                               std::filesystem::perms::owner_all |
+                                   std::filesystem::perms::group_all |
+                                   std::filesystem::perms::others_all,
+                               std::filesystem::perm_options::replace);
+
+  {
+    auto inspection = Database::open_inspection(temporary.path(), 25ms);
+    static_cast<void>(inspection);
+  }
+
+  const auto permissions = std::filesystem::status(lock).permissions();
+  REQUIRE((permissions & std::filesystem::perms::owner_read) !=
+          std::filesystem::perms::none);
+  REQUIRE((permissions & std::filesystem::perms::owner_write) !=
+          std::filesystem::perms::none);
+  REQUIRE((permissions & std::filesystem::perms::owner_exec) ==
+          std::filesystem::perms::none);
+  REQUIRE((permissions & std::filesystem::perms::group_all) ==
+          std::filesystem::perms::none);
+  REQUIRE((permissions & std::filesystem::perms::others_all) ==
+          std::filesystem::perms::none);
+}
+
 TEST_CASE("database locks use canonical paths and reject hard-link aliases",
           "[sqlite][lock]") {
   SECTION("a symlink and its target share one sidecar lock") {
@@ -292,5 +325,71 @@ TEST_CASE("database locks use canonical paths and reject hard-link aliases",
     } catch (const DatabaseError &error) {
       REQUIRE(error.category() == DatabaseErrorCategory::incompatible);
     }
+  }
+
+  SECTION("a symbolic lock file is rejected without touching its target") {
+    sanguinius::test::TemporaryDatabase temporary;
+    {
+      auto migration = Database::open_migration(temporary.path(), 25ms);
+      sanguinius::persistence::enable_wal_mode(migration.connection());
+    }
+    const auto lock = temporary.path().string() + ".lock";
+    const auto target = temporary.root() / "lock-target";
+    std::filesystem::remove(lock);
+    {
+      std::ofstream output{target};
+      output << "untouched";
+    }
+    std::filesystem::permissions(target,
+                                 std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write |
+                                     std::filesystem::perms::group_read |
+                                     std::filesystem::perms::others_read,
+                                 std::filesystem::perm_options::replace);
+    const auto original_permissions =
+        std::filesystem::status(target).permissions();
+    std::filesystem::create_symlink(target, lock);
+
+    REQUIRE_THROWS_AS(Database::open_inspection(temporary.path(), 25ms),
+                      DatabaseError);
+    REQUIRE(std::filesystem::status(target).permissions() ==
+            original_permissions);
+    std::ifstream input{target};
+    std::string content;
+    input >> content;
+    REQUIRE(content == "untouched");
+  }
+
+  SECTION("a hard-linked lock file is rejected without touching its target") {
+    sanguinius::test::TemporaryDatabase temporary;
+    {
+      auto migration = Database::open_migration(temporary.path(), 25ms);
+      sanguinius::persistence::enable_wal_mode(migration.connection());
+    }
+    const auto lock = temporary.path().string() + ".lock";
+    const auto target = temporary.root() / "lock-target";
+    std::filesystem::remove(lock);
+    {
+      std::ofstream output{target};
+      output << "untouched";
+    }
+    std::filesystem::permissions(target,
+                                 std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write |
+                                     std::filesystem::perms::group_read |
+                                     std::filesystem::perms::others_read,
+                                 std::filesystem::perm_options::replace);
+    const auto original_permissions =
+        std::filesystem::status(target).permissions();
+    std::filesystem::create_hard_link(target, lock);
+
+    REQUIRE_THROWS_AS(Database::open_inspection(temporary.path(), 25ms),
+                      DatabaseError);
+    REQUIRE(std::filesystem::status(target).permissions() ==
+            original_permissions);
+    std::ifstream input{target};
+    std::string content;
+    input >> content;
+    REQUIRE(content == "untouched");
   }
 }

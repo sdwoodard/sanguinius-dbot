@@ -84,13 +84,26 @@ metadata_revision=$(sed -n 's/.*"revision":"\([0-9a-f]\{40\}\)".*/\1/p' \
   <<<"$metadata")
 metadata_release=$(sed -n 's/.*"release_id":"\([A-Za-z0-9._+-]*\)".*/\1/p' \
   <<<"$metadata")
+metadata_deployment=$(sed -n \
+  's/.*"deployment_id":"\([A-Za-z0-9._+-]*\)".*/\1/p' <<<"$metadata")
+metadata_has_deployment=true
+if [[ -z $metadata_deployment ]]; then
+  metadata_deployment=$metadata_release
+  metadata_has_deployment=false
+fi
 evidence="${archive%.tar.zst}.test-evidence.json"
 [[ -f $evidence && ! -L $evidence ]] || {
   echo "Matching container test evidence is missing." >&2
   exit 1
 }
 archive_sha=$(sha256sum "$archive" | awk '{print $1}')
-if ! grep -Fq '"revision":"'"$metadata_revision"'"' "$evidence" ||
+deployment_evidence_matches=true
+if [[ $metadata_has_deployment == true ]] &&
+   ! grep -Fq '"deployment_id":"'"$metadata_deployment"'"' "$evidence"; then
+  deployment_evidence_matches=false
+fi
+if [[ $deployment_evidence_matches != true ]] ||
+   ! grep -Fq '"revision":"'"$metadata_revision"'"' "$evidence" ||
    ! grep -Fq '"release_id":"'"$metadata_release"'"' "$evidence" ||
    ! grep -Fq '"archive_sha256":"'"$archive_sha"'"' "$evidence" ||
    ! grep -Fq '"container_release_build":"passed"' "$evidence" ||

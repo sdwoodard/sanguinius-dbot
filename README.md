@@ -775,6 +775,17 @@ reopened read-only, and checked for both database integrity and foreign-key
 violations before success is reported. Backup output is mode `0600`; keep its
 parent directory restricted as well.
 
+Database locking opens the adjacent `.lock` file with no symbolic-link
+following and accepts only a single-link regular file before taking `flock`.
+It corrects the mode only when it is not already `0600`, so a restricted root
+backup does not need permission to change the service-owned file's metadata.
+Production deployment, backup, and restore helpers apply the
+same fail-closed type/link-count checks to the database and any `.lock`, `-wal`,
+`-shm`, or `-journal` companion before privileged access or mutation. Bootstrap
+and deploy also transfer every present companion to the service account and
+verify its owner and mode before declaring or reconciling the legacy-state
+handoff.
+
 ## Build and run
 
 ```bash
@@ -913,14 +924,32 @@ deterministic safety checks.
 Milestone 19 packages clean commits in a digest-pinned Arch builder with an
 x86-64-v3 ceiling. `scripts/release.bash image` prepares the rootless Podman
 image; `package` runs its Release tests and creates a deterministic immutable
-`dist/sanguinius-<release-id>.tar.zst` plus an external SHA-256 file. The
+`dist/sanguinius-<deployment-id>.tar.zst` plus an external SHA-256 file. The
 archive contains release metadata, a complete payload manifest, the executable,
 only `libdpp.so.10.1.7`, fixed configuration/assets/migrations, systemd files,
 and the backup/restore helpers. `--version --json` reports only safe build,
 schema, and command-catalog identity.
 
+`scripts/release.bash label --deployment-label rollback-drill` derives a
+distinct immutable deployment tree from the already verified archive without a
+second build or any change to the canonical release identity compiled into the
+executable, so the required same-revision drill uses identical binary bytes.
+Daily backups execute through `/opt/sanguinius/operations`, a stable
+schema-16 helper pointer that remains valid when `current` selects the legacy
+schema-13 compatibility release. The root backup unit retains only
+`CAP_DAC_OVERRIDE` so it can open the service-owned database; the bot units
+retain no capabilities. Rolling retention counts only complete managed triples,
+and release retention counts only directories with matching release metadata.
+Deployment publishes its authoritative rollback backup only after stopping the
+service and proving exclusive database ownership, then repeats the exact
+migration/restore rehearsal against that snapshot. Interrupted retention stages
+are validated and conservatively recovered by the next lock-holding backup.
+
 The production service is `Type=notify` and reaches READY only after Discord
-READY and successful/no-op guild command synchronization. The fixed layout,
+READY and successful/no-op guild command synchronization. Deployment publishes
+the stable operations helper before candidate startup, rejects any restart or
+main-PID mismatch during post-READY finalization, and completes exact release
+retention only after rollback-sensitive work commits. The fixed layout,
 atomic SSH deployment, daily verified online backup, migration-aware rollback,
 restore quarantine, resource ceilings, and final safety flags are documented in
 [`docs/OPERATIONS.md`](docs/OPERATIONS.md). Never place credentials, databases,

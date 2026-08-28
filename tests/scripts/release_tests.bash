@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016
 set -euo pipefail
 
 repository=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
@@ -14,6 +15,19 @@ trap cleanup EXIT
 for script in "$release_tool" "$repository/packaging/container-build.bash"; do
   bash -n "$script"
 done
+
+SANGUINIUS_SCRIPT_TESTING=true "$release_tool" policy-source-identity \
+  "$repository" 2.2.0 16 16
+if SANGUINIUS_SCRIPT_TESTING=true "$release_tool" policy-source-identity \
+    "$repository" 2.2.0 15 16 >/dev/null 2>&1; then
+  echo "release source identity accepted a conflicting schema target" >&2
+  exit 1
+fi
+if SANGUINIUS_SCRIPT_TESTING=true "$release_tool" policy-source-identity \
+    "$repository" 2.2.0 16 15 >/dev/null 2>&1; then
+  echo "release source identity accepted a conflicting command catalog" >&2
+  exit 1
+fi
 
 for path in bin/sanguinius lib/libdpp.so.10.1.7 \
             config/persona.txt migrations/0016_cross_feature_reliability.sql \
@@ -67,19 +81,47 @@ identity="$temporary/identity"
 mkdir -p "$identity/bin"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
-  'printf '\''{"release_id":"test-release","version":"2.2.0","revision":"0123456789abcdef0123456789abcdef01234567","schema_target":16,"command_catalog_version":16}\n'\''' \
+  'if [[ ${1:-} == --version ]]; then' \
+  '  [[ ! -f $(dirname "$0")/../legacy-compat ]] || exit 2' \
+  '  printf '\''{"release_id":"test-release","version":"2.2.0","revision":"0123456789abcdef0123456789abcdef01234567","schema_target":16,"command_catalog_version":16}\n'\''' \
+  'elif [[ ${1:-} == db && ${2:-} == status ]]; then' \
+  '  printf '\''database=absent\ncurrent_schema=0\ntarget_schema=13\npending_migrations=13\nsqlite=test\n'\''' \
+  'else' \
+  '  exit 2' \
+  'fi' \
   >"$identity/bin/sanguinius"
 chmod 0755 "$identity/bin/sanguinius"
 printf '%s\n' \
-  '{"release_id":"test-release","version":"2.2.0","revision":"0123456789abcdef0123456789abcdef01234567","schema_target":16,"command_catalog_version":16,"compatibility_release":false}' \
+  '{"release_id":"test-release","deployment_id":"test-release","version":"2.2.0","revision":"0123456789abcdef0123456789abcdef01234567","schema_target":16,"command_catalog_version":16,"compatibility_release":false}' \
   >"$identity/RELEASE-METADATA.json"
 SANGUINIUS_SCRIPT_TESTING=true "$release_tool" policy-binary-identity \
   "$identity"
+binary_sha=$(sha256sum "$identity/bin/sanguinius" | awk '{print $1}')
+SANGUINIUS_SCRIPT_TESTING=true "$release_tool" policy-relabel-tree \
+  "$identity" rollback-drill >/dev/null
+grep -Fq '"deployment_id":"test-release+rollback-drill"' \
+  "$identity/RELEASE-METADATA.json"
+SANGUINIUS_SCRIPT_TESTING=true "$release_tool" policy-binary-identity \
+  "$identity"
+[[ $(sha256sum "$identity/bin/sanguinius" | awk '{print $1}') == "$binary_sha" ]]
 sed -i 's/"schema_target":16/"schema_target":15/' \
   "$identity/RELEASE-METADATA.json"
 if SANGUINIUS_SCRIPT_TESTING=true "$release_tool" policy-binary-identity \
     "$identity" >/dev/null 2>&1; then
   echo "release identity policy accepted conflicting metadata" >&2
+  exit 1
+fi
+
+sed -i 's/"schema_target":15/"schema_target":13/; s/"compatibility_release":false/"compatibility_release":true/' \
+  "$identity/RELEASE-METADATA.json"
+touch "$identity/legacy-compat"
+SANGUINIUS_SCRIPT_TESTING=true "$release_tool" policy-binary-identity \
+  "$identity"
+sed -i 's/"schema_target":13/"schema_target":12/' \
+  "$identity/RELEASE-METADATA.json"
+if SANGUINIUS_SCRIPT_TESTING=true "$release_tool" policy-binary-identity \
+    "$identity" >/dev/null 2>&1; then
+  echo "compatibility identity accepted a conflicting schema target" >&2
   exit 1
 fi
 

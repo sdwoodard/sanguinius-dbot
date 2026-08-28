@@ -6,6 +6,9 @@ set -euo pipefail
 : "${SANGUINIUS_BUILD_TIMESTAMP:?build timestamp is required}"
 : "${SANGUINIUS_TOOLCHAIN_ID:?toolchain identity is required}"
 : "${SANGUINIUS_COMPATIBILITY_RELEASE:?compatibility release flag is required}"
+: "${SANGUINIUS_EXPECTED_VERSION:?expected version is required}"
+: "${SANGUINIUS_EXPECTED_SCHEMA_TARGET:?expected schema target is required}"
+: "${SANGUINIUS_EXPECTED_COMMAND_CATALOG:?expected command catalog is required}"
 : "${SOURCE_DATE_EPOCH:?source date epoch is required}"
 
 [[ $SANGUINIUS_COMPATIBILITY_RELEASE == true ||
@@ -14,6 +17,21 @@ set -euo pipefail
 test -d /src
 test -d /out
 test ! -e /out/stage
+
+source_version=$(sed -n \
+  's/^[[:space:]]*project(sanguinius VERSION \([0-9][0-9.]*\) LANGUAGES CXX)[[:space:]]*$/\1/p' \
+  /src/CMakeLists.txt)
+source_schema_text=$(sed -n \
+  's@.*migrations/\([0-9][0-9][0-9][0-9]\)_.*@\1@p' \
+  /src/CMakeLists.txt | LC_ALL=C sort | tail -n1)
+source_catalog=$(sed -n \
+  's/^[[:space:]]*inline constexpr std::uint32_t command_catalog_version = \([0-9][0-9]*\);[[:space:]]*$/\1/p' \
+  /src/include/sanguinius/command_registry.hpp)
+[[ $source_schema_text =~ ^[0-9]{4}$ ]]
+source_schema=$((10#$source_schema_text))
+[[ $source_version == "$SANGUINIUS_EXPECTED_VERSION" &&
+   $source_schema == "$SANGUINIUS_EXPECTED_SCHEMA_TARGET" &&
+   $source_catalog == "$SANGUINIUS_EXPECTED_COMMAND_CATALOG" ]]
 
 mapfile -d '' shell_scripts < <(
   find /opt/sanguinius-release-support -type f -name '*.bash' -print0
@@ -34,12 +52,15 @@ trap cleanup_systemd_root EXIT
 install -d "$systemd_root/etc/systemd/system" \
   "$systemd_root/opt/sanguinius/current/bin" \
   "$systemd_root/opt/sanguinius/current/libexec" \
+  "$systemd_root/opt/sanguinius/operations/libexec" \
   "$systemd_root/etc/sanguinius"
 install -D -m 0755 /usr/bin/env "$systemd_root/usr/bin/env"
 install -m 0755 /usr/bin/true \
   "$systemd_root/opt/sanguinius/current/bin/sanguinius"
 install -m 0755 /usr/bin/true \
   "$systemd_root/opt/sanguinius/current/libexec/sanguinius-backup.bash"
+install -m 0755 /usr/bin/true \
+  "$systemd_root/opt/sanguinius/operations/libexec/sanguinius-backup.bash"
 install -m 0644 /opt/sanguinius-release-support/packaging/systemd/* \
   "$systemd_root/etc/systemd/system/"
 touch "$systemd_root/etc/sanguinius/sanguinius.env" \
@@ -138,8 +159,23 @@ offline_environment=(
   SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED=false
   SANGUINIUS_TRANSCRIPTION_PROVIDER=disabled
 )
-env "${offline_environment[@]}" /tmp/sanguinius-build/sanguinius \
-  --check-config >/dev/null
+config_identity=$(env "${offline_environment[@]}" \
+  /tmp/sanguinius-build/sanguinius --check-config)
+grep -Fqx "version=$SANGUINIUS_EXPECTED_VERSION" <<<"$config_identity"
+grep -Fqx "revision=$SANGUINIUS_REVISION" <<<"$config_identity"
+status_identity=$(SANGUINIUS_DATABASE_FILE="$offline_database" \
+  /tmp/sanguinius-build/sanguinius db status)
+grep -Fqx "target_schema=$SANGUINIUS_EXPECTED_SCHEMA_TARGET" \
+  <<<"$status_identity"
+if [[ $SANGUINIUS_COMPATIBILITY_RELEASE == true ]] &&
+   version_identity=$(/tmp/sanguinius-build/sanguinius --version --json \
+     2>/dev/null); then
+  [[ $version_identity == *'"release_id":"'"$SANGUINIUS_RELEASE_ID"'"'* &&
+     $version_identity == *'"version":"'"$SANGUINIUS_EXPECTED_VERSION"'"'* &&
+     $version_identity == *'"revision":"'"$SANGUINIUS_REVISION"'"'* &&
+     $version_identity == *'"schema_target":'"$SANGUINIUS_EXPECTED_SCHEMA_TARGET"* &&
+     $version_identity == *'"command_catalog_version":'"$SANGUINIUS_EXPECTED_COMMAND_CATALOG"* ]]
+fi
 set +e
 timeout --signal=TERM --kill-after=10s 5s \
   env "${offline_environment[@]}" /tmp/sanguinius-build/sanguinius \

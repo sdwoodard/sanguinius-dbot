@@ -26,6 +26,10 @@ constexpr int maximum_like_pattern = 4096;
 constexpr int maximum_trigger_depth = 32;
 constexpr int maximum_attached = 0;
 constexpr int maximum_worker_threads = 0;
+constexpr mode_t private_lock_permissions =
+    static_cast<mode_t>(S_IRUSR | S_IWUSR);
+constexpr mode_t permission_bits =
+    static_cast<mode_t>(S_IRWXU | S_IRWXG | S_IRWXO);
 
 [[nodiscard]] std::filesystem::path
 lock_path(const std::filesystem::path &database_path) {
@@ -157,13 +161,23 @@ DatabaseFileLock
 DatabaseFileLock::acquire(const std::filesystem::path &database_path,
                           const DatabaseLockMode mode) {
   const auto native_path = lock_path(database_path).string();
-  const int descriptor = ::open(
-      native_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR);
+  const int descriptor =
+      ::open(native_path.c_str(),
+             O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
+             private_lock_permissions);
   if (descriptor < 0) {
     throw DatabaseError{DatabaseErrorCategory::io, SQLITE_CANTOPEN,
                         SQLITE_CANTOPEN, "Database lock open failed (io)."};
   }
-  if (::fchmod(descriptor, S_IRUSR | S_IWUSR) != 0) {
+  struct stat status{};
+  if (::fstat(descriptor, &status) != 0 || !S_ISREG(status.st_mode) ||
+      status.st_nlink != 1) {
+    static_cast<void>(::close(descriptor));
+    throw DatabaseError{DatabaseErrorCategory::incompatible, SQLITE_CANTOPEN,
+                        SQLITE_CANTOPEN, "Database lock file is incompatible."};
+  }
+  if ((status.st_mode & permission_bits) != private_lock_permissions &&
+      ::fchmod(descriptor, private_lock_permissions) != 0) {
     static_cast<void>(::close(descriptor));
     throw DatabaseError{DatabaseErrorCategory::io, SQLITE_IOERR, SQLITE_IOERR,
                         "Database lock permissions failed (io)."};

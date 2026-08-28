@@ -1,7 +1,7 @@
 [Unit]
 Description=Verified online Sanguinius backup
 After=local-fs.target
-ConditionFileIsExecutable=/opt/sanguinius/current/libexec/sanguinius-backup.bash
+ConditionFileIsExecutable=/opt/sanguinius/operations/libexec/sanguinius-backup.bash
 
 [Service]
 Type=oneshot
@@ -9,7 +9,7 @@ User=root
 Group=root
 UMask=0077
 EnvironmentFile=/etc/sanguinius/sanguinius.env
-ExecStart=/opt/sanguinius/current/libexec/sanguinius-backup.bash rolling
+ExecStart=/opt/sanguinius/operations/libexec/sanguinius-backup.bash rolling
 TimeoutStartSec=900
 Nice=10
 IOSchedulingClass=best-effort
@@ -31,8 +31,8 @@ RestrictSUIDSGID=yes
 RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
-CapabilityBoundingSet=
-AmbientCapabilities=
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_DAC_OVERRIDE
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM

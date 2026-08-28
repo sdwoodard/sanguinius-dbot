@@ -42,11 +42,11 @@ printf '%s\n' \
   'printf "%s %s\n" "${2:-version}" "$database" >>"$release/invocations.log"' \
   'if [[ ${1:-} == --version ]]; then printf "{\"version\":\"2.2.0\",\"revision\":\"0123456789abcdef0123456789abcdef01234567\",\"release_id\":\"%s\",\"schema_target\":%s,\"command_catalog_version\":16}\n" "$(basename "$release")" "$target"; exit; fi' \
   '[[ ${1:-} == db && -n $database ]] || exit 2' \
-  'current=$(sqlite3 "$database" "PRAGMA user_version;")' \
+  'current=$(sqlite3 "$database" "SELECT COALESCE(MAX(version),0) FROM schema_migrations;")' \
   'case ${2:-} in' \
   '  status) printf "database=current\ncurrent_schema=%s\ntarget_schema=%s\npending_migrations=%s\nsqlite=test\n" "$current" "$target" "$((target-current))" ;;' \
   '  backup) if [[ -f $release/fail-backup ]]; then printf partial >"$3"; exit 1; fi; sqlite3 "$database" ".backup $3" ;;' \
-  '  migrate) [[ ! -f $release/fail-migrate ]] || exit 1; sqlite3 "$database" "PRAGMA user_version=$target;" ;;' \
+  '  migrate) [[ ! -f $release/fail-migrate ]] || exit 1; sqlite3 "$database" "DELETE FROM schema_migrations; INSERT INTO schema_migrations(version) VALUES($target); PRAGMA journal_mode=WAL;" >/dev/null ;;' \
   '  check) [[ $current == "$target" ]]; [[ ! -f $release/fail-production-check || $database != */var/lib/sanguinius/sanguinius.sqlite3 ]] ;;' \
   '  integrity) [[ $(sqlite3 "$database" "PRAGMA integrity_check;") == ok ]]; echo integrity=ok ;;' \
   '  relationships) (( target < 16 )); [[ ${3:-} == check ]]; echo relationships=ok ;;' \
@@ -81,7 +81,7 @@ set_active() {
   install -m 0644 "$releases/$active/systemd/$(sed -n 's/.*"service_unit":"\([A-Za-z0-9.-]*\)".*/\1/p' "$releases/$active/RELEASE-METADATA.json")" "$unit"
   printf '%s\n' "$schema" >"$state/state-version"
   rm -f "$database" "$database-wal" "$database-shm" "$database-journal"
-  sqlite3 "$database" "PRAGMA journal_mode=WAL; PRAGMA user_version=$schema; CREATE TABLE marker(value TEXT NOT NULL); INSERT INTO marker VALUES('$marker'); PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null
+  sqlite3 "$database" "PRAGMA journal_mode=WAL; CREATE TABLE schema_migrations(version INTEGER NOT NULL); INSERT INTO schema_migrations VALUES($schema); CREATE TABLE marker(value TEXT NOT NULL); INSERT INTO marker VALUES('$marker'); PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null
 }
 set_active "$release16" "$release13" 16 schema16-fixture
 
@@ -169,6 +169,52 @@ fi
 unlink "$runtime/operations.lock"
 mv "$runtime/operations.lock.saved" "$runtime/operations.lock"
 
+printf untouched >"$temporary/database-companion-target"
+chmod 0644 "$temporary/database-companion-target"
+ln -s "$temporary/database-companion-target" "$database.lock"
+if SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
+    "$repository/scripts/sanguinius-backup.bash" failure \
+    >/dev/null 2>&1; then
+  echo "backup followed a symbolic database lock" >&2
+  exit 1
+fi
+[[ $(<"$temporary/database-companion-target") == untouched &&
+   $(stat -c %a "$temporary/database-companion-target") == 644 ]]
+unlink "$database.lock"
+ln -s "$temporary/missing-database-wal" "$database-wal"
+if SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
+    "$repository/scripts/sanguinius-backup.bash" failure \
+    >/dev/null 2>&1; then
+  echo "backup accepted a dangling database sidecar" >&2
+  exit 1
+fi
+unlink "$database-wal"
+
+ln -s "$temporary/database-companion-target" "$database-journal"
+if SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
+    "$repository/scripts/sanguinius-restore.bash" apply "$archive16" \
+    --release "$releases/$release16" --confirm >/dev/null 2>&1; then
+  echo "restore accepted a symbolic database sidecar" >&2
+  exit 1
+fi
+[[ $(<"$temporary/database-companion-target") == untouched &&
+   $(stat -c %a "$temporary/database-companion-target") == 644 ]]
+unlink "$database-journal"
+
+stale_retention="$backups/.retention.A1b2C3d4"
+stale_base=20180101T000000Z-schema16-0123456789ab-rolling.sqlite3
+mkdir -m 0700 "$stale_retention"
+printf old >"$stale_retention/$stale_base.zst"
+printf old >"$stale_retention/$stale_base.json"
+printf old >"$stale_retention/$stale_base.sha256"
+SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
+  "$repository/scripts/sanguinius-backup.bash" failure >/dev/null
+[[ ! -e $stale_retention &&
+   -f $backups/$stale_base.zst &&
+   -f $backups/$stale_base.json &&
+   -f $backups/$stale_base.sha256 ]]
+find "$backups" -maxdepth 1 -type f -name '*-failure.sqlite3.*' -delete
+
 find "$backups" -maxdepth 1 -type f -name '*-rolling.sqlite3.*' -delete
 for index in 01 02 03 04 05 06 07 08; do
   base="202001${index}T000000Z-schema16-0123456789ab-rolling.sqlite3"
@@ -176,15 +222,42 @@ for index in 01 02 03 04 05 06 07 08; do
   printf old >"$backups/$base.json"
   printf old >"$backups/$base.sha256"
 done
+incomplete=20990101T000000Z-schema16-0123456789ab-rolling.sqlite3
+printf incomplete >"$backups/$incomplete.json"
 printf preserve >"$backups/legacy-backup.zst"
 printf preserve >"$backups/unrecognized-rolling.sqlite3.zst"
 printf preserve >"$backups/keep-manual.sqlite3.json"
 SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
   "$repository/scripts/sanguinius-backup.bash" rolling >/dev/null
-[[ $(find "$backups" -maxdepth 1 -type f -name '*-rolling.sqlite3.json' | wc -l) -eq 7 ]]
+[[ $(find "$backups" -maxdepth 1 -type f \
+  -name '*-schema16-0123456789ab-rolling.sqlite3.zst' | wc -l) -eq 7 ]]
 [[ -f $backups/legacy-backup.zst &&
    -f $backups/unrecognized-rolling.sqlite3.zst &&
-   -f $backups/keep-manual.sqlite3.json ]]
+   -f $backups/keep-manual.sqlite3.json &&
+   -f $backups/$incomplete.json ]]
+
+status_fixture=20191231T000000Z-schema16-0123456789ab-rolling.sqlite3
+printf old >"$backups/$status_fixture.zst"
+printf old >"$backups/$status_fixture.json"
+printf old >"$backups/$status_fixture.sha256"
+mapfile -t retained_before_status_failure < <(
+  find "$backups" -maxdepth 1 -type f \
+    -name '*-rolling.sqlite3.*' -printf '%f\n' | LC_ALL=C sort
+)
+sleep 1
+if SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
+    SANGUINIUS_TEST_FAIL_BACKUP_STATUS=true \
+    "$repository/scripts/sanguinius-backup.bash" rolling >/dev/null 2>&1; then
+  echo "injected backup status failure unexpectedly succeeded" >&2
+  exit 1
+fi
+for retained_name in "${retained_before_status_failure[@]}"; do
+  [[ -f $backups/$retained_name ]] || {
+    echo "status failure pruned a previously verified backup" >&2
+    exit 1
+  }
+done
+[[ -z $(find "$backups" -maxdepth 1 -type d -name '.retention.*' -print -quit) ]]
 
 artifact_count=$(find "$backups" -maxdepth 1 -type f | wc -l)
 if SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
@@ -209,6 +282,14 @@ SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
   "$repository/scripts/sanguinius-backup.bash" pre-migration >/dev/null
 archive13=$(find "$backups" -type f -name '*-schema13-*-pre-migration.sqlite3.zst' -print -quit)
 [[ -n $archive13 ]]
+printf '16\n' >"$releases/$release13/target-schema"
+if SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
+    "$repository/scripts/sanguinius-restore.bash" verify "$archive13" \
+    --release "$releases/$release13" >/dev/null 2>&1; then
+  echo "restore accepted compatibility metadata with the wrong binary target" >&2
+  exit 1
+fi
+printf '13\n' >"$releases/$release13/target-schema"
 if grep -q '^invariants ' "$releases/$release13/invocations.log"; then
   echo "schema-13 backup invoked schema-16 umbrella invariants" >&2
   exit 1
@@ -223,7 +304,8 @@ SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
     echo "injected restore quarantine failure unexpectedly succeeded" >&2
     exit 1
   }
-[[ $(sqlite3 "$database" 'PRAGMA user_version;') == 16 ]]
+[[ $(sqlite3 "$database" \
+  'SELECT COALESCE(MAX(version),0) FROM schema_migrations;') == 16 ]]
 [[ $(sqlite3 "$database" 'SELECT value FROM marker;') == production-schema16 ]]
 [[ $(readlink "$current") == releases/$release16 ]]
 
@@ -235,17 +317,84 @@ SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
     echo "injected restore activation failure unexpectedly succeeded" >&2
     exit 1
   }
-[[ $(sqlite3 "$database" 'PRAGMA user_version;') == 16 ]]
+[[ $(sqlite3 "$database" \
+  'SELECT COALESCE(MAX(version),0) FROM schema_migrations;') == 16 ]]
 [[ $(sqlite3 "$database" 'SELECT value FROM marker;') == production-schema16 ]]
 [[ $(readlink "$current") == releases/$release16 ]]
 [[ $(<"$state/state-version") == 16 ]]
 grep -q 'Type=notify' "$unit"
 
 find "$backups" -maxdepth 1 -type f -name '*-manual.sqlite3.*' -delete
+activation_rollback_error="$temporary/activation-rollback-error.log"
+if SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
+    SANGUINIUS_TEST_FAIL_RESTORE_ACTIVATION=true \
+    SANGUINIUS_TEST_FAIL_ACTIVATION_ROLLBACK=true \
+    "$repository/scripts/sanguinius-restore.bash" apply "$archive13" \
+    --release "$releases/$release13" --confirm >/dev/null \
+    2>"$activation_rollback_error"; then
+  echo "injected activation rollback failure unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -Fq 'prior release activation could not be fully restored' \
+  "$activation_rollback_error"
+grep -Fq 'Privileged restore diagnostics were retained' \
+  "$activation_rollback_error"
+[[ $(sqlite3 "$database" \
+  'SELECT COALESCE(MAX(version),0) FROM schema_migrations;') == 16 ]]
+[[ $(sqlite3 "$database" 'SELECT value FROM marker;') == production-schema16 ]]
+[[ $(readlink "$current") == releases/$release13 ]]
+[[ $(<"$state/state-version") == 16 ]]
+grep -q 'Type=notify' "$unit"
+retained_restore=$(find "$runtime" -mindepth 1 -maxdepth 1 -type d \
+  -name 'restore.????????' -print -quit)
+[[ -n $retained_restore && -f $retained_restore/service-fenced ]]
+find -P "$retained_restore" -maxdepth 1 -type f -delete
+rmdir "$retained_restore"
+set_active "$release16" "$release13" 16 production-schema16
+
+find "$backups" -maxdepth 1 -type f -name '*-manual.sqlite3.*' -delete
+database_rollback_error="$temporary/database-rollback-error.log"
+if SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
+    SANGUINIUS_TEST_FAIL_RESTORE_QUARANTINE=true \
+    SANGUINIUS_TEST_FAIL_DATABASE_ROLLBACK=true \
+    "$repository/scripts/sanguinius-restore.bash" apply "$archive13" \
+    --release "$releases/$release13" --confirm >/dev/null \
+    2>"$database_rollback_error"; then
+  echo "injected database rollback failure unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -Fq 'original production database could not be fully restored' \
+  "$database_rollback_error"
+grep -Fq 'Privileged restore diagnostics were retained' \
+  "$database_rollback_error"
+[[ $(readlink "$current") == releases/$release16 ]]
+[[ $(<"$state/state-version") == 16 ]]
+grep -q 'Type=notify' "$unit"
+retained_restore=$(find "$runtime" -mindepth 1 -maxdepth 1 -type d \
+  -name 'restore.????????' -print -quit)
+retained_quarantine=$(find "$runtime" -mindepth 1 -maxdepth 1 -type d \
+  -name 'quarantine-*' -print -quit)
+[[ -n $retained_restore && -f $retained_restore/service-fenced &&
+   -n $retained_quarantine &&
+   -f $retained_quarantine/sanguinius.sqlite3 &&
+   ! -e $database ]]
+for suffix in '' -wal -shm -journal; do
+  if [[ -f $retained_quarantine/sanguinius.sqlite3$suffix ]]; then
+    mv -T "$retained_quarantine/sanguinius.sqlite3$suffix" "$database$suffix"
+  fi
+done
+[[ $(sqlite3 "$database" \
+  'SELECT COALESCE(MAX(version),0) FROM schema_migrations;') == 16 ]]
+[[ $(sqlite3 "$database" 'SELECT value FROM marker;') == production-schema16 ]]
+find -P "$retained_restore" -maxdepth 1 -type f -delete
+rmdir "$retained_restore" "$retained_quarantine"
+
+find "$backups" -maxdepth 1 -type f -name '*-manual.sqlite3.*' -delete
 SANGUINIUS_ROOT="$temporary" SANGUINIUS_SCRIPT_TESTING=true \
   "$repository/scripts/sanguinius-restore.bash" apply "$archive13" \
   --release "$releases/$release13" --confirm >/dev/null
-[[ $(sqlite3 "$database" 'PRAGMA user_version;') == 13 ]]
+[[ $(sqlite3 "$database" \
+  'SELECT COALESCE(MAX(version),0) FROM schema_migrations;') == 13 ]]
 [[ $(sqlite3 "$database" 'SELECT value FROM marker;') == schema13-fixture ]]
 [[ $(readlink "$current") == releases/$release13 ]]
 [[ $(readlink "$previous") == releases/$release16 ]]
