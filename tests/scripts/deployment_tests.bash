@@ -524,6 +524,27 @@ SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
    restore-database ]]
 [[ $(SANGUINIUS_SCRIPT_TESTING=true "$remote" policy-failure 13 16 true) == \
    preserve-schema ]]
+[[ $(SANGUINIUS_SCRIPT_TESTING=true "$remote" \
+  policy-deployment-exit-action true true true false true true true true \
+  inactive 13 16) == none ]]
+[[ $(SANGUINIUS_SCRIPT_TESTING=true "$remote" \
+  policy-deployment-exit-action false true true false true true true true \
+  inactive 13 16) == fence-schema ]]
+[[ $(SANGUINIUS_SCRIPT_TESTING=true "$remote" \
+  policy-deployment-exit-action false false true false true false true true \
+  inactive 13 16) == recover-database ]]
+[[ $(SANGUINIUS_SCRIPT_TESTING=true "$remote" \
+  policy-deployment-exit-action false false true false true true true true \
+  inactive 16 16) == recover-release ]]
+[[ $(SANGUINIUS_SCRIPT_TESTING=true "$remote" \
+  policy-deployment-exit-action false false false false false false true true \
+  active 13 16) == restart-previous ]]
+if SANGUINIUS_SCRIPT_TESTING=true "$remote" \
+    policy-deployment-exit-action invalid true true false true true true true \
+    inactive 13 16 >/dev/null 2>&1; then
+  echo "deployment exit policy accepted an invalid success state" >&2
+  exit 1
+fi
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \

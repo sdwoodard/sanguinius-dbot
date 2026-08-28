@@ -430,6 +430,44 @@ failure_action() {
   fi
 }
 
+deployment_exit_action() {
+  local succeeded=$1 gateway_ready=$2 durable_setup_started=$3
+  local failure_handled=$4 migration_completed=$5 main_started=$6
+  local service_stopped=$7 database_exclusive=$8 prior_state=$9
+  local expected=${10} target=${11} value
+  for value in "$succeeded" "$gateway_ready" "$durable_setup_started" \
+    "$failure_handled" "$migration_completed" "$main_started" \
+    "$service_stopped" "$database_exclusive"; do
+    [[ $value == true || $value == false ]] || return 2
+  done
+  [[ -n $prior_state && $expected =~ ^[0-9]+$ && $target =~ ^[0-9]+$ ]] ||
+    return 2
+  if [[ $succeeded == true ]]; then
+    printf 'none\n'
+  elif [[ $gateway_ready == true ]]; then
+    if [[ $expected == "$target" ]]; then
+      printf 'recover-release\n'
+    else
+      printf 'fence-schema\n'
+    fi
+  elif [[ $durable_setup_started == true && $failure_handled != true &&
+          $migration_completed == true ]]; then
+    if [[ $expected == "$target" ]]; then
+      printf 'recover-release\n'
+    elif [[ $main_started == true ]]; then
+      printf 'fence-schema\n'
+    else
+      printf 'recover-database\n'
+    fi
+  elif [[ $failure_handled != true && $service_stopped == true &&
+          $database_exclusive == true && $migration_completed != true &&
+          $prior_state == active ]]; then
+    printf 'restart-previous\n'
+  else
+    printf 'none\n'
+  fi
+}
+
 restart_if_previously_active() {
   local prior_state=$1
   [[ $prior_state != active ]] || start_sanguinius_service_verified
@@ -793,6 +831,10 @@ if [[ ${SANGUINIUS_SCRIPT_TESTING:-false} == true && $EUID -ne 0 ]]; then
     policy-failure)
       [[ $# -eq 3 ]] || exit 2
       failure_action "$@"
+      exit ;;
+    policy-deployment-exit-action)
+      [[ $# -eq 11 ]] || exit 2
+      deployment_exit_action "$@"
       exit ;;
     policy-restore-active-state)
       [[ $# -eq 1 ]] || exit 2
@@ -1413,38 +1455,41 @@ deploy)
   # Invoked indirectly by the EXIT trap.
   # shellcheck disable=SC2329
   record_deploy_failure() {
-    local exit_code=$?
+    local exit_code=$? action
     set +e
-    if [[ $candidate_gateway_ready == true && $deploy_succeeded != true ]]; then
-      if [[ $expected_schema == "$target_schema" ]]; then
-        recover_predeployment_durable_state false || true
-      else
-        if ! fence_schema_changing_candidate; then
-          retain_deploy_diagnostics=true
-          echo "CRITICAL: Schema-changing candidate fencing could not be verified." >&2
-        fi
-      fi
-    elif [[ $candidate_durable_setup_started == true &&
-            $candidate_failure_handled != true &&
-            $production_migration_completed == true ]]; then
-      if [[ $expected_schema == "$target_schema" ]]; then
-        recover_predeployment_durable_state false || true
-      elif [[ $candidate_main_started == true ]]; then
-        if ! fence_schema_changing_candidate; then
-          retain_deploy_diagnostics=true
-          echo "CRITICAL: Schema-changing candidate fencing could not be verified." >&2
-        fi
-      else
-        recover_predeployment_durable_state true || true
-      fi
-    elif [[ $candidate_failure_handled != true &&
-            $service_stopped_for_deploy == true &&
-            $database_exclusive_for_deploy == true &&
-            $production_migration_completed != true &&
-            $active_state == active ]]; then
-      restart_if_previously_active "$active_state" >/dev/null 2>&1 ||
-        echo "CRITICAL: Previous Sanguinius service restart could not be verified." >&2
+    if ! action=$(deployment_exit_action "$deploy_succeeded" \
+        "$candidate_gateway_ready" "$candidate_durable_setup_started" \
+        "$candidate_failure_handled" "$production_migration_completed" \
+        "$candidate_main_started" "$service_stopped_for_deploy" \
+        "$database_exclusive_for_deploy" "$active_state" \
+        "$expected_schema" "$target_schema"); then
+      retain_deploy_diagnostics=true
+      action=fence-schema
     fi
+    case "$action" in
+      recover-release)
+        recover_predeployment_durable_state false || true
+        ;;
+      fence-schema)
+        if ! fence_schema_changing_candidate; then
+          retain_deploy_diagnostics=true
+          echo "CRITICAL: Schema-changing candidate fencing could not be verified." >&2
+        fi
+        ;;
+      recover-database)
+        recover_predeployment_durable_state true || true
+        ;;
+      restart-previous)
+        restart_if_previously_active "$active_state" >/dev/null 2>&1 ||
+        echo "CRITICAL: Previous Sanguinius service restart could not be verified." >&2
+        ;;
+      none) ;;
+      *)
+        retain_deploy_diagnostics=true
+        fence_schema_changing_candidate ||
+          echo "CRITICAL: Sanguinius service fencing could not be verified." >&2
+        ;;
+    esac
     if [[ $retain_deploy_diagnostics == true && -n $disposable &&
           -d $disposable && ! -L $disposable ]]; then
       install -m 0600 /dev/null "$disposable/retain-for-operator" || true
