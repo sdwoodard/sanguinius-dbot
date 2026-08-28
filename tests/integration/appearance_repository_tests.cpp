@@ -3112,6 +3112,17 @@ TEST_CASE(
     "[appearance][repository][live][outbox]") {
   AppearanceFixture fixture;
   fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 1'000);
+  REQUIRE_FALSE(fixture.repository->observe_message(
+      fixture.policy,
+      {.message_id = 2'999,
+       .guild_id = 10,
+       .channel_id = 20,
+       .author_user_id = 42,
+       .author_is_bot = true,
+       .excerpt = "A preceding public Sanguinius message.",
+       .observed_at_ms = 1'500,
+       .correlation_id = "live-safe-prior-bot"},
+      uuid(2'997), uuid(2'998)));
   const auto candidate = fixture.repository->simulate(
       fixture.policy, {.fixture = "owner_live_safe",
                        .idempotency_key = "live-safe-one",
@@ -3123,6 +3134,8 @@ TEST_CASE(
   const auto evaluation = sanguinius::evaluate_appearance(
       fixture.policy, sanguinius::AppearanceMode::live, candidate, 2'001);
   REQUIRE(evaluation.eligible_for_model);
+  REQUIRE(scalar(*fixture.context, "SELECT last_author_is_sanguinius FROM "
+                                   "appearance_channel_state") == 1);
   const sanguinius::AppearanceModelResult model{
       .serious_context = false,
       .serious_categories = {},
@@ -3179,6 +3192,52 @@ TEST_CASE(
       "UPDATE outbox_message SET provider_nonce='0000000000000000000000000' "
       "WHERE outbox_id='" +
       delivery.outbox_id + "'"));
+}
+
+TEST_CASE("owner live acceptance fixture retains the global quiet gate",
+          "[appearance][repository][live][owner-fixture][quiet]") {
+  AppearanceFixture fixture;
+  fixture.repository->activate_mode(sanguinius::AppearanceMode::live, 1'000);
+  REQUIRE(fixture.repository->set_quiet({.actor_user_id = 30,
+                                         .quiet_until_ms = 10'000,
+                                         .reason = "duration",
+                                         .request_value = "2h",
+                                         .event_id = uuid(3'050),
+                                         .idempotency_key = "owner-live-quiet",
+                                         .correlation_id = "owner-live-quiet",
+                                         .now_ms = 1'500}) ==
+          sanguinius::AppearanceMutationResult::applied);
+  const auto candidate = fixture.repository->simulate(
+      fixture.policy, {.fixture = "owner_live_safe",
+                       .idempotency_key = "owner-live-quiet-candidate",
+                       .correlation_id = "owner-live-quiet",
+                       .owner_user_id = 30,
+                       .now_ms = 2'000,
+                       .candidate_id = uuid(3'051),
+                       .event_id = uuid(3'052)});
+  const sanguinius::AppearanceModelResult model{
+      .serious_context = false,
+      .serious_categories = {},
+      .should_speak = true,
+      .text = "[TEST] A quiet-suppressed owner fixture.",
+      .tone = "warm",
+      .memory_ids_used = {},
+      .confidence = 1.0};
+  REQUIRE(fixture.repository->record_final(
+      fixture.policy, sanguinius::AppearanceMode::live, candidate,
+      sanguinius::evaluate_appearance(
+          fixture.policy, sanguinius::AppearanceMode::live, candidate, 2'001),
+      uuid(3'053), uuid(3'054), "owner-live-quiet", "owner_fixture", model,
+      {.reservation_id = uuid(3'055),
+       .outbox_id = uuid(3'056),
+       .feedback_control_ids = {uuid(3'057), uuid(3'058), uuid(3'059),
+                                uuid(3'060)}},
+      2'001));
+  const auto decision = fixture.repository->decision(candidate.candidate_id);
+  REQUIRE(decision.has_value());
+  REQUIRE(decision->action == "reject");
+  REQUIRE(decision->reason == "global_quiet");
+  REQUIRE(scalar(*fixture.context, "SELECT count(*) FROM outbox_message") == 0);
 }
 
 TEST_CASE("delivered appearance nonce and provider receipt survive restart",

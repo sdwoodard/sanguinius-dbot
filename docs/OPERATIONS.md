@@ -340,6 +340,13 @@ a fresh verified backup. If approved, verify SSH return, enabled service/timer,
 READY status, schema/invariants, and no duplicate effects; otherwise record it
 as skipped.
 
+The owner-only `owner_live_safe` appearance fixture has a fixed, visibly tagged
+test payload. It ignores prior bot-speech recency so the acceptance delivery is
+deterministic, while live mode, the operator kill, quiet, consent, scope,
+readiness, budget, cooldown, and transactional delivery gates remain active.
+Prove quiet suppression with a second trigger, then immediately restore
+`dry_run`.
+
 ## Required final state
 
 Before ending acceptance, resynchronize catalog 16 after setting:

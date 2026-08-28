@@ -1138,6 +1138,20 @@ final_reason(const AppearanceMode mode, const AppearanceEvaluation &evaluation,
                                                              : "hypothetical";
 }
 
+[[nodiscard]] bool
+is_owner_live_acceptance_fixture(const AppearanceMode mode,
+                                 const AppearanceCandidate &candidate,
+                                 const std::string_view model_status) noexcept {
+  return mode == AppearanceMode::live && candidate.owner_simulation &&
+         candidate.type == AppearanceCandidateType::simulation &&
+         model_status == "owner_fixture";
+}
+
+void remove_conversation_recency(AppearanceCandidate &candidate) noexcept {
+  candidate.bot_last_meaningful_speaker = false;
+  candidate.bot_speech_age_ms.reset();
+}
+
 [[nodiscard]] std::vector<std::string>
 serious_categories(const AppearanceCandidate &candidate,
                    const std::optional<AppearanceModelResult> &result) {
@@ -2335,6 +2349,8 @@ bool SqliteAppearanceRepository::record_final(
       load_policy_snapshot(connection, final_candidate.policy_version);
   refresh_persistent_gates(connection, persisted_policy, final_candidate,
                            now_ms);
+  if (is_owner_live_acceptance_fixture(mode, final_candidate, model_status))
+    remove_conversation_recency(final_candidate);
   if (model_result &&
       !validate_appearance_model_result(persisted_policy, *model_result,
                                         final_candidate.supplied_memory_ids)) {
