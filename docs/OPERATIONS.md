@@ -24,10 +24,16 @@ never edit source on `nuln`, print either secret, or alter unrelated services.
 /var/backups/sanguinius/
 ```
 
-The `sanguinius` no-login system user owns state, cache, and logs. Root owns
-configuration, releases, and backups. The service receives the two secret files
-only through `LoadCredential=`. The environment file contains IDs, paths, rates,
-and flags, never token or API-key values.
+The `sanguinius` no-login system user owns the database, cache, and logs. Root
+owns configuration, releases, operation-control files, and backup contents.
+`/var/lib/sanguinius/runtime` is `0750 root:sanguinius`; its lock, status, and
+state-version staging files are created without following links.
+`/var/backups/sanguinius` is `0710 root:sanguinius`, which lets the service read
+filesystem capacity without listing or reading backup files. The service
+receives the two secret files only through `LoadCredential=`. The environment
+file contains IDs, fixed paths, rates, and flags, never token or API-key values.
+Each service command sets the two credential paths after `EnvironmentFile=` is
+loaded, so an environment-file path cannot override the credential mount.
 
 ## Build and package
 
@@ -60,7 +66,9 @@ Packaging refuses a dirty tree or overwrite. Each archive has one rooted tree,
 internal `RELEASE-METADATA.json` and `SHARE-MANIFEST.sha256`, an external
 `.sha256`, and matching `.test-evidence.json`. Verification rejects traversal,
 links, unmanaged files, credentials, state, logs, caches, build output, a wrong
-ISA/interpreter/RPATH, and missing dependencies.
+ISA/interpreter/RPATH, missing dependencies, or disagreement between release
+metadata and the binary's own version/revision/schema/catalog identity. One
+verified target build is sufficient for each future committed release.
 
 ## Inspect, bootstrap, and deploy
 
@@ -100,12 +108,16 @@ The local wrapper revalidates the clean source revision, archive, manifest, and
 container evidence. The privileged helper verifies its own expected checksum,
 acquires `/var/lib/sanguinius/runtime/operations.lock`, checks host/process/disk
 state, installs to `.incoming-<release-id>`, verifies ELF requirements, and
-atomically renames the immutable tree. It takes a pre-migration backup, rehearses
-migration and exact schema-13 recovery on disposable host-local copies, proves
-exclusive database ownership, migrates once, checks integrity/invariants, then
-switches `current`. Success requires systemd `READY=1` after Discord READY and
-catalog synchronization. Only then is the daily backup timer enabled and
-recognized releases pruned to current plus three inactive releases.
+atomically renames the immutable tree. Before any backup, migration, service, or
+symlink mutation, a transient credential-backed `sanguinius` process runs the
+candidate's complete `--check-config` against the exact production environment
+and candidate assets. The helper then takes a restore-compatible pre-migration
+backup, rehearses migration and exact schema-13 recovery on disposable
+host-local copies, proves exclusive database ownership, migrates once, checks
+integrity/invariants, then switches `current`. Success requires systemd
+`READY=1` after Discord READY and catalog synchronization, followed by a fresh
+verified backup made by the active release. Only then is the daily backup timer
+enabled and recognized releases pruned to current plus three inactive releases.
 
 The production service is `Type=notify`, restarts on failure, and uses strict
 filesystem/device/kernel/namespace/capability protections. Its intentional
@@ -129,10 +141,12 @@ metadata, and checksum files. Seven recognized rolling triples are retained.
 Manual, pre-migration, failure, legacy, incomplete, and unrecognized files are
 never pruned.
 
-Verification never touches production:
+Verification never touches production. Invoke the restore helper from a
+schema-16 operations release even when the compatible database binary is the
+schema-13 rollback release:
 
 ```bash
-sudo /opt/sanguinius/current/libexec/sanguinius-restore.bash verify \
+sudo /opt/sanguinius/releases/<operations-release-id>/libexec/sanguinius-restore.bash verify \
   /var/backups/sanguinius/<backup>.sqlite3.zst \
   --release /opt/sanguinius/releases/<compatible-release-id>
 ```
@@ -143,14 +157,21 @@ the literal confirmation flag:
 
 ```bash
 sudo systemctl stop sanguinius.service
-sudo /opt/sanguinius/current/libexec/sanguinius-restore.bash apply \
+sudo /opt/sanguinius/releases/<operations-release-id>/libexec/sanguinius-restore.bash apply \
   /var/backups/sanguinius/<backup>.sqlite3.zst \
   --release /opt/sanguinius/releases/<compatible-release-id> --confirm
 ```
 
-The old database and sidecars move to a unique mode-0700 runtime quarantine
-before the verified file is atomically installed. A failed post-install check
-puts the quarantined database back. Reverse SQL is never used.
+The helper makes its safety backup through its own schema-aware backup code and
+the release compatible with the currently active database; it does not depend
+on the selected rollback release containing new helpers. The replacement is
+staged on the state filesystem and synced before the old database and sidecars
+move to a unique mode-0700 runtime quarantine and the staged file is atomically
+renamed into place. After database checks, apply atomically selects the requested
+release, installs its normal or compatibility unit, and updates `state-version`;
+the service remains inactive. Any failed database or activation check restores
+the quarantined database and the prior release/unit/state marker. Reverse SQL is
+never used.
 
 ## Rollback and incidents
 

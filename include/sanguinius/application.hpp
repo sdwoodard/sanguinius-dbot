@@ -17,6 +17,7 @@
 #include "sanguinius/persistent_id.hpp"
 #include "sanguinius/random.hpp"
 #include "sanguinius/relationships.hpp"
+#include "sanguinius/reliability_test.hpp"
 #include "sanguinius/repositories.hpp"
 #include "sanguinius/retention.hpp"
 #include "sanguinius/safety_controls.hpp"
@@ -112,6 +113,7 @@ struct ApplicationDependencies {
   std::unique_ptr<RuntimeFeatureControlRepository> runtime_feature_controls;
   std::unique_ptr<RetentionRepository> retention;
   std::unique_ptr<ServiceNotifier> service_notifier{};
+  std::unique_ptr<ReliabilityTestService> reliability_tests;
 };
 
 class Application {

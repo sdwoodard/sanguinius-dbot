@@ -13,14 +13,12 @@ WorkingDirectory=/opt/sanguinius/current
 EnvironmentFile=/etc/sanguinius/sanguinius.env
 LoadCredential=discord-token:/etc/sanguinius/bot.token
 LoadCredential=openai-key:/etc/sanguinius/openai.key
-Environment=SANGUINIUS_TOKEN_FILE=%d/discord-token
-Environment=SANGUINIUS_OPENAI_API_KEY_FILE=%d/openai-key
-ExecStartPre=/opt/sanguinius/current/bin/sanguinius --check-config
-ExecStartPre=/opt/sanguinius/current/bin/sanguinius db check
-ExecStartPre=/opt/sanguinius/current/bin/sanguinius db integrity
-ExecStartPre=/opt/sanguinius/current/bin/sanguinius db relationships check
-ExecStartPre=/opt/sanguinius/current/bin/sanguinius db tarot check
-ExecStart=/opt/sanguinius/current/bin/sanguinius
+ExecStartPre=/usr/bin/env SANGUINIUS_TOKEN_FILE=%d/discord-token SANGUINIUS_OPENAI_API_KEY_FILE=%d/openai-key /opt/sanguinius/current/bin/sanguinius --check-config
+ExecStartPre=/usr/bin/env SANGUINIUS_TOKEN_FILE=%d/discord-token SANGUINIUS_OPENAI_API_KEY_FILE=%d/openai-key /opt/sanguinius/current/bin/sanguinius db check
+ExecStartPre=/usr/bin/env SANGUINIUS_TOKEN_FILE=%d/discord-token SANGUINIUS_OPENAI_API_KEY_FILE=%d/openai-key /opt/sanguinius/current/bin/sanguinius db integrity
+ExecStartPre=/usr/bin/env SANGUINIUS_TOKEN_FILE=%d/discord-token SANGUINIUS_OPENAI_API_KEY_FILE=%d/openai-key /opt/sanguinius/current/bin/sanguinius db relationships check
+ExecStartPre=/usr/bin/env SANGUINIUS_TOKEN_FILE=%d/discord-token SANGUINIUS_OPENAI_API_KEY_FILE=%d/openai-key /opt/sanguinius/current/bin/sanguinius db tarot check
+ExecStart=/usr/bin/env SANGUINIUS_TOKEN_FILE=%d/discord-token SANGUINIUS_OPENAI_API_KEY_FILE=%d/openai-key /opt/sanguinius/current/bin/sanguinius
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=90

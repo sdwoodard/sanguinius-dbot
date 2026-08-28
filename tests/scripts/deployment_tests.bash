@@ -130,7 +130,19 @@ printf '%s\n' \
   'SANGUINIUS_VOX_ENABLED=true' \
   'SANGUINIUS_VOX_NARRATION_ENABLED=true' \
   'SANGUINIUS_TTS_PROVIDER=openai' \
-  'SANGUINIUS_APPEARANCES_MODE=dry_run' >"$production_environment"
+  'SANGUINIUS_APPEARANCES_MODE=dry_run' \
+  'SANGUINIUS_DATABASE_FILE=/var/lib/sanguinius/sanguinius.sqlite3' \
+  'SANGUINIUS_LOG_FILE=/var/log/sanguinius/messages.log' \
+  'SANGUINIUS_OPERATIONS_STATUS_FILE=/var/lib/sanguinius/runtime/operations-status.json' \
+  'SANGUINIUS_BACKUP_DIRECTORY=/var/backups/sanguinius' \
+  'SANGUINIUS_TTS_CACHE_DIRECTORY=/var/cache/sanguinius/tts' \
+  'SANGUINIUS_PERSONA_FILE=/opt/sanguinius/current/config/persona.txt' \
+  'SANGUINIUS_APPEARANCE_POLICY_FILE=/opt/sanguinius/current/config/appearance-policy-v2.json' \
+  'SANGUINIUS_TAROT_DECK_FILE=/opt/sanguinius/current/config/emperor-tarot-v1.json' \
+  'SANGUINIUS_TAROT_HOUSE_FILE=/opt/sanguinius/current/config/tarot-house-v1.json' \
+  'SANGUINIUS_TTS_FALLBACK_DIRECTORY=/opt/sanguinius/current/assets/vox' \
+  'SANGUINIUS_FFMPEG_PATH=/usr/bin/ffmpeg' \
+  'SANGUINIUS_FFPROBE_PATH=/usr/bin/ffprobe' >"$production_environment"
 SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
   "$remote" policy-production-environment "$production_environment"
 printf 'SANGUINIUS_TOKEN=forbidden\n' >>"$production_environment"
@@ -141,6 +153,22 @@ if SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
   exit 1
 fi
 sed -i '/SANGUINIUS_TOKEN=forbidden/d' "$production_environment"
+printf '  OPENAI_API_KEY = forbidden\n' >>"$production_environment"
+if SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
+    "$remote" policy-production-environment "$production_environment" \
+    >/dev/null 2>&1; then
+  echo "production environment policy accepted an indented credential" >&2
+  exit 1
+fi
+sed -i '/OPENAI_API_KEY/d' "$production_environment"
+printf '  SANGUINIUS_TEST_MODE=true\n' >>"$production_environment"
+if SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
+    "$remote" policy-production-environment "$production_environment" \
+    >/dev/null 2>&1; then
+  echo "production environment policy accepted an indented safety override" >&2
+  exit 1
+fi
+sed -i '/  SANGUINIUS_TEST_MODE=true/d' "$production_environment"
 printf 'SANGUINIUS_TEST_MODE=true\n' >>"$production_environment"
 if SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
     "$remote" policy-production-environment "$production_environment" \
@@ -149,8 +177,34 @@ if SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
   exit 1
 fi
 
+mkdir -p "$temporary/runtime/deploy-stale/nested"
+printf stale >"$temporary/runtime/deploy-stale/nested/file"
+SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
+  "$remote" policy-remove-managed-tree "$temporary/runtime/deploy-stale"
+[[ ! -e $temporary/runtime/deploy-stale ]]
+mkdir -p "$temporary/not-managed"
+if SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
+    "$remote" policy-remove-managed-tree "$temporary/not-managed" \
+    >/dev/null 2>&1; then
+  echo "managed cleanup accepted an unrelated directory" >&2
+  exit 1
+fi
+
+printf original >"$temporary/pre.sqlite3"
+zstd -q -o "$temporary/pre.sqlite3.zst" "$temporary/pre.sqlite3"
+SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
+  "$remote" policy-backup-sidecars "$temporary/pre.sqlite3.zst" \
+  "$temporary/pre.sqlite3" 13 \
+  0123456789abcdef0123456789abcdef01234567 test-release pre-migration
+[[ -f $temporary/pre.sqlite3.json && -f $temporary/pre.sqlite3.sha256 ]]
+grep -Fq '"archive":"pre.sqlite3.zst"' "$temporary/pre.sqlite3.json"
+grep -Fq '"original_sha256"' "$temporary/pre.sqlite3.json"
+[[ ! -e $temporary/pre.sqlite3.zst.sha256 ]]
+
 grep -Fq 'systemctl enable sanguinius.service' "$remote"
 grep -Fq 'new_id=$(install_release "$release_root" true)' "$remote"
+grep -Fq '/usr/bin/env \' "$remote"
+grep -Fq 'run_candidate_config_check "$new"' "$remote"
 
 counts_database="$temporary/counts.sqlite3"
 sqlite3 "$counts_database" \

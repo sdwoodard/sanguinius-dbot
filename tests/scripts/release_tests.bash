@@ -63,6 +63,26 @@ if SANGUINIUS_SCRIPT_TESTING=true "$release_tool" policy-payload-tree \
 fi
 rmdir "$payload/cache"
 
+identity="$temporary/identity"
+mkdir -p "$identity/bin"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf '\''{"release_id":"test-release","version":"2.2.0","revision":"0123456789abcdef0123456789abcdef01234567","schema_target":16,"command_catalog_version":16}\n'\''' \
+  >"$identity/bin/sanguinius"
+chmod 0755 "$identity/bin/sanguinius"
+printf '%s\n' \
+  '{"release_id":"test-release","version":"2.2.0","revision":"0123456789abcdef0123456789abcdef01234567","schema_target":16,"command_catalog_version":16,"compatibility_release":false}' \
+  >"$identity/RELEASE-METADATA.json"
+SANGUINIUS_SCRIPT_TESTING=true "$release_tool" policy-binary-identity \
+  "$identity"
+sed -i 's/"schema_target":16/"schema_target":15/' \
+  "$identity/RELEASE-METADATA.json"
+if SANGUINIUS_SCRIPT_TESTING=true "$release_tool" policy-binary-identity \
+    "$identity" >/dev/null 2>&1; then
+  echo "release identity policy accepted conflicting metadata" >&2
+  exit 1
+fi
+
 printf 'not an archive\n' >"$temporary/corrupt.tar.zst"
 printf '%064d  corrupt.tar.zst\n' 0 >"$temporary/corrupt.tar.zst.sha256"
 if "$release_tool" verify --archive "$temporary/corrupt.tar.zst" \

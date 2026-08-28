@@ -385,6 +385,7 @@ std::unique_ptr<Application> make_application(const Config &config) {
           .retention = std::make_unique<persistence::SqliteRetentionRepository>(
               repository_context),
           .service_notifier = std::make_unique<SystemdServiceNotifier>(),
+          .reliability_tests = make_isolated_reliability_test_service(),
       });
 }
 

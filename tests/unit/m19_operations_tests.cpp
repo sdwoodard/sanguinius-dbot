@@ -1,19 +1,8 @@
 #include "sanguinius/ai_generation.hpp"
 #include "sanguinius/health.hpp"
 #include "sanguinius/outbox.hpp"
-#include "sanguinius/reliability_test.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
-TEST_CASE("Milestone 19 reliability probes are deterministic and provider-free",
-          "[m19][reliability]") {
-  const sanguinius::ReliabilityTestService service;
-  REQUIRE(service.run("text-timeout").find("passed") != std::string::npos);
-  REQUIRE(service.run("ai-saturation").find("passed") != std::string::npos);
-  REQUIRE(service.run("discord-unknown").find("quarantined") !=
-          std::string::npos);
-  REQUIRE_THROWS_AS(service.run("invalid"), std::invalid_argument);
-}
 
 TEST_CASE("Milestone 19 reliability classifications fail conservatively",
           "[m19][reliability]") {

@@ -194,7 +194,6 @@ add_library(sanguinius_core STATIC
     src/random.cpp
     src/retention.cpp
     src/relationships.cpp
-    src/reliability_test.cpp
     src/safety_controls.cpp
     src/sanguinius_overview.cpp
     src/repositories.cpp
@@ -243,6 +242,7 @@ add_library(sanguinius_persistence STATIC
     src/persistence/backup.cpp
     src/persistence/database.cpp
     src/persistence/migrator.cpp
+    src/persistence/reliability_test.cpp
     src/persistence/sqlite.cpp
     src/persistence/sqlite_ai_generation_repository.cpp
     src/persistence/sqlite_provider_circuit_repository.cpp
@@ -395,6 +395,7 @@ if(BUILD_TESTING)
         tests/integration/durable_work_tests.cpp
         tests/integration/migration_tests.cpp
         tests/integration/m18_reliability_repository_tests.cpp
+        tests/integration/m19_reliability_tests.cpp
         tests/integration/repository_tests.cpp
         tests/integration/relationship_repository_tests.cpp
         tests/integration/speech_repository_tests.cpp

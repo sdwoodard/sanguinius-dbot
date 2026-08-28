@@ -11,6 +11,90 @@ atomic_link() {
   mv -Tf "$temporary" "$link"
 }
 
+remove_managed_tree() {
+  local path=$1 parent=$2 prefix=$3
+  [[ -n $path && $path == "$parent/$prefix"* && -d $path && ! -L $path ]] ||
+    return 1
+  find -P "$path" -xdev -depth -delete
+}
+
+open_operations_lock() {
+  local directory=$1 path=$2
+  [[ -d $directory && ! -L $directory ]] ||
+    die "operations directory is unsafe"
+  if [[ ${SANGUINIUS_SCRIPT_TESTING:-false} != true ]]; then
+    [[ $(stat -c '%U:%G:%a' "$directory") == root:sanguinius:750 ]] ||
+      die "operations directory ownership or permissions are unsafe"
+  fi
+  if [[ ! -e $path ]]; then
+    install -m 0600 /dev/null "$path"
+    if [[ ${SANGUINIUS_SCRIPT_TESTING:-false} != true ]]; then
+      chown root:root "$path"
+    fi
+  fi
+  [[ -f $path && ! -L $path ]] || die "operations lock is unsafe"
+  if [[ ${SANGUINIUS_SCRIPT_TESTING:-false} != true ]]; then
+    [[ $(stat -c '%U:%G:%a' "$path") == root:root:600 ]] ||
+      die "operations lock ownership or permissions are unsafe"
+  fi
+  exec 9<>"$path"
+  flock -n 9 || {
+    echo "Another deployment or backup is active." >&2
+    exit 75
+  }
+}
+
+write_state_version() {
+  local state_directory=$1 runtime_directory=$2 schema=$3
+  [[ $schema =~ ^[0-9]+$ && -d $state_directory && ! -L $state_directory &&
+     -d $runtime_directory && ! -L $runtime_directory ]] ||
+    die "state-version destination is unsafe"
+  local temporary="$runtime_directory/state-version.$$"
+  [[ ! -e $temporary && ! -L $temporary ]] ||
+    die "state-version staging path exists"
+  printf '%s\n' "$schema" >"$temporary"
+  chmod 0644 "$temporary"
+  if [[ ${SANGUINIUS_SCRIPT_TESTING:-false} != true ]]; then
+    chown root:root "$temporary"
+  fi
+  mv -T "$temporary" "$state_directory/state-version"
+}
+
+run_schema_domain_checks() {
+  local binary=$1 database_file=$2 schema=$3
+  SANGUINIUS_DATABASE_FILE="$database_file" "$binary" db integrity
+  if (( schema >= 16 )); then
+    SANGUINIUS_DATABASE_FILE="$database_file" "$binary" db invariants check
+  else
+    SANGUINIUS_DATABASE_FILE="$database_file" "$binary" db relationships check
+    SANGUINIUS_DATABASE_FILE="$database_file" "$binary" db tarot check
+  fi
+}
+
+publish_backup_sidecars() {
+  local archive=$1 raw=$2 schema=$3 revision=$4 release_id=$5 backup_class=$6
+  [[ -f $archive && ! -L $archive && -f $raw && ! -L $raw &&
+     $schema =~ ^[0-9]+$ && $revision =~ ^[0-9a-f]{40}$ &&
+     $release_id =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,95}$ &&
+     $backup_class =~ ^[a-z][a-z-]*$ ]] || die "backup metadata input is invalid"
+  local metadata=${archive%.zst}.json checksum=${archive%.zst}.sha256
+  [[ ! -e $metadata && ! -L $metadata &&
+     ! -e $checksum && ! -L $checksum ]] ||
+    die "backup metadata destination exists"
+  local original_sha compressed_sha original_size compressed_size created_at_ms
+  original_sha=$(sha256sum "$raw" | awk '{print $1}')
+  compressed_sha=$(sha256sum "$archive" | awk '{print $1}')
+  original_size=$(stat -c %s "$raw")
+  compressed_size=$(stat -c %s "$archive")
+  created_at_ms=$(date -u +%s%3N)
+  printf '%s  %s\n' "$compressed_sha" "$(basename "$archive")" >"$checksum"
+  printf '{"format_version":1,"archive":"%s","class":"%s","created_at_ms":%s,"schema":%s,"revision":"%s","release_id":"%s","original_sha256":"%s","compressed_sha256":"%s","original_size":%s,"compressed_size":%s,"integrity":"ok","foreign_keys":"ok","domain_invariants":"ok","restore_copy":"ok"}\n' \
+    "$(basename "$archive")" "$backup_class" "$created_at_ms" "$schema" \
+    "$revision" "$release_id" "$original_sha" "$compressed_sha" \
+    "$original_size" "$compressed_size" >"$metadata"
+  chmod 0600 "$metadata" "$checksum"
+}
+
 managed_release_name() {
   [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,95}$ ]]
 }
@@ -94,7 +178,8 @@ verify_production_environment() {
   local environment_file=$1
   [[ -f $environment_file && ! -L $environment_file ]] ||
     die "production environment is unsafe"
-  ! grep -Eq '^(SANGUINIUS_TOKEN|OPENAI_API_KEY)=' "$environment_file" ||
+  ! grep -Eq '^[[:space:]]*(SANGUINIUS_TOKEN|OPENAI_API_KEY)[[:space:]]*=' \
+    "$environment_file" ||
     die "environment file contains a credential value"
   local setting key
   for setting in \
@@ -108,33 +193,26 @@ verify_production_environment() {
     SANGUINIUS_VOX_ENABLED=true \
     SANGUINIUS_VOX_NARRATION_ENABLED=true \
     SANGUINIUS_TTS_PROVIDER=openai \
-    SANGUINIUS_APPEARANCES_MODE=dry_run; do
+    SANGUINIUS_APPEARANCES_MODE=dry_run \
+    SANGUINIUS_DATABASE_FILE=/var/lib/sanguinius/sanguinius.sqlite3 \
+    SANGUINIUS_LOG_FILE=/var/log/sanguinius/messages.log \
+    SANGUINIUS_OPERATIONS_STATUS_FILE=/var/lib/sanguinius/runtime/operations-status.json \
+    SANGUINIUS_BACKUP_DIRECTORY=/var/backups/sanguinius \
+    SANGUINIUS_TTS_CACHE_DIRECTORY=/var/cache/sanguinius/tts \
+    SANGUINIUS_PERSONA_FILE=/opt/sanguinius/current/config/persona.txt \
+    SANGUINIUS_APPEARANCE_POLICY_FILE=/opt/sanguinius/current/config/appearance-policy-v2.json \
+    SANGUINIUS_TAROT_DECK_FILE=/opt/sanguinius/current/config/emperor-tarot-v1.json \
+    SANGUINIUS_TAROT_HOUSE_FILE=/opt/sanguinius/current/config/tarot-house-v1.json \
+    SANGUINIUS_TTS_FALLBACK_DIRECTORY=/opt/sanguinius/current/assets/vox \
+    SANGUINIUS_FFMPEG_PATH=/usr/bin/ffmpeg \
+    SANGUINIUS_FFPROBE_PATH=/usr/bin/ffprobe; do
     key=${setting%%=*}
-    [[ $(grep -Ec "^${key}=" "$environment_file") == 1 ]] ||
+    [[ $(grep -Ec "^[[:space:]]*${key}[[:space:]]*=" \
+      "$environment_file") == 1 ]] ||
       die "production environment setting is missing or duplicated"
+    grep -Fqx "$setting" "$environment_file" ||
+      die "production environment setting has an unsafe value"
   done
-  grep -qx 'SANGUINIUS_ADMIN_COMMANDS_ENABLED=false' "$environment_file" ||
-    die "admin commands must be disabled"
-  grep -qx 'SANGUINIUS_TEST_MODE=false' "$environment_file" ||
-    die "test mode must be disabled"
-  grep -qx 'SANGUINIUS_VOICE_INPUT_ENABLED=false' "$environment_file" ||
-    die "voice input must be disabled"
-  grep -qx 'SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED=false' \
-    "$environment_file" || die "voice input consent must be disabled"
-  grep -qx 'SANGUINIUS_TRANSCRIPTION_PROVIDER=disabled' "$environment_file" ||
-    die "transcription must be disabled"
-  grep -qx 'SANGUINIUS_CHRONICLE_ENABLED=true' "$environment_file" ||
-    die "Chronicle must be enabled"
-  grep -qx 'SANGUINIUS_TAROT_ENABLED=true' "$environment_file" ||
-    die "Tarot must be enabled"
-  grep -qx 'SANGUINIUS_VOX_ENABLED=true' "$environment_file" ||
-    die "Vox output must be enabled"
-  grep -qx 'SANGUINIUS_VOX_NARRATION_ENABLED=true' "$environment_file" ||
-    die "Vox narration must be enabled"
-  grep -qx 'SANGUINIUS_TTS_PROVIDER=openai' "$environment_file" ||
-    die "TTS must be enabled"
-  grep -qx 'SANGUINIUS_APPEARANCES_MODE=dry_run' "$environment_file" ||
-    die "appearances must remain in dry-run mode"
 }
 
 retention_deletions() {
@@ -217,6 +295,17 @@ if [[ ${SANGUINIUS_SCRIPT_TESTING:-false} == true && $EUID -ne 0 ]]; then
       [[ $# -eq 1 && -n ${SANGUINIUS_TEST_ROOT:-} &&
          $1 == "$SANGUINIUS_TEST_ROOT"/* && -f $1 && ! -L $1 ]] || exit 2
       safe_counts "$1"
+      exit ;;
+    policy-backup-sidecars)
+      [[ $# -eq 6 && -n ${SANGUINIUS_TEST_ROOT:-} &&
+         $1 == "$SANGUINIUS_TEST_ROOT"/* &&
+         $2 == "$SANGUINIUS_TEST_ROOT"/* ]] || exit 2
+      publish_backup_sidecars "$@"
+      exit ;;
+    policy-remove-managed-tree)
+      [[ $# -eq 1 && -n ${SANGUINIUS_TEST_ROOT:-} &&
+         $1 == "$SANGUINIUS_TEST_ROOT/runtime/deploy-"* ]] || exit 2
+      remove_managed_tree "$1" "$SANGUINIUS_TEST_ROOT/runtime" deploy-
       exit ;;
     *) exit 2 ;;
   esac
@@ -344,6 +433,36 @@ verify_archive() {
   printf '%s\n' "$root"
 }
 
+verify_release_binary_identity() {
+  local release=$1 metadata="$1/RELEASE-METADATA.json"
+  [[ -d $release && ! -L $release && -f $metadata && ! -L $metadata &&
+     -x $release/bin/sanguinius ]] || die "release identity input is unsafe"
+  local compatibility id version revision schema catalog version_json
+  compatibility=$(sed -n 's/.*"compatibility_release":\(true\|false\).*/\1/p' \
+    "$metadata")
+  [[ $compatibility == true || $compatibility == false ]] ||
+    die "compatibility metadata is invalid"
+  [[ $compatibility == false ]] || return 0
+  id=$(sed -n 's/.*"release_id":"\([A-Za-z0-9._+-]*\)".*/\1/p' "$metadata")
+  version=$(sed -n 's/.*"version":"\([0-9.]*\)".*/\1/p' "$metadata")
+  revision=$(sed -n 's/.*"revision":"\([0-9a-f]*\)".*/\1/p' "$metadata")
+  schema=$(sed -n 's/.*"schema_target":\([0-9]*\).*/\1/p' "$metadata")
+  catalog=$(sed -n 's/.*"command_catalog_version":\([0-9]*\).*/\1/p' \
+    "$metadata")
+  [[ $id =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,95}$ &&
+     $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ &&
+     $revision =~ ^[0-9a-f]{40}$ && $schema =~ ^[0-9]+$ &&
+     $catalog =~ ^[0-9]+$ ]] || die "release metadata identity is invalid"
+  version_json=$("$release/bin/sanguinius" --version --json) ||
+    die "release self-identification failed"
+  [[ $version_json == *'"release_id":"'"$id"'"'* &&
+     $version_json == *'"version":"'"$version"'"'* &&
+     $version_json == *'"revision":"'"$revision"'"'* &&
+     $version_json == *'"schema_target":'"$schema"* &&
+     $version_json == *'"command_catalog_version":'"$catalog"* ]] ||
+    die "binary and release metadata disagree"
+}
+
 install_release() {
   local root=$1
   local allow_existing=${2:-false}
@@ -353,6 +472,7 @@ install_release() {
   if [[ $allow_existing == true && -d $installed && ! -L $installed &&
         ! -e $incoming ]]; then
     verify_payload_tree "$installed"
+    verify_release_binary_identity "$installed"
     [[ $(sha256sum "$installed/RELEASE-METADATA.json" | awk '{print $1}') == \
        $(tar --zstd -xOf "$archive" "$root/RELEASE-METADATA.json" | \
          sha256sum | awk '{print $1}') ]] || die "existing release metadata conflicts"
@@ -405,7 +525,7 @@ install_release() {
     grep -q 'not found' || die "missing ELF dependency"
   ! readelf -n "$incoming/bin/sanguinius" "$incoming/lib/libdpp.so.10.1.7" | \
     grep -q 'x86-64-v4' || die "release requires x86-64-v4"
-  local maximum_glibc maximum_glibcxx compatibility version_json
+  local maximum_glibc maximum_glibcxx
   maximum_glibc=$(readelf --version-info "$incoming/bin/sanguinius" \
     "$incoming/lib/libdpp.so.10.1.7" | \
     sed -n 's/.*Name: GLIBC_\([0-9.]*\).*/\1/p' | sort -V | tail -n1)
@@ -418,16 +538,7 @@ install_release() {
   [[ -z $maximum_glibcxx ||
      $(printf '%s\n%s\n' "$maximum_glibcxx" 3.4.36 | sort -V | tail -n1) == 3.4.36 ]] ||
     die "release requires a newer libstdc++"
-  compatibility=$(sed -n 's/.*"compatibility_release":\(true\|false\).*/\1/p' \
-    "$incoming/RELEASE-METADATA.json")
-  if [[ $compatibility == false ]]; then
-    version_json=$("$incoming/bin/sanguinius" --version --json) ||
-      die "release self-identification failed"
-    [[ $version_json == *'"release_id":"'"$id"'"'* ]] ||
-      die "binary and release metadata disagree"
-  else
-    [[ $compatibility == true ]] || die "compatibility metadata is invalid"
-  fi
+  verify_release_binary_identity "$incoming"
   find "$incoming" -type d -exec chmod 0755 '{}' +
   find "$incoming" -type f -exec chmod 0444 '{}' +
   chmod 0555 "$incoming/bin/sanguinius" "$incoming/lib/libdpp.so.10.1.7"
@@ -481,6 +592,40 @@ install_service_unit() {
     /etc/systemd/system/sanguinius.service
 }
 
+run_candidate_config_check() {
+  local release=$1 unit="sanguinius-config-check-$$"
+  [[ -d $release && ! -L $release && -x $release/bin/sanguinius ]] ||
+    die "candidate configuration check release is unsafe"
+  systemd-run --quiet --wait --collect --pipe --service-type=exec \
+    --unit "$unit" --uid sanguinius --gid sanguinius \
+    --working-directory "$release" \
+    --property=NoNewPrivileges=yes --property=PrivateTmp=yes \
+    --property=ProtectHome=yes --property=ProtectSystem=strict \
+    --property=EnvironmentFile=/etc/sanguinius/sanguinius.env \
+    --property=LoadCredential=discord-token:/etc/sanguinius/bot.token \
+    --property=LoadCredential=openai-key:/etc/sanguinius/openai.key \
+    /usr/bin/env \
+    'SANGUINIUS_TOKEN_FILE=%d/discord-token' \
+    'SANGUINIUS_OPENAI_API_KEY_FILE=%d/openai-key' \
+    "SANGUINIUS_PERSONA_FILE=$release/config/persona.txt" \
+    "SANGUINIUS_APPEARANCE_POLICY_FILE=$release/config/appearance-policy-v2.json" \
+    "SANGUINIUS_TAROT_DECK_FILE=$release/config/emperor-tarot-v1.json" \
+    "SANGUINIUS_TAROT_HOUSE_FILE=$release/config/tarot-house-v1.json" \
+    "SANGUINIUS_TTS_FALLBACK_DIRECTORY=$release/assets/vox" \
+    "$release/bin/sanguinius" --check-config ||
+    die "candidate production configuration is invalid"
+}
+
+select_release_for_schema() {
+  local release=$1 schema=$2
+  [[ $release == "$releases/"* && -d $release && ! -L $release &&
+     $schema =~ ^[0-9]+$ ]] || die "rollback release selection is unsafe"
+  atomic_link "releases/$(basename "$release")" "$current"
+  install_service_unit "$release"
+  systemctl daemon-reload
+  write_state_version "$state" "$runtime" "$schema"
+}
+
 case "$operation" in
 bootstrap)
   [[ -n $archive && -n $environment && -n $token && -n $openai_key &&
@@ -502,14 +647,15 @@ bootstrap)
     systemd-sysusers --inline \
       'u sanguinius - "Sanguinius Discord bot" /var/lib/sanguinius /usr/bin/nologin'
   fi
-  install -d -m 0700 -o root -g root /etc/sanguinius "$backups"
+  install -d -m 0700 -o root -g root /etc/sanguinius
+  install -d -m 0710 -o root -g sanguinius "$backups"
   install -d -m 0755 -o root -g root /opt/sanguinius "$releases"
   install -d -m 0750 -o sanguinius -g sanguinius "$state"
-  install -d -m 0700 -o sanguinius -g sanguinius "$runtime" \
+  install -d -m 0750 -o root -g sanguinius "$runtime"
+  install -d -m 0700 -o sanguinius -g sanguinius \
     /var/cache/sanguinius /var/cache/sanguinius/tts /var/log/sanguinius
   verify_capacity
-  exec 9>"$lock_file"
-  flock -n 9 || die "operations lock is held"
+  open_operations_lock "$runtime" "$lock_file"
   rollback_id=$(install_release "$release_root" true)
   rollback="$releases/$rollback_id"
   [[ $(sed -n 's/.*"schema_target":\([0-9]*\).*/\1/p' \
@@ -534,11 +680,8 @@ bootstrap)
   SANGUINIUS_DATABASE_FILE="$restored" "$rollback/bin/sanguinius" db tarot check
   SANGUINIUS_DATABASE_FILE="$restored" "$rollback/bin/sanguinius" db migrate
   SANGUINIUS_DATABASE_FILE="$restored" "$rollback/bin/sanguinius" db check
-  compressed_sha=$(sha256sum "$compressed" | awk '{print $1}')
-  printf '%s  %s\n' "$compressed_sha" "$(basename "$compressed")" \
-    >"$compressed.sha256"
-  printf '{"format_version":1,"class":"pre-migration","schema":13,"revision":"%s","compressed_sha256":"%s","integrity":"ok","relationships":"ok","tarot":"ok","restore_copy":"ok"}\n' \
-    "$rollback_revision" "$compressed_sha" >"${compressed%.zst}.json"
+  publish_backup_sidecars "$compressed" "$raw" 13 "$rollback_revision" \
+    "$rollback_id" pre-migration
   rm -f -- "$raw" "$restored"
   install -m 0600 -o root -g root "$environment" /etc/sanguinius/sanguinius.env
   install -m 0600 -o root -g root "$token" /etc/sanguinius/bot.token
@@ -547,8 +690,7 @@ bootstrap)
     /var/log/sanguinius/messages.log
   chown sanguinius:sanguinius "$database" "$database-wal" "$database-shm" 2>/dev/null || true
   chmod 0600 "$database" "$database-wal" "$database-shm" 2>/dev/null || true
-  printf '13\n' >/var/lib/sanguinius/state-version
-  chown sanguinius:sanguinius /var/lib/sanguinius/state-version
+  write_state_version "$state" "$runtime" 13
   atomic_link "releases/$rollback_id" "$previous"
   install_service_unit "$rollback"
   install_system_configuration_files "$rollback"
@@ -562,6 +704,14 @@ deploy)
     die "schema arguments are invalid"
   [[ -d $runtime && -d $releases && ! -L $runtime && ! -L $releases ]] ||
     die "production layout is not bootstrapped"
+  [[ $(stat -c '%U:%G:%a' "$runtime") == sanguinius:sanguinius:700 ||
+     $(stat -c '%U:%G:%a' "$runtime") == root:sanguinius:750 ]] ||
+    die "operations directory cannot be safely upgraded"
+  [[ $(stat -c '%U:%G:%a' "$backups") == root:root:700 ||
+     $(stat -c '%U:%G:%a' "$backups") == root:sanguinius:710 ]] ||
+    die "backup directory cannot be safely upgraded"
+  install -d -m 0750 -o root -g sanguinius "$runtime"
+  install -d -m 0710 -o root -g sanguinius "$backups"
   verify_secret_source /etc/sanguinius/sanguinius.env
   verify_secret_source /etc/sanguinius/bot.token
   verify_secret_source /etc/sanguinius/openai.key
@@ -571,15 +721,24 @@ deploy)
       die "production credential ownership is unsafe"
   done
   verify_production_environment /etc/sanguinius/sanguinius.env
-  exec 9>"$lock_file"
-  flock -n 9 || { echo "Another deployment or backup is active." >&2; exit 75; }
+  open_operations_lock "$runtime" "$lock_file"
+  while IFS= read -r stale_disposable; do
+    [[ $(stat -c '%U:%G' "$stale_disposable") == root:root ]] ||
+      die "stale disposable deployment directory is not root-owned"
+    remove_managed_tree "$stale_disposable" "$runtime" deploy-
+  done < <(find "$runtime" -mindepth 1 -maxdepth 1 -type d \
+    -name 'deploy-*' -print)
   write_status running "$expected_schema"
   deploy_succeeded=false
   deploy_status_schema=$expected_schema
+  disposable=
   # Invoked indirectly by the EXIT trap.
   # shellcheck disable=SC2329
   record_deploy_failure() {
     local exit_code=$?
+    if [[ -n $disposable && -d $disposable && ! -L $disposable ]]; then
+      remove_managed_tree "$disposable" "$runtime" deploy- || true
+    fi
     if [[ $deploy_succeeded != true ]]; then
       write_status failed "$deploy_status_schema" || true
     fi
@@ -597,6 +756,7 @@ deploy)
   metadata_schema=$(sed -n 's/.*"schema_target":\([0-9]*\).*/\1/p' \
     "$new/RELEASE-METADATA.json")
   [[ $metadata_schema == "$target_schema" ]] || die "target schema mismatch"
+  run_candidate_config_check "$new"
   if [[ -L $current ]]; then
     old=$(readlink -f "$current")
   else
@@ -625,11 +785,9 @@ deploy)
     "$old/RELEASE-METADATA.json")
   [[ $old_revision =~ ^[0-9a-f]{40}$ ]] || die "active release revision is invalid"
   pre="$backups/$(date -u +%Y%m%dT%H%M%SZ)-schema$expected_schema-${old_revision:0:12}-pre-migration.sqlite3.zst"
-  [[ ! -e $pre ]] || die "pre-migration backup exists"
+  [[ ! -e $pre && ! -L $pre ]] || die "pre-migration backup exists"
   zstd -q -19 -T1 -o "$pre" "$raw"
   zstd -q -t "$pre"
-  pre_sha=$(sha256sum "$pre" | awk '{print $1}')
-  printf '%s  %s\n' "$pre_sha" "$(basename "$pre")" >"$pre.sha256"
   rehearsal="$disposable/rehearsal.sqlite3"
   cp --reflink=auto "$raw" "$rehearsal"
   SANGUINIUS_DATABASE_FILE="$rehearsal" "$new/bin/sanguinius" db migrate
@@ -658,8 +816,8 @@ deploy)
   SANGUINIUS_DATABASE_FILE="$rollback_restored" "$old/bin/sanguinius" db tarot check
   [[ $(safe_counts "$rollback_restored") == "$before_counts" ]] ||
     die "restored schema-13 backup changed authoritative entity counts"
-  printf '{"format_version":1,"class":"pre-migration","schema":%s,"revision":"%s","compressed_sha256":"%s","integrity":"ok","domain_invariants":"ok","restore_copy":"ok"}\n' \
-    "$expected_schema" "$old_revision" "$pre_sha" >"${pre%.zst}.json"
+  publish_backup_sidecars "$pre" "$raw" "$expected_schema" "$old_revision" \
+    "$(basename "$old")" pre-migration
   if [[ $active_state == active ]]; then
     systemctl stop sanguinius.service
   fi
@@ -670,6 +828,7 @@ deploy)
     SANGUINIUS_DATABASE_FILE="$database" "$old/bin/sanguinius" db integrity
     SANGUINIUS_DATABASE_FILE="$database" "$old/bin/sanguinius" db relationships check
     SANGUINIUS_DATABASE_FILE="$database" "$old/bin/sanguinius" db tarot check
+    select_release_for_schema "$old" "$expected_schema"
     [[ $active_state != active ]] || systemctl start sanguinius.service
     die "production migration failed"
   }
@@ -687,6 +846,7 @@ deploy)
     SANGUINIUS_DATABASE_FILE="$database" "$old/bin/sanguinius" db integrity
     SANGUINIUS_DATABASE_FILE="$database" "$old/bin/sanguinius" db relationships check
     SANGUINIUS_DATABASE_FILE="$database" "$old/bin/sanguinius" db tarot check
+    select_release_for_schema "$old" "$expected_schema"
     [[ $active_state != active ]] || systemctl start sanguinius.service
     deploy_status_schema=$expected_schema
     die "post-migration verification failed; schema-13 backup restored"
@@ -747,11 +907,12 @@ deploy)
     fi
     die "schema-changing candidate failed readiness; schema and diagnostics are preserved"
   fi
+  SANGUINIUS_LOCK_HELD=true "$new/libexec/sanguinius-backup.bash" manual \
+    --lock-held
   atomic_link "releases/$(basename "$old")" "$previous"
   systemctl enable sanguinius.service
   systemctl enable --now sanguinius-backup.timer
-  printf '%s\n' "$target_schema" >$state/state-version
-  chown sanguinius:sanguinius $state/state-version
+  write_state_version "$state" "$runtime" "$target_schema"
   mapfile -t inactive < <(
     find "$releases" -mindepth 1 -maxdepth 1 -type d \
       ! -name '.incoming-*' -printf '%f\n' | LC_ALL=C sort -r
@@ -771,16 +932,20 @@ deploy)
       find "$candidate_path" -depth -type f -delete
       find "$candidate_path" -depth -type d -empty -delete
   done
-  find "$disposable" -maxdepth 1 -type f -delete
-  rmdir "$disposable"
-  write_status succeeded "$target_schema" backup-succeeded
+  remove_managed_tree "$disposable" "$runtime" deploy-
+  disposable=
+  write_status succeeded "$target_schema"
   deploy_succeeded=true
   echo "deploy=complete"
   echo "release=$new_id"
   ;;
 rollback-same-schema)
   managed_release_name "$release_id" || die "release ID invalid"
-  exec 9>"$lock_file"; flock -n 9 || exit 75
+  [[ $(stat -c '%U:%G:%a' "$runtime") == sanguinius:sanguinius:700 ||
+     $(stat -c '%U:%G:%a' "$runtime") == root:sanguinius:750 ]] ||
+    die "operations directory cannot be safely upgraded"
+  install -d -m 0750 -o root -g sanguinius "$runtime"
+  open_operations_lock "$runtime" "$lock_file"
   target="$releases/$release_id"
   [[ -d $target && ! -L $target && -x $target/bin/sanguinius ]] || die "release unavailable"
   target_schema=$(sed -n 's/.*"schema_target":\([0-9]*\).*/\1/p' "$target/RELEASE-METADATA.json")

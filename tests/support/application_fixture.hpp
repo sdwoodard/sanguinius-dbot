@@ -26,9 +26,24 @@
 #include "support/fake_wager_repository.hpp"
 
 #include <memory>
+#include <stdexcept>
 #include <utility>
 
 namespace sanguinius::test {
+
+class FakeReliabilityTestService final : public ReliabilityTestService {
+public:
+  [[nodiscard]] std::string
+  run(const std::string_view scenario) const override {
+    if (scenario == "text-timeout")
+      return "Reliability probe passed: timeout accounting verified.";
+    if (scenario == "ai-saturation")
+      return "Reliability probe passed: bounded saturation verified.";
+    if (scenario == "discord-unknown")
+      return "Reliability probe passed: unknown outcome quarantined.";
+    throw std::invalid_argument{"Unknown reliability scenario."};
+  }
+};
 
 class ApplicationFixture {
 public:
@@ -111,6 +126,8 @@ public:
     auto owned_runtime_controls =
         std::make_unique<FakeRuntimeFeatureControlRepository>();
     auto owned_service_notifier = std::make_unique<FakeServiceNotifier>();
+    auto owned_reliability_tests =
+        std::make_unique<FakeReliabilityTestService>();
 
     clock = owned_clock.get();
     ids = owned_ids.get();
@@ -178,6 +195,7 @@ public:
             .runtime_feature_controls = std::move(owned_runtime_controls),
             .retention = nullptr,
             .service_notifier = std::move(owned_service_notifier),
+            .reliability_tests = std::move(owned_reliability_tests),
         });
   }
 

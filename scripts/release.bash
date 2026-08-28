@@ -132,6 +132,34 @@ podman_cmd() {
     --runroot "$dist/.podman-runroot" --storage-driver=vfs "$@"
 }
 
+verify_binary_identity() {
+  local release=$1 metadata="$1/RELEASE-METADATA.json"
+  [[ -d $release && ! -L $release && -f $metadata && ! -L $metadata &&
+     -x $release/bin/sanguinius ]] || return 1
+  local compatibility release_id version revision schema catalog version_json
+  compatibility=$(sed -n 's/.*"compatibility_release":\(true\|false\).*/\1/p' \
+    "$metadata")
+  [[ $compatibility == true || $compatibility == false ]] || return 1
+  [[ $compatibility == false ]] || return 0
+  release_id=$(sed -n 's/.*"release_id":"\([A-Za-z0-9._+-]*\)".*/\1/p' \
+    "$metadata")
+  version=$(sed -n 's/.*"version":"\([0-9.]*\)".*/\1/p' "$metadata")
+  revision=$(sed -n 's/.*"revision":"\([0-9a-f]*\)".*/\1/p' "$metadata")
+  schema=$(sed -n 's/.*"schema_target":\([0-9]*\).*/\1/p' "$metadata")
+  catalog=$(sed -n 's/.*"command_catalog_version":\([0-9]*\).*/\1/p' \
+    "$metadata")
+  [[ $release_id =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,95}$ &&
+     $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ &&
+     $revision =~ ^[0-9a-f]{40}$ && $schema =~ ^[0-9]+$ &&
+     $catalog =~ ^[0-9]+$ ]] || return 1
+  version_json=$("$release/bin/sanguinius" --version --json) || return 1
+  [[ $version_json == *'"release_id":"'"$release_id"'"'* &&
+     $version_json == *'"version":"'"$version"'"'* &&
+     $version_json == *'"revision":"'"$revision"'"'* &&
+     $version_json == *'"schema_target":'"$schema"* &&
+     $version_json == *'"command_catalog_version":'"$catalog"* ]]
+}
+
 build_image() {
   load_lock
   mkdir -p "$dist"
@@ -209,7 +237,20 @@ verify_archive() (
      -f $release/SHARE-MANIFEST.sha256 &&
      -x $release/bin/sanguinius &&
      -f $release/lib/libdpp.so.10.1.7 ]] || exit 1
+  local metadata_release_id
+  metadata_release_id=$(sed -n \
+    's/.*"release_id":"\([A-Za-z0-9._+-]*\)".*/\1/p' \
+    "$release/RELEASE-METADATA.json")
+  [[ $metadata_release_id =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,95}$ &&
+     $root == "sanguinius-$metadata_release_id" ]] || {
+    echo "Archive root and release metadata disagree." >&2
+    exit 1
+  }
   verify_payload_tree "$release"
+  verify_binary_identity "$release" || {
+    echo "Release binary and metadata disagree." >&2
+    exit 1
+  }
   if find "$release" -type f -print0 | xargs -0 -r file | \
       grep -Eiq '(private key|sqlite|database|core file)'; then
     echo "Release payload contains a forbidden file type." >&2
@@ -341,6 +382,10 @@ package_release() (
     "$release_id" "$version" "$revision" "$timestamp" "$epoch" \
     "$TOOLCHAIN_ID" "$lock_sha" "$schema_target" "$catalog" "$unit" \
     "$compat" >"$release/RELEASE-METADATA.json"
+  verify_binary_identity "$release" || {
+    echo "Packaged binary and release metadata disagree." >&2
+    exit 1
+  }
   find "$release" -type l -print -quit | grep -q . && {
     echo "Release staging contains an unexpected symlink." >&2
     exit 1
@@ -386,6 +431,10 @@ case "$command" in
   policy-payload-tree)
     [[ ${SANGUINIUS_SCRIPT_TESTING:-false} == true && $# -eq 1 ]] || usage
     verify_payload_tree "$1"
+    ;;
+  policy-binary-identity)
+    [[ ${SANGUINIUS_SCRIPT_TESTING:-false} == true && $# -eq 1 ]] || usage
+    verify_binary_identity "$1"
     ;;
   verify)
     [[ ${1:-} == --archive && $# -eq 2 ]] || usage

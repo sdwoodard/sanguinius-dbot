@@ -97,7 +97,7 @@ void validate(const ApplicationDependencies &dependencies) {
       !dependencies.message_log || !dependencies.application_instances ||
       !dependencies.identities || !dependencies.pending_notices ||
       !dependencies.durable_work || !dependencies.ai_client ||
-      !dependencies.discord) {
+      !dependencies.discord || !dependencies.reliability_tests) {
     throw std::invalid_argument{
         "Application dependencies must all be configured."};
   }
@@ -146,14 +146,15 @@ public:
         tts_cache_{std::move(dependencies.tts_cache)},
         runtime_feature_controls_{
             std::move(dependencies.runtime_feature_controls)},
-        retention_repository_{std::move(dependencies.retention)} {
+        retention_repository_{std::move(dependencies.retention)},
+        reliability_tests_{std::move(dependencies.reliability_tests)} {
     service_notifier_ = std::move(dependencies.service_notifier);
     if (!service_notifier_)
       service_notifier_ = std::make_unique<NoopServiceNotifier>();
     if (!clock_ || !id_generator_ || !persistent_id_generator_ ||
         !diagnostics_ || !message_log_ || !application_instances_ ||
         !identities_ || !pending_notices_ || !durable_work_ || !ai_client_ ||
-        !discord_) {
+        !discord_ || !reliability_tests_) {
       throw std::invalid_argument{
           "Application dependencies must all be configured."};
     }
@@ -795,7 +796,6 @@ public:
         *durable_work_, *clock_, *persistent_id_generator_,
         options_.server_scope, [this] { scheduler_->wake(); },
         [this] { outbox_->wake(); });
-    reliability_tests_ = std::make_unique<ReliabilityTestService>();
     health_service_ = std::make_unique<HealthService>(
         options_.build, options_.controls, options_.features,
         options_.persistence,

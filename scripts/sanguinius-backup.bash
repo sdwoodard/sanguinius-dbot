@@ -21,12 +21,14 @@ elif (( $# != 0 )); then
 fi
 
 root=${SANGUINIUS_ROOT:-}
+test_mode=false
 if [[ -n $root ]]; then
   [[ ${SANGUINIUS_SCRIPT_TESTING:-false} == true && $EUID -ne 0 ]] || {
     echo "SANGUINIUS_ROOT is available only to unprivileged shell tests." >&2
     exit 2
   }
   [[ $root == /* && $root != / && ! -L $root ]] || exit 2
+  test_mode=true
 else
   [[ $EUID -eq 0 ]] || {
     echo "Production backups require root." >&2
@@ -37,11 +39,11 @@ fi
 state="$root/var/lib/sanguinius"
 runtime="$state/runtime"
 backup_directory="$root/var/backups/sanguinius"
-release="$root/opt/sanguinius/current"
+release_input=${SANGUINIUS_BACKUP_RELEASE:-"$root/opt/sanguinius/current"}
+release=$release_input
 database="$state/sanguinius.sqlite3"
 status_file="$runtime/operations-status.json"
 lock_file="$runtime/operations.lock"
-binary="$release/bin/sanguinius"
 
 for directory in "$state" "$runtime" "$backup_directory"; do
   [[ -d $directory && ! -L $directory ]] || {
@@ -49,18 +51,61 @@ for directory in "$state" "$runtime" "$backup_directory"; do
     exit 1
   }
 done
+if [[ $test_mode != true ]]; then
+  if [[ $release_input == /opt/sanguinius/current ]]; then
+    [[ -L $release_input ]] || {
+      echo "The active release link is unavailable." >&2
+      exit 1
+    }
+    release=$(readlink -f -- "$release_input")
+  fi
+  [[ $release == /opt/sanguinius/releases/* &&
+     $(dirname "$release") == /opt/sanguinius/releases && ! -L $release ]] || {
+    echo "Backup release override is outside the managed layout." >&2
+    exit 1
+  }
+  [[ $(stat -c '%U:%G' "$release") == root:root &&
+     -z $(find "$release" -xdev \
+       \( ! -user root -o ! -group root -o -perm /022 \) -print -quit) ]] || {
+    echo "Backup release ownership is unsafe." >&2
+    exit 1
+  }
+  [[ $(stat -c '%U:%G:%a' "$runtime") == root:sanguinius:750 &&
+     $(stat -c '%U:%G:%a' "$backup_directory") == root:sanguinius:710 ]] || {
+    echo "Privileged backup directory ownership is unsafe." >&2
+    exit 1
+  }
+else
+  if [[ -L $release_input ]]; then
+    release=$(readlink -f -- "$release_input")
+  fi
+  [[ $release == "$root/"* && $(dirname "$release") == "$root/opt/sanguinius/releases" ]] || exit 2
+fi
+binary="$release/bin/sanguinius"
 [[ -x $binary && -f $database && ! -L $database ]] || {
   echo "Release binary or database is unavailable." >&2
   exit 1
 }
 
+[[ ! -e $lock_file || (-f $lock_file && ! -L $lock_file) ]] || {
+  echo "The operations lock is unsafe." >&2
+  exit 1
+}
+if [[ ! -e $lock_file ]]; then
+  install -m 0600 /dev/null "$lock_file"
+  [[ $test_mode == true ]] || chown root:root "$lock_file"
+fi
+if [[ $test_mode != true && $(stat -c '%U:%G:%a' "$lock_file") != root:root:600 ]]; then
+  echo "The operations lock ownership is unsafe." >&2
+  exit 1
+fi
 if [[ $lock_held == true ]]; then
   [[ -e /proc/$$/fd/9 && $(readlink "/proc/$$/fd/9") == "$lock_file" ]] || {
     echo "The inherited operations lock is invalid." >&2
     exit 1
   }
 else
-  exec 9>"$lock_file"
+  exec 9<>"$lock_file"
   flock -n 9 || {
     echo "Another Sanguinius operation holds the lock." >&2
     exit 75
@@ -130,18 +175,54 @@ cleanup() {
 }
 trap cleanup EXIT
 
-version_json=$($binary --version --json)
-revision=$(sed -n 's/.*"revision":"\([0-9a-f]\{40\}\)".*/\1/p' <<<"$version_json")
-release_id=$(sed -n 's/.*"release_id":"\([A-Za-z0-9._+-]*\)".*/\1/p' <<<"$version_json")
-[[ $revision =~ ^[0-9a-f]{40}$ && $release_id =~ ^[A-Za-z0-9._+-]+$ ]] || {
+release_metadata="$release/RELEASE-METADATA.json"
+[[ -f $release_metadata && ! -L $release_metadata ]] || {
+  echo "Release metadata is unavailable." >&2
+  exit 1
+}
+revision=$(sed -n 's/.*"revision":"\([0-9a-f]\{40\}\)".*/\1/p' \
+  "$release_metadata")
+release_id=$(sed -n 's/.*"release_id":"\([A-Za-z0-9._+-]*\)".*/\1/p' \
+  "$release_metadata")
+release_schema=$(sed -n 's/.*"schema_target":\([0-9][0-9]*\).*/\1/p' \
+  "$release_metadata")
+compatibility=$(sed -n \
+  's/.*"compatibility_release":\(true\|false\).*/\1/p' \
+  "$release_metadata")
+[[ $revision =~ ^[0-9a-f]{40}$ &&
+   $release_id =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,95}$ &&
+   $release_schema =~ ^[0-9]+$ &&
+   ($compatibility == true || $compatibility == false) ]] || {
   echo "Release identity is invalid." >&2
   exit 1
 }
+if [[ $(basename "$release") != "$release_id" ]]; then
+  echo "Release directory and metadata disagree." >&2
+  exit 1
+fi
+if [[ $compatibility == false ]]; then
+  version=$(sed -n 's/.*"version":"\([0-9.]*\)".*/\1/p' \
+    "$release_metadata")
+  catalog=$(sed -n \
+    's/.*"command_catalog_version":\([0-9][0-9]*\).*/\1/p' \
+    "$release_metadata")
+  version_json=$("$binary" --version --json)
+  [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && $catalog =~ ^[0-9]+$ &&
+     $version_json == *'"release_id":"'"$release_id"'"'* &&
+     $version_json == *'"version":"'"$version"'"'* &&
+     $version_json == *'"revision":"'"$revision"'"'* &&
+     $version_json == *'"schema_target":'"$release_schema"* &&
+     $version_json == *'"command_catalog_version":'"$catalog"* ]] || {
+    echo "Release binary and metadata disagree." >&2
+    exit 1
+  }
+fi
 
 status=$(SANGUINIUS_DATABASE_FILE="$database" "$binary" db status)
 schema=$(sed -n 's/^current_schema=\([0-9][0-9]*\)$/\1/p' <<<"$status")
 target=$(sed -n 's/^target_schema=\([0-9][0-9]*\)$/\1/p' <<<"$status")
-[[ $schema =~ ^[0-9]+$ && $schema == "$target" ]] || {
+[[ $schema =~ ^[0-9]+$ && $schema == "$target" &&
+   $target == "$release_schema" ]] || {
   echo "The source database schema is not current for this release." >&2
   exit 1
 }
@@ -149,7 +230,12 @@ target=$(sed -n 's/^target_schema=\([0-9][0-9]*\)$/\1/p' <<<"$status")
 SANGUINIUS_DATABASE_FILE="$database" "$binary" db backup "$raw"
 for candidate in "$database" "$raw"; do
   SANGUINIUS_DATABASE_FILE="$candidate" "$binary" db integrity
-  SANGUINIUS_DATABASE_FILE="$candidate" "$binary" db invariants check
+  if (( schema >= 16 )); then
+    SANGUINIUS_DATABASE_FILE="$candidate" "$binary" db invariants check
+  else
+    SANGUINIUS_DATABASE_FILE="$candidate" "$binary" db relationships check
+    SANGUINIUS_DATABASE_FILE="$candidate" "$binary" db tarot check
+  fi
 done
 
 original_sha=$(sha256sum "$raw" | awk '{print $1}')
@@ -162,7 +248,12 @@ compressed_size=$(stat -c %s "$archive_tmp")
 zstd -q -d -o "$restored" "$archive_tmp"
 [[ $(sha256sum "$restored" | awk '{print $1}') == "$original_sha" ]]
 SANGUINIUS_DATABASE_FILE="$restored" "$binary" db integrity
-SANGUINIUS_DATABASE_FILE="$restored" "$binary" db invariants check
+if (( schema >= 16 )); then
+  SANGUINIUS_DATABASE_FILE="$restored" "$binary" db invariants check
+else
+  SANGUINIUS_DATABASE_FILE="$restored" "$binary" db relationships check
+  SANGUINIUS_DATABASE_FILE="$restored" "$binary" db tarot check
+fi
 SANGUINIUS_DATABASE_FILE="$restored" "$binary" db migrate
 SANGUINIUS_DATABASE_FILE="$restored" "$binary" db check
 
@@ -172,7 +263,9 @@ base="$timestamp-schema$schema-${revision:0:12}-$backup_class.sqlite3"
 archive="$backup_directory/$base.zst"
 metadata="$backup_directory/$base.json"
 checksum="$backup_directory/$base.sha256"
-[[ ! -e $archive && ! -e $metadata && ! -e $checksum ]] || {
+[[ ! -e $archive && ! -L $archive &&
+   ! -e $metadata && ! -L $metadata &&
+   ! -e $checksum && ! -L $checksum ]] || {
   echo "Backup destination already exists." >&2
   exit 1
 }
