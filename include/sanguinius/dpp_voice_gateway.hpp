@@ -14,6 +14,8 @@ namespace dpp_voice_gateway_detail {
 [[nodiscard]] VoiceEvent translate_ready(const VoiceGatewaySnapshot &binding,
                                          DiscordSnowflake observed_channel_id,
                                          bool client_ready, bool dave_active);
+[[nodiscard]] bool defer_until_dave(bool client_ready,
+                                    bool dave_active) noexcept;
 [[nodiscard]] bool may_replace_binding(const VoiceGatewaySnapshot &binding,
                                        std::string_view session_id) noexcept;
 [[nodiscard]] bool

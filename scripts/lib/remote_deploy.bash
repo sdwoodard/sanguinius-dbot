@@ -314,13 +314,10 @@ verify_production_environment() {
   ! grep -Eq '^[[:space:]]*(SANGUINIUS_TOKEN|OPENAI_API_KEY)[[:space:]]*=' \
     "$environment_file" ||
     die "environment file contains a credential value"
-  local setting key
+  local setting key voice_input consent transcription appearance_mode
   for setting in \
     SANGUINIUS_ADMIN_COMMANDS_ENABLED=false \
     SANGUINIUS_TEST_MODE=false \
-    SANGUINIUS_VOICE_INPUT_ENABLED=false \
-    SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED=false \
-    SANGUINIUS_TRANSCRIPTION_PROVIDER=disabled \
     SANGUINIUS_CHRONICLE_ENABLED=true \
     SANGUINIUS_TAROT_ENABLED=true \
     SANGUINIUS_TAROT_HOUSE_ENABLED=true \
@@ -328,7 +325,7 @@ verify_production_environment() {
     SANGUINIUS_VOX_ENABLED=true \
     SANGUINIUS_VOX_NARRATION_ENABLED=true \
     SANGUINIUS_TTS_PROVIDER=openai \
-    SANGUINIUS_APPEARANCES_MODE=dry_run \
+    SANGUINIUS_TRANSCRIPTION_MODEL=gpt-transcribe \
     SANGUINIUS_DATABASE_FILE=/var/lib/sanguinius/sanguinius.sqlite3 \
     SANGUINIUS_LOG_FILE=/var/log/sanguinius/messages.log \
     SANGUINIUS_OPERATIONS_STATUS_FILE=/var/lib/sanguinius/runtime/operations-status.json \
@@ -350,6 +347,37 @@ verify_production_environment() {
     grep -Fqx "$setting" "$environment_file" ||
       die "production environment setting has an unsafe value"
   done
+
+  for key in SANGUINIUS_VOICE_INPUT_ENABLED \
+    SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED \
+    SANGUINIUS_TRANSCRIPTION_PROVIDER SANGUINIUS_APPEARANCES_MODE; do
+    [[ $(grep -Ec "^[[:space:]]*${key}[[:space:]]*=" \
+      "$environment_file") == 1 ]] ||
+      die "production environment setting is missing or duplicated"
+  done
+  voice_input=$(sed -n \
+    's/^[[:space:]]*SANGUINIUS_VOICE_INPUT_ENABLED[[:space:]]*=//p' \
+    "$environment_file")
+  consent=$(sed -n \
+    's/^[[:space:]]*SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED[[:space:]]*=//p' \
+    "$environment_file")
+  transcription=$(sed -n \
+    's/^[[:space:]]*SANGUINIUS_TRANSCRIPTION_PROVIDER[[:space:]]*=//p' \
+    "$environment_file")
+  appearance_mode=$(sed -n \
+    's/^[[:space:]]*SANGUINIUS_APPEARANCES_MODE[[:space:]]*=//p' \
+    "$environment_file")
+  [[ $appearance_mode == dry_run || $appearance_mode == live ]] ||
+    die "production appearance mode is unsafe"
+  if [[ $voice_input == false && $consent == false &&
+        $transcription == disabled ]]; then
+    :
+  elif [[ $voice_input == true && $consent == true &&
+          $transcription == openai ]]; then
+    :
+  else
+    die "production voice-input settings are not a coherent approved bundle"
+  fi
 }
 
 retention_deletions() {

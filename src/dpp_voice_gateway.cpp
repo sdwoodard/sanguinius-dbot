@@ -156,6 +156,11 @@ VoiceEvent dpp_voice_gateway_detail::translate_ready(
   return event;
 }
 
+bool dpp_voice_gateway_detail::defer_until_dave(
+    const bool client_ready, const bool dave_active) noexcept {
+  return client_ready && !dave_active;
+}
+
 bool dpp_voice_gateway_detail::may_replace_binding(
     const VoiceGatewaySnapshot &binding,
     const std::string_view session_id) noexcept {
@@ -608,6 +613,18 @@ private:
         const auto ready = event.voice_client->is_ready();
         const auto dave =
             ready && event.voice_client->is_end_to_end_encrypted();
+        // D++ 10.1.7 can emit voice_ready once the transport is ready and
+        // again after DAVE ratchets are installed.  The first callback is not
+        // a terminal encryption failure: keep the durable connect timeout
+        // armed and wait for the later fail-closed DAVE-ready callback.
+        if (id(event.voice_channel_id) == binding_->channel_id &&
+            dpp_voice_gateway_detail::defer_until_dave(ready, dave)) {
+          binding_->observed_channel_id = binding_->channel_id;
+          binding_->connected = true;
+          binding_->ready = false;
+          binding_->dave_active = false;
+          return;
+        }
         translated = dpp_voice_gateway_detail::translate_ready(
             snapshot_unlocked(), id(event.voice_channel_id), ready, dave);
         if (translated.kind == VoiceEventKind::ready) {

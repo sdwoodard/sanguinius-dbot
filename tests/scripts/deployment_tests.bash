@@ -184,6 +184,13 @@ for unit in sanguinius.service sanguinius-backup.service \
     sanguinius-backup.timer; do
   printf 'unit=%s\n' "$unit" >"$temporary/unit-release/systemd/$unit"
 done
+grep -Fqx 'WatchdogSec=60s' \
+  "$repository/packaging/systemd/sanguinius.service"
+if grep -Fq 'WatchdogSec=' \
+    "$repository/packaging/systemd/sanguinius-compat.service"; then
+  echo "schema-13 compatibility service unexpectedly requires watchdog pings" >&2
+  exit 1
+fi
 SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
   "$remote" policy-release-units "$temporary/unit-release" \
   "$temporary/unit-install"
@@ -222,6 +229,7 @@ printf '%s\n' \
   'SANGUINIUS_VOICE_INPUT_ENABLED=false' \
   'SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED=false' \
   'SANGUINIUS_TRANSCRIPTION_PROVIDER=disabled' \
+  'SANGUINIUS_TRANSCRIPTION_MODEL=gpt-transcribe' \
   'SANGUINIUS_CHRONICLE_ENABLED=true' \
   'SANGUINIUS_TAROT_ENABLED=true' \
   'SANGUINIUS_TAROT_HOUSE_ENABLED=true' \
@@ -247,6 +255,24 @@ printf '%s\n' \
 SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
   "$remote" policy-production-environment "$production_environment"
 cp "$production_environment" "$temporary/production.env.saved"
+cp "$production_environment" "$temporary/production.env.approved"
+sed -i \
+  -e 's/SANGUINIUS_VOICE_INPUT_ENABLED=false/SANGUINIUS_VOICE_INPUT_ENABLED=true/' \
+  -e 's/SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED=false/SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED=true/' \
+  -e 's/SANGUINIUS_TRANSCRIPTION_PROVIDER=disabled/SANGUINIUS_TRANSCRIPTION_PROVIDER=openai/' \
+  -e 's/SANGUINIUS_APPEARANCES_MODE=dry_run/SANGUINIUS_APPEARANCES_MODE=live/' \
+  "$temporary/production.env.approved"
+SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
+  "$remote" policy-production-environment "$temporary/production.env.approved"
+sed -i \
+  's/SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED=true/SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED=false/' \
+  "$temporary/production.env.approved"
+if SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
+    "$remote" policy-production-environment \
+    "$temporary/production.env.approved" >/dev/null 2>&1; then
+  echo "production environment policy accepted a partial voice bundle" >&2
+  exit 1
+fi
 sed -i '/SANGUINIUS_TTS_CACHE_MAXIMUM_MIB=/d' "$production_environment"
 if SANGUINIUS_SCRIPT_TESTING=true SANGUINIUS_TEST_ROOT="$temporary" \
     "$remote" policy-production-environment "$production_environment" \

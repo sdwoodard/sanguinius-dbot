@@ -41,6 +41,14 @@ void SystemdServiceNotifier::ready(const std::string_view message) noexcept {
   }
 }
 
+void SystemdServiceNotifier::watchdog(const std::string_view message) noexcept {
+  try {
+    const auto value = "WATCHDOG=1\nSTATUS=" + sanitized_status(message);
+    static_cast<void>(::sd_notify(0, value.c_str()));
+  } catch (...) {
+  }
+}
+
 void SystemdServiceNotifier::stopping() noexcept {
   static_cast<void>(::sd_notify(0, "STOPPING=1\nSTATUS=Stopping cleanly"));
 }

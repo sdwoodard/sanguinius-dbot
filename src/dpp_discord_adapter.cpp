@@ -777,6 +777,11 @@ std::vector<dpp::slashcommand> dpp_adapter_detail::translate_command_catalog(
   return make_discord_commands(catalog, application_id);
 }
 
+bool dpp_adapter_detail::gateway_ready(const bool ready_event_received,
+                                       const bool shard_connected) noexcept {
+  return ready_event_received && shard_connected;
+}
+
 void dpp_adapter_detail::translate_slash_command(
     const dpp::command_interaction &command, IncomingInteraction &interaction) {
   const auto valid_name = [](const std::string_view name) {
@@ -1020,6 +1025,7 @@ public:
     ready_handle_ =
         bot_.on_ready([this, callbacks = callbacks_](const dpp::ready_t &) {
           invoke_callback(callbacks, [this] {
+            gateway_connected_.store(true);
             ready_.store(true);
             emit_runtime_status();
             diagnostics_.emit(
@@ -1028,6 +1034,18 @@ public:
                  "Sanguinius is connected as " + bot_.me.username + ".",
                  {}});
             synchronize_commands();
+          });
+        });
+    resumed_handle_ =
+        bot_.on_resumed([this, callbacks = callbacks_](const dpp::resumed_t &) {
+          invoke_callback(callbacks, [this] {
+            gateway_connected_.store(true);
+            ready_.store(true);
+            emit_runtime_status();
+            diagnostics_.emit({DiagnosticSeverity::info,
+                               "discord.resumed",
+                               "Discord gateway session resumed.",
+                               {}});
           });
         });
     accepting_.store(true);
@@ -1173,14 +1191,24 @@ public:
           });
         });
 
+    gateway_health_timer_ = bot_.start_timer(
+        [this, callbacks = callbacks_](const dpp::timer) {
+          invoke_callback(callbacks, [this] { sample_gateway(); });
+        },
+        15);
     cluster_host_->start();
   }
 
   void stop_accepting() noexcept {
     accepting_.store(false);
     ready_.store(false);
+    gateway_connected_.store(false);
     emit_runtime_status();
     try {
+      if (gateway_health_timer_ != 0) {
+        static_cast<void>(bot_.stop_timer(gateway_health_timer_));
+        gateway_health_timer_ = 0;
+      }
       if (message_handle_ != 0) {
         static_cast<void>(bot_.on_message_create.detach(message_handle_));
         message_handle_ = 0;
@@ -1209,6 +1237,10 @@ public:
       if (ready_handle_ != 0) {
         static_cast<void>(bot_.on_ready.detach(ready_handle_));
         ready_handle_ = 0;
+      }
+      if (resumed_handle_ != 0) {
+        static_cast<void>(bot_.on_resumed.detach(resumed_handle_));
+        resumed_handle_ = 0;
       }
     } catch (...) {
     }
@@ -1319,6 +1351,24 @@ public:
                        {}});
   }
 
+  void sample_gateway() noexcept {
+    bool connected = false;
+    try {
+      const auto &shards = bot_.get_shards();
+      connected =
+          !shards.empty() &&
+          std::all_of(shards.begin(), shards.end(), [](const auto &entry) {
+            return entry.second != nullptr && entry.second->is_connected();
+          });
+    } catch (...) {
+      connected = false;
+    }
+    gateway_connected_.store(connected);
+    if (!connected)
+      ready_.store(false);
+    emit_runtime_status();
+  }
+
   void reject_interaction(const dpp::interaction_create_t &event,
                           const std::string_view message) noexcept {
     diagnostics_.emit({DiagnosticSeverity::error,
@@ -1337,7 +1387,8 @@ public:
 
   [[nodiscard]] DiscordRuntimeStatus status() const noexcept {
     return DiscordRuntimeStatus{
-        .ready = ready_.load(),
+        .ready = dpp_adapter_detail::gateway_ready(ready_.load(),
+                                                   gateway_connected_.load()),
         .command_registration = registration_.state(),
         .command_catalog_version = command_catalog_version_.load(),
     };
@@ -1365,16 +1416,19 @@ public:
   std::atomic<bool> accepting_{false};
   std::atomic<bool> shutdown_{false};
   std::atomic<bool> ready_{false};
+  std::atomic<bool> gateway_connected_{false};
   CommandRegistrationCoordinator registration_;
   std::atomic<std::uint32_t> command_catalog_version_{0};
   dpp::event_handle log_handle_{};
   dpp::event_handle ready_handle_{};
+  dpp::event_handle resumed_handle_{};
   dpp::event_handle message_handle_{};
   dpp::event_handle slash_handle_{};
   dpp::event_handle button_handle_{};
   dpp::event_handle select_handle_{};
   dpp::event_handle modal_handle_{};
   dpp::event_handle message_context_handle_{};
+  dpp::timer gateway_health_timer_{};
 };
 
 DppDiscordAdapter::DppDiscordAdapter(std::string token,

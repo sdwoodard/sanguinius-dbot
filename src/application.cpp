@@ -1025,9 +1025,13 @@ public:
           [this](const DiscordRuntimeStatus status) {
             if (status.ready && status.command_registration ==
                                     CommandRegistrationState::synchronized) {
-              if (!service_ready_notified_.exchange(true))
+              if (!service_ready_notified_.exchange(true)) {
                 service_notifier_->ready(
                     "Ready; Discord connected and commands synchronized");
+              } else {
+                service_notifier_->watchdog(
+                    "Ready; Discord connected and commands synchronized");
+              }
             } else if (status.command_registration ==
                        CommandRegistrationState::failed) {
               service_notifier_->status(

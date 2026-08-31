@@ -438,9 +438,14 @@ TarotWagerService::create(const IncomingInteraction &interaction) {
       resolution_option == std::optional<std::string>{"designated"}
           ? WagerResolutionPolicy::designated
           : WagerResolutionPolicy::mutual;
-  if ((resolution == WagerResolutionPolicy::designated) != judge.has_value())
-    throw std::invalid_argument{
-        "Designated resolution requires exactly one judge."};
+  if (resolution == WagerResolutionPolicy::designated && !judge)
+    return text_message(
+        "Designated resolution requires a distinct human judge. Select a "
+        "judge, or choose mutual resolution without one.");
+  if (resolution == WagerResolutionPolicy::mutual && judge)
+    return text_message(
+        "Mutual resolution does not use a judge. Remove the judge, or choose "
+        "designated resolution.");
   const bool self_test = *target == interaction.user_id;
   if (judge) {
     const auto &judge_user = resolved_user(interaction, *judge);

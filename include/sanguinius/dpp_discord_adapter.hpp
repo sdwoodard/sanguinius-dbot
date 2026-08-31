@@ -18,6 +18,9 @@ class DppClusterHost;
 
 namespace dpp_adapter_detail {
 
+[[nodiscard]] bool gateway_ready(bool ready_event_received,
+                                 bool shard_connected) noexcept;
+
 [[nodiscard]] std::string
 durable_public_message_json(const PublicMessageRequest &request,
                             std::string_view provider_nonce);

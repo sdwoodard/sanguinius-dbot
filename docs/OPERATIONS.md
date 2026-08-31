@@ -175,7 +175,11 @@ new schema and diagnostics for an explicit restore decision. Directories
 without matching release metadata do not consume a retention slot and are not
 removed.
 
-The production service is `Type=notify`, restarts on failure, and uses strict
+The production service is `Type=notify`, restarts on failure, samples every
+Discord shard every 15 seconds, and refreshes a 60-second systemd watchdog only
+while the gateway is connected and the command catalog is synchronized. A
+wedged event loop or a process that has lost Discord long enough is restarted
+instead of retaining stale READY state. It uses strict
 filesystem/device/kernel/namespace/capability protections. Its intentional
 network surface is limited to Unix, IPv4, and IPv6 sockets for HTTPS,
 WebSocket, and Discord UDP voice. The configured resource ceilings are 768 MiB
@@ -373,3 +377,27 @@ Also require no active Vox/listening session, test wager, recovery claim,
 pending test speech, or test escrow, and require the durable voice-input safety
 kill to be cleared while configured voice input remains off. Do not switch
 appearances to `live` without Stephen's explicit conservative-rollout approval.
+
+## Approved post-acceptance production rollout
+
+After final Milestone 19 acceptance, Stephen explicitly approved live
+appearances and optional voice input and supplied the required external consent
+attestation. The persistent production environment may therefore use this
+coherent rollout bundle:
+
+```text
+SANGUINIUS_APPEARANCES_MODE=live
+SANGUINIUS_VOICE_INPUT_ENABLED=true
+SANGUINIUS_VOICE_INPUT_GUILD_CONSENT_ATTESTED=true
+SANGUINIUS_TRANSCRIPTION_PROVIDER=openai
+SANGUINIUS_TRANSCRIPTION_MODEL=gpt-transcribe
+```
+
+The deployment helper accepts either the original conservative bundle
+(`dry_run` and all three voice-input controls disabled) or this exact approved
+bundle. It rejects mixed or partial voice-input states. Because these values
+remain in root-owned `/etc/sanguinius/sanguinius.env`, they survive service
+restarts and host reboots and are preserved by future releases until an
+operator deliberately changes them. Listening is still command-armed and
+bounded to 5/10/15 seconds; no continuous listening or raw-audio persistence is
+enabled. Reconfirm consent before any newly joining human is included.

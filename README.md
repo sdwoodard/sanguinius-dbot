@@ -137,6 +137,9 @@ conflicting outcomes or the 48-hour post-deadline grace boundary dispute the
 wager without moving Fate. Both participants may instead consent to an exact
 refund. A designated judge may decide only before dispute; once disputed, only
 participant agreement, mutual void, or a reasoned owner judgment can settle it.
+Selecting `designated` therefore also requires a distinct human `judge`;
+selecting `mutual` requires that `judge` be omitted. Invalid combinations are
+explained ephemerally and never reported as queue saturation.
 Mutual participants may submit through an opaque, revision-bound **Submit
 outcome** control and bounded modal or use the slash fallback. Designated
 self-test wagers pin the simulated judge to the owner, so an external member is
@@ -951,7 +954,11 @@ migration/restore rehearsal against that snapshot. Interrupted retention stages
 are validated and conservatively recovered by the next lock-holding backup.
 
 The production service is `Type=notify` and reaches READY only after Discord
-READY and successful/no-op guild command synchronization. Deployment publishes
+READY and successful/no-op guild command synchronization. It samples the
+Discord shards every 15 seconds and refreshes a 60-second systemd watchdog only
+while the gateway is connected and the catalog remains synchronized; a stale
+process can no longer retain READY indefinitely after losing Discord.
+Deployment publishes
 the stable operations helper before candidate startup, rejects any restart or
 main-PID mismatch during post-READY finalization, and completes exact release
 retention only after rollback-sensitive work commits. The fixed layout,

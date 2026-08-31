@@ -200,7 +200,19 @@ TEST_CASE("wager creation validates resolved human roles and explicit policy",
   REQUIRE_THROWS_AS(fixture.service.create(interaction), std::invalid_argument);
   interaction.resolved_users[0].is_bot = false;
   interaction.command_options.erase(interaction.command_options.begin() + 3);
-  REQUIRE_THROWS_AS(fixture.service.create(interaction), std::invalid_argument);
+  fixture.repository.create_request.reset();
+  const auto missing_judge = fixture.service.create(interaction);
+  REQUIRE(missing_judge.content.find("distinct human judge") !=
+          std::string::npos);
+  REQUIRE_FALSE(fixture.repository.create_request.has_value());
+
+  interaction.command_options = {{"target", DiscordId{31}},
+                                 {"resolution", std::string{"mutual"}},
+                                 {"judge", DiscordId{32}}};
+  const auto unexpected_judge = fixture.service.create(interaction);
+  REQUIRE(unexpected_judge.content.find("does not use a judge") !=
+          std::string::npos);
+  REQUIRE_FALSE(fixture.repository.create_request.has_value());
 
   interaction.command_options = {{"target", DiscordId{31}},
                                  {"visibility", std::string{"private"}}};

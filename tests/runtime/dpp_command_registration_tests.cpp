@@ -219,6 +219,11 @@ TEST_CASE("DPP voice-ready translation and binding replacement fail closed",
   REQUIRE(ready.kind == sanguinius::VoiceEventKind::ready);
   REQUIRE(ready.dave_active);
   REQUIRE(ready.generation == 2);
+  REQUIRE(sanguinius::dpp_voice_gateway_detail::defer_until_dave(true, false));
+  REQUIRE_FALSE(
+      sanguinius::dpp_voice_gateway_detail::defer_until_dave(false, false));
+  REQUIRE_FALSE(
+      sanguinius::dpp_voice_gateway_detail::defer_until_dave(true, true));
 
   const auto not_ready = sanguinius::dpp_voice_gateway_detail::translate_ready(
       binding, 40, false, false);
@@ -291,6 +296,14 @@ TEST_CASE("DPP voice-ready translation and binding replacement fail closed",
           sanguinius::DiscordSnowflake{10}, sanguinius::DiscordSnowflake{40},
           true));
   REQUIRE(self_deaf["d"]["self_deaf"] == true);
+}
+
+TEST_CASE("DPP runtime readiness requires a connected gateway shard",
+          "[discord][readiness][m19]") {
+  REQUIRE(sanguinius::dpp_adapter_detail::gateway_ready(true, true));
+  REQUIRE_FALSE(sanguinius::dpp_adapter_detail::gateway_ready(true, false));
+  REQUIRE_FALSE(sanguinius::dpp_adapter_detail::gateway_ready(false, true));
+  REQUIRE_FALSE(sanguinius::dpp_adapter_detail::gateway_ready(false, false));
 }
 
 TEST_CASE("DPP translates bounded Tarot integer adjustments",

@@ -779,7 +779,7 @@ TEST_CASE("Vox narration owner controls are private and idempotent",
   narration_request(altered, "narration-preview", 920,
                     "00000000-0000-4000-8000-000000000999");
   REQUIRE(altered->wait_for_edit_count(1, 2s));
-  CHECK(contains(altered->edits()[0].content, "could not complete"));
+  CHECK(contains(altered->edits()[0].content, "malformed or invalid"));
   CHECK(fixture.vox_narration->receipt_count() == 1);
 
   auto enqueue = std::make_shared<sanguinius::test::FakeInteractionResponder>();
@@ -840,6 +840,44 @@ TEST_CASE(
       .public_delivery_created = false,
   };
   fixture.application->start();
+
+  auto missing_judge =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto missing_judge_request = slash(missing_judge, "tarot", "wager", 299);
+  missing_judge_request.command_options = {
+      {"target", sanguinius::DiscordId{31}},
+      {"visibility", std::string{"sealed"}},
+      {"resolution", std::string{"designated"}}};
+  missing_judge_request.resolved_users = {{.user_id = 31,
+                                           .username = "target",
+                                           .display_name = "Target",
+                                           .is_bot = false}};
+  fixture.discord->emit(std::move(missing_judge_request));
+  REQUIRE(missing_judge->wait_for_edit_count(1, 2s));
+  REQUIRE(contains(missing_judge->edits()[0].content, "distinct human judge"));
+  REQUIRE_FALSE(fixture.wagers->create_request.has_value());
+
+  auto invalid_request =
+      std::make_shared<sanguinius::test::FakeInteractionResponder>();
+  auto invalid_wager = slash(invalid_request, "tarot", "wager", 298);
+  invalid_wager.command_options = {{"target", sanguinius::DiscordId{31}},
+                                   {"resolution", std::string{"designated"}},
+                                   {"judge", sanguinius::DiscordId{32}}};
+  invalid_wager.resolved_users = {{.user_id = 31,
+                                   .username = "target",
+                                   .display_name = "Target",
+                                   .is_bot = false},
+                                  {.user_id = 32,
+                                   .username = "judge-bot",
+                                   .display_name = "Judge Bot",
+                                   .is_bot = true}};
+  fixture.discord->emit(std::move(invalid_wager));
+  REQUIRE(invalid_request->wait_for_edit_count(1, 2s));
+  REQUIRE(
+      contains(invalid_request->edits()[0].content, "malformed or invalid"));
+  REQUIRE_FALSE(
+      contains(invalid_request->edits()[0].content, "too many interactions"));
+  REQUIRE_FALSE(fixture.wagers->create_request.has_value());
 
   auto create = std::make_shared<sanguinius::test::FakeInteractionResponder>();
   auto request = slash(create, "tarot", "wager", 300);

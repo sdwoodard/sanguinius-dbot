@@ -21,6 +21,7 @@ ExecStartPre=/usr/bin/env SANGUINIUS_TOKEN_FILE=%d/discord-token SANGUINIUS_OPEN
 ExecStart=/usr/bin/env SANGUINIUS_TOKEN_FILE=%d/discord-token SANGUINIUS_OPENAI_API_KEY_FILE=%d/openai-key /opt/sanguinius/current/bin/sanguinius
 Restart=on-failure
 RestartSec=5
+WatchdogSec=60s
 TimeoutStartSec=90
 TimeoutStopSec=180
 UMask=0077

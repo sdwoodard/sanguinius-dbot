@@ -201,6 +201,12 @@ SubmitResult InteractionHandler::enqueue(RoutedInteraction interaction) {
     }
     try {
       process(interaction);
+    } catch (const std::invalid_argument &error) {
+      diagnostics_.emit({DiagnosticSeverity::warning, "interaction.validation",
+                         error.what(), interaction.interaction.correlation_id});
+      edit(interaction.interaction,
+           presentation::error(presentation::ErrorKind::malformed),
+           "interaction.response");
     } catch (const std::exception &error) {
       diagnostics_.emit({DiagnosticSeverity::error, "interaction.handling",
                          error.what(), interaction.interaction.correlation_id});

@@ -343,6 +343,7 @@ TEST_CASE("service readiness follows Discord and command synchronization once",
            sanguinius::CommandRegistrationState::synchronized,
        .command_catalog_version = 16});
   REQUIRE(fixture.service_notifier->ready_count() == 1);
+  REQUIRE(fixture.service_notifier->watchdog_count() == 1);
 
   fixture.application->stop();
   fixture.application->stop();
