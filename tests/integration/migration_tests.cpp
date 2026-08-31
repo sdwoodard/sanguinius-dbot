@@ -359,7 +359,7 @@ TEST_CASE("production migration upgrades every accepted prior schema to "
 }
 
 TEST_CASE("version sixteen preserves populated v15 work and consumer cursors",
-          "[migration][m18][preservation][no-replay]") {
+          "[migration][cross-feature][preservation][no-replay]") {
   const auto production = sanguinius::persistence::production_migrations();
   sanguinius::test::TemporaryDatabase temporary;
   sanguinius::test::FakeClock clock{
@@ -425,7 +425,7 @@ TEST_CASE("version sixteen preserves populated v15 work and consumer cursors",
 }
 
 TEST_CASE("an injected version-sixteen failure leaves populated v15 exact",
-          "[migration][m18][rollback]") {
+          "[migration][cross-feature][rollback]") {
   const auto production = sanguinius::persistence::production_migrations();
   sanguinius::test::TemporaryDatabase temporary;
   sanguinius::test::FakeClock clock;
@@ -502,27 +502,27 @@ TEST_CASE("voice input migration preserves Tarot appearance source privacy",
       "INSERT INTO user_preference(user_id,appearance_callback_opt_in,"
       "updated_at_ms) VALUES('30',1,1);"
       "INSERT INTO appearance_policy_snapshot VALUES("
-      "'m17-privacy',1,'{}',1);"
+      "'prior-privacy',1,'{}',1);"
       "INSERT INTO tarot_catalog_snapshot VALUES("
-      "'m17-deck','deck','{}','checksum-m17',1);"
+      "'prior-deck','deck','{}','checksum-prior',1);"
       "INSERT INTO tarot_card_definition VALUES("
-      "'m17-deck',0,'the-fool','The Fool','A beginning worth remembering.',"
+      "'prior-deck',0,'the-fool','The Fool','A beginning worth remembering.',"
       "'beginnings','Keep the interpretation grounded.','[\"Begin.\"]');"
       "INSERT INTO event_journal(event_id,event_type,aggregate_type,"
       "aggregate_id,actor_user_id,guild_id,channel_id,occurred_at_ms,"
       "recorded_at_ms,correlation_id,idempotency_key,payload_json) VALUES("
       "'00000000-0000-4000-8000-000000017001','tarot.draw_created.v1',"
       "'tarot_card_draw','00000000-0000-4000-8000-000000017002','30','10',"
-      "'20',10,10,'m17-migration','m17:event','{}');"
+      "'20',10,10,'prior-migration','prior:event','{}');"
       "INSERT INTO tarot_card_draw VALUES("
       "'00000000-0000-4000-8000-000000017002','30','10','20','public',"
-      "'m17-deck',0,0,10,20,0,"
+      "'prior-deck',0,0,10,20,0,"
       "'00000000-0000-4000-8000-000000017001');"
       "INSERT INTO appearance_candidate(candidate_id,candidate_type,guild_id,"
       "channel_id,policy_version,deduplication_key,context_json,"
       "owner_simulation,created_at_ms,expires_at_ms,context_expires_at_ms) "
       "VALUES('00000000-0000-4000-8000-000000017003','tarot_event','10','20',"
-      "'m17-privacy','m17-tarot-source','{}',0,10,100,100);"
+      "'prior-privacy','prior-tarot-source','{}',0,10,100,100);"
       "INSERT INTO appearance_event_observation(source_event_id,event_type,"
       "aggregate_type,aggregate_id,guild_id,channel_id,actor_user_id,"
       "occurred_at_ms,recorded_at_ms,candidate_id) VALUES("

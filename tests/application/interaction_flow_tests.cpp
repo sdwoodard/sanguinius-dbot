@@ -238,7 +238,7 @@ durable_outbox(std::string outbox_id, std::string kind, std::string key) {
 } // namespace
 
 TEST_CASE("reliability probes require owner admin and test catalog gates",
-          "[application][interaction][m19][reliability]") {
+          "[application][interaction][operations][reliability]") {
   sanguinius::test::ApplicationFixture fixture{admin_options()};
   fixture.application->start();
   const auto catalog = fixture.discord->command_catalog();

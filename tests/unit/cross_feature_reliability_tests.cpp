@@ -1,3 +1,4 @@
+// Cross-feature admission, orchestration, presentation, and retention coverage.
 #include "sanguinius/ai_generation.hpp"
 #include "sanguinius/cross_feature_orchestrator.hpp"
 #include "sanguinius/presentation.hpp"
@@ -112,7 +113,7 @@ private:
 } // namespace
 
 TEST_CASE("AI worst-case cost arithmetic is conservative and bounded",
-          "[m18][ai][budget]") {
+          "[cross-feature][ai][budget]") {
   const sanguinius::AiGenerationPolicy policy;
   REQUIRE(policy.rolling_day_micro_usd == 1'250'000);
   REQUIRE(policy.calendar_month_micro_usd == 25'000'000);
@@ -130,7 +131,7 @@ TEST_CASE("AI worst-case cost arithmetic is conservative and bounded",
 }
 
 TEST_CASE("AI provider request identifiers are strictly sanitized",
-          "[m18][ai][provider][privacy]") {
+          "[cross-feature][ai][provider][privacy]") {
   REQUIRE(sanguinius::sanitize_ai_provider_request_id("req_123-safe.4") ==
           "req_123-safe.4");
   REQUIRE(sanguinius::sanitize_ai_provider_request_id("unsafe value").empty());
@@ -142,7 +143,7 @@ TEST_CASE("AI provider request identifiers are strictly sanitized",
 }
 
 TEST_CASE("TTS circuit closes only after normalized media validation",
-          "[m18][tts][provider][circuit][media]") {
+          "[cross-feature][tts][provider][circuit][media]") {
   CircuitTrace trace;
   sanguinius::test::FakeClock clock;
   sanguinius::test::FakePersistentIdGenerator ids;
@@ -158,7 +159,7 @@ TEST_CASE("TTS circuit closes only after normalized media validation",
 }
 
 TEST_CASE("ambiguous TTS transport failures count toward the provider circuit",
-          "[m18][tts][provider][circuit][timeout]") {
+          "[cross-feature][tts][provider][circuit][timeout]") {
   for (const auto category : {sanguinius::TtsFailureCategory::timeout,
                               sanguinius::TtsFailureCategory::transport}) {
     CircuitTrace trace;
@@ -181,7 +182,7 @@ TEST_CASE("ambiguous TTS transport failures count toward the provider circuit",
 }
 
 TEST_CASE("one orchestration consumer failure does not block later consumers",
-          "[m18][orchestration][failure]") {
+          "[cross-feature][orchestration][failure]") {
   sanguinius::test::FakeDiagnostics diagnostics;
   sanguinius::CrossFeatureOrchestrator orchestrator{diagnostics, 10ms};
   std::atomic<std::size_t> completed{};
@@ -209,7 +210,7 @@ TEST_CASE("one orchestration consumer failure does not block later consumers",
 }
 
 TEST_CASE("retention schedule selects the next 0400 UTC boundary",
-          "[m18][retention]") {
+          "[cross-feature][retention]") {
   using namespace std::chrono;
   const auto day = sys_days{year{2026} / August / 27};
   const auto at_three =
@@ -222,7 +223,7 @@ TEST_CASE("retention schedule selects the next 0400 UTC boundary",
 }
 
 TEST_CASE("daily retention reconciles the TTS cache without a Vox service",
-          "[m18][retention][tts][cache]") {
+          "[cross-feature][retention][tts][cache]") {
   sanguinius::test::FakeClock clock{std::chrono::sys_seconds{10s}};
   sanguinius::test::FakePersistentIdGenerator ids{
       {"00000000-0000-4000-8000-000000000401",
@@ -247,7 +248,7 @@ TEST_CASE("daily retention reconciles the TTS cache without a Vox service",
 }
 
 TEST_CASE("TTS cache retention failures do not block database retention",
-          "[m18][retention][tts][cache][failure]") {
+          "[cross-feature][retention][tts][cache][failure]") {
   sanguinius::test::FakeClock clock{std::chrono::sys_seconds{10s}};
   sanguinius::test::FakePersistentIdGenerator ids{
       {"00000000-0000-4000-8000-000000000403",
@@ -267,7 +268,7 @@ TEST_CASE("TTS cache retention failures do not block database retention",
 }
 
 TEST_CASE("member status renders runtime controls and degraded providers",
-          "[m18][status][runtime]") {
+          "[cross-feature][status][runtime]") {
   sanguinius::test::FakeClock clock{std::chrono::sys_seconds{10s}};
   sanguinius::SanguiniusOverviewService overview{{.chronicle_enabled = true,
                                                   .tarot_enabled = true,
@@ -300,7 +301,7 @@ TEST_CASE("member status renders runtime controls and degraded providers",
 }
 
 TEST_CASE("privacy overview names member voice controls",
-          "[m18][privacy][voice]") {
+          "[cross-feature][privacy][voice]") {
   sanguinius::test::FakeClock clock{std::chrono::sys_seconds{10s}};
   sanguinius::SanguiniusOverviewService overview{{.chronicle_enabled = true,
                                                   .tarot_enabled = true,
@@ -339,7 +340,7 @@ TEST_CASE("privacy overview names member voice controls",
 
 TEST_CASE(
     "shared presentation timestamps embeds and rejects duplicate controls",
-    "[m18][presentation][components]") {
+    "[cross-feature][presentation][components]") {
   const sanguinius::FeatureConfiguration features{.chronicle_enabled = true};
   const auto help = sanguinius::presentation::help("all", features, 12'000);
   const auto repository = sanguinius::presentation::repository(13'000);
@@ -370,7 +371,7 @@ TEST_CASE(
 }
 
 TEST_CASE("overview normalizes member state while retaining owner diagnostics",
-          "[m18][status][privacy]") {
+          "[cross-feature][status][privacy]") {
   sanguinius::test::FakeClock clock;
   sanguinius::SanguiniusOverviewService overview{{}, clock};
   const auto member = overview.status(

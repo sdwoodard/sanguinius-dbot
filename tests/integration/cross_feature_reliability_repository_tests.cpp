@@ -1,3 +1,4 @@
+// Persistent cross-feature reliability and recovery coverage.
 #include "sanguinius/ai_generation.hpp"
 #include "sanguinius/persistence/database.hpp"
 #include "sanguinius/persistence/migrator.hpp"
@@ -115,7 +116,7 @@ reservation(const std::size_t index, const std::int64_t cost = 200) {
 } // namespace
 
 TEST_CASE("AI budget reservations serialize before provider submission",
-          "[m18][ai][budget][concurrency]") {
+          "[cross-feature][ai][budget][concurrency]") {
   M18Fixture fixture;
   auto second_context =
       std::make_shared<sanguinius::persistence::SqliteRepositoryContext>(
@@ -167,7 +168,7 @@ TEST_CASE("AI budget reservations serialize before provider submission",
 }
 
 TEST_CASE("AI service reserves protocol framing at the full input ceiling",
-          "[m18][ai][budget][framing]") {
+          "[cross-feature][ai][budget][framing]") {
   M18Fixture fixture;
   sanguinius::test::FakePersistentIdGenerator ids;
   sanguinius::AiGenerationService service{
@@ -205,7 +206,7 @@ TEST_CASE("AI service reserves protocol framing at the full input ceiling",
 }
 
 TEST_CASE("AI submission fence releases only work never sent to the provider",
-          "[m18][ai][budget][submission-fence]") {
+          "[cross-feature][ai][budget][submission-fence]") {
   M18Fixture fixture;
   sanguinius::test::FakePersistentIdGenerator ids;
   const auto request = [](std::string idempotency_key) {
@@ -266,7 +267,7 @@ TEST_CASE("AI submission fence releases only work never sent to the provider",
 }
 
 TEST_CASE("persistent provider circuits open probe recover and restart auth",
-          "[m18][provider][circuit]") {
+          "[cross-feature][provider][circuit]") {
   M18Fixture fixture;
   sanguinius::persistence::SqliteProviderCircuitRepository circuit{
       fixture.context};
@@ -299,7 +300,7 @@ TEST_CASE("persistent provider circuits open probe recover and restart auth",
 }
 
 TEST_CASE("text authentication circuit cannot be downgraded in flight",
-          "[m18][ai][provider][circuit][authentication]") {
+          "[cross-feature][ai][provider][circuit][authentication]") {
   M18Fixture fixture;
   sanguinius::persistence::SqliteAiGenerationRepository repository{
       fixture.context};
@@ -320,7 +321,7 @@ TEST_CASE("text authentication circuit cannot be downgraded in flight",
 }
 
 TEST_CASE("AI startup releases unsent reservations and abandoned probes",
-          "[m18][ai][recovery]") {
+          "[cross-feature][ai][recovery]") {
   M18Fixture fixture;
   sanguinius::persistence::SqliteAiGenerationRepository repository{
       fixture.context};
@@ -363,7 +364,7 @@ TEST_CASE("AI startup releases unsent reservations and abandoned probes",
 }
 
 TEST_CASE("no-op runtime safety receipts cannot undo a later transition",
-          "[m18][safety][idempotency]") {
+          "[cross-feature][safety][idempotency]") {
   M18Fixture fixture;
   sanguinius::persistence::SqliteRuntimeFeatureControlRepository controls{
       fixture.context};
@@ -383,7 +384,7 @@ TEST_CASE("no-op runtime safety receipts cannot undo a later transition",
 
 TEST_CASE(
     "retention tombstones terminal sealed notice prose but keeps identity",
-    "[m18][retention][privacy]") {
+    "[cross-feature][retention][privacy]") {
   M18Fixture fixture;
   sanguinius::persistence::SqlitePendingNoticeRepository notices{
       fixture.context};
@@ -613,7 +614,7 @@ TEST_CASE(
 }
 
 TEST_CASE("retention records failed database runs after atomic rollback",
-          "[m18][retention][audit][failure]") {
+          "[cross-feature][retention][audit][failure]") {
   M18Fixture fixture;
   sanguinius::persistence::SqlitePendingNoticeRepository notices{
       fixture.context};
@@ -660,7 +661,7 @@ TEST_CASE("retention records failed database runs after atomic rollback",
 }
 
 TEST_CASE("daily retention purges speech and terminal TTS usage without Vox",
-          "[m18][retention][speech][tts]") {
+          "[cross-feature][retention][speech][tts]") {
   M18Fixture fixture;
   auto application = fixture.context->connection().prepare(
       "INSERT INTO application_instance(instance_id,application_version,"
@@ -721,7 +722,7 @@ TEST_CASE("daily retention purges speech and terminal TTS usage without Vox",
 }
 
 TEST_CASE("retention preserves unresolved Discord outcome diagnostics",
-          "[m18][retention][outbox][unknown-outcome]") {
+          "[cross-feature][retention][outbox][unknown-outcome]") {
   M18Fixture fixture;
   auto insert = fixture.context->connection().prepare(
       "INSERT INTO outbox_message(outbox_id,kind,aggregate_type,aggregate_id,"

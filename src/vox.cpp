@@ -63,7 +63,7 @@ reconciliation_retry_delay(const std::size_t attempt) noexcept {
   case VoiceResolveStatus::no_voice:
     return "Join a voice channel before summoning Vox Sanguinius.";
   case VoiceResolveStatus::unsupported_channel:
-    return "Milestone 14 supports ordinary voice channels, not Stage channels.";
+    return "Vox supports ordinary voice channels, not Stage channels.";
   case VoiceResolveStatus::permission_denied:
     return "Sanguinius lacks View Channel, Connect, or Speak permission there.";
   case VoiceResolveStatus::channel_full:

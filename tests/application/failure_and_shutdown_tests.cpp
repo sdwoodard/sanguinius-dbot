@@ -320,7 +320,7 @@ TEST_CASE("clean shutdown records one application instance terminal state",
 }
 
 TEST_CASE("service readiness follows Discord and command synchronization once",
-          "[application][m19][systemd]") {
+          "[application][operations][systemd]") {
   sanguinius::test::ApplicationFixture fixture;
   fixture.discord->set_ready_on_start(false);
   fixture.application->start();

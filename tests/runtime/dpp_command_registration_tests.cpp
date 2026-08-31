@@ -299,7 +299,7 @@ TEST_CASE("DPP voice-ready translation and binding replacement fail closed",
 }
 
 TEST_CASE("DPP runtime readiness requires a connected gateway shard",
-          "[discord][readiness][m19]") {
+          "[discord][readiness][operations]") {
   REQUIRE(sanguinius::dpp_adapter_detail::gateway_ready(true, true));
   REQUIRE_FALSE(sanguinius::dpp_adapter_detail::gateway_ready(true, false));
   REQUIRE_FALSE(sanguinius::dpp_adapter_detail::gateway_ready(false, true));

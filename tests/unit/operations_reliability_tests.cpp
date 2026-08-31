@@ -4,8 +4,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-TEST_CASE("Milestone 19 reliability classifications fail conservatively",
-          "[m19][reliability]") {
+TEST_CASE("Production reliability classifications fail conservatively",
+          "[operations][reliability]") {
   const auto timeout = sanguinius::classify_ai_provider_failure(
       sanguinius::AiProviderErrorCategory::timeout, true);
   REQUIRE(timeout.action == sanguinius::AiFailureAccounting::fail_attempt);
@@ -18,8 +18,8 @@ TEST_CASE("Milestone 19 reliability classifications fail conservatively",
   REQUIRE(unknown.error_code == "discord_unknown_outcome_stale");
 }
 
-TEST_CASE("Milestone 19 health renders bounded operational readiness",
-          "[m19][health]") {
+TEST_CASE("Health renders bounded operational readiness",
+          "[operations][health]") {
   sanguinius::HealthSnapshot snapshot{};
   snapshot.build = {.version = "2.2.0",
                     .revision = "0123456789abcdef0123456789abcdef01234567",

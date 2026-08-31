@@ -368,8 +368,8 @@ if(BUILD_TESTING)
         tests/unit/interaction_core_tests.cpp
         tests/unit/mention_parse_tests.cpp
         tests/unit/message_logger_tests.cpp
-        tests/unit/m18_reliability_tests.cpp
-        tests/unit/m19_operations_tests.cpp
+        tests/unit/cross_feature_reliability_tests.cpp
+        tests/unit/operations_reliability_tests.cpp
         tests/unit/owner_admin_tests.cpp
         tests/unit/relationship_tests.cpp
         tests/unit/server_scope_policy_tests.cpp
@@ -397,8 +397,8 @@ if(BUILD_TESTING)
         tests/integration/database_cli_tests.cpp
         tests/integration/durable_work_tests.cpp
         tests/integration/migration_tests.cpp
-        tests/integration/m18_reliability_repository_tests.cpp
-        tests/integration/m19_reliability_tests.cpp
+        tests/integration/cross_feature_reliability_repository_tests.cpp
+        tests/integration/production_reliability_tests.cpp
         tests/integration/repository_tests.cpp
         tests/integration/relationship_repository_tests.cpp
         tests/integration/speech_repository_tests.cpp
