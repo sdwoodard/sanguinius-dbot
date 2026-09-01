@@ -84,27 +84,42 @@ Read-only host inspection:
 
     ./scripts/deploy_nuln.bash inspect
 
-Confirm hostname, x86-64-v3 compatibility, systemd/tools, disk/inodes,
-service/process state, current/previous links, schema, and safe directory
-ownership. Never print the environment or credential files.
+This first-pass helper asserts the short hostname `nuln` and prints the machine
+architecture, service/process state, and filesystem block availability for the
+managed state and backup paths. It does not inspect CPU feature flags, required
+tool versions, inode availability, release links, schema, or ownership. Those
+checks remain mandatory before mutation and are performed again by the
+privileged deploy preflight. Use approved redacted host inspection for any
+additional evidence; never print the environment or credential files.
 
-## Bootstrap
+## Legacy host bootstrap
 
-Bootstrap is required only when the fixed account/layout/credentials/units do
-not exist:
+The checked-in bootstrap path is the one-time legacy adoption helper used for
+the original schema-13 host. It requires that exact stopped database baseline
+and a schema-13 compatibility archive; it is not a general provisioner for a
+new host or a current schema-16 installation. The existing production host is
+already bootstrapped, so ordinary maintenance must use `deploy` instead. A new
+or rebuilt host requires a separately reviewed, version-aware bootstrap change.
+
+For recovery or audit of that legacy path, its interface is:
 
     ./scripts/deploy_nuln.bash bootstrap \
       --rollback-archive <compatible-archive> \
-      --environment <local-production-env> \
-      --token <local-token-file> \
-      --openai-key <local-openai-key-file> \
-      --message-log <legacy-message-log>
+      --environment <restricted-remote-environment-path> \
+      --token <restricted-remote-token-path> \
+      --openai-key <restricted-remote-openai-key-path> \
+      --message-log <restricted-remote-message-log-path>
 
-It validates host identity, exact source/service/process/schema state and
-restricted inputs; creates only the Sanguinius account/directories/units;
-copies credentials and the existing message log without displaying contents;
-creates and verifies a compatible backup; stages the rollback release; and
-leaves unrelated services/packages unchanged.
+The archive is local, but the other four paths must already exist on `nuln`.
+The wrapper uploads only the archive, its checksum, and the verified remote
+helper; it passes the restricted source paths unchanged to that helper.
+
+It validates host identity, the exact stopped schema-13
+source/service/process state, and restricted inputs; creates only the
+Sanguinius account/directories/units; copies credentials and the existing
+message log without displaying contents; creates and verifies a schema-13
+backup; stages the compatibility release; and leaves unrelated
+services/packages unchanged.
 
 Bootstrap is resumable and refuses conflicts rather than overwriting them.
 
@@ -139,12 +154,14 @@ The privileged remote helper:
 11. reloads systemd, starts the service, and waits for READY, catalog
     synchronization, expected revision/schema, stable PID/restart state, and
     bounded health;
-12. enables the backup timer and prunes only recognized safe inactive
-    releases after health succeeds;
+12. enables the backup timer and retains current plus at most three recognized
+    inactive releases (all of them when fewer than three exist) after health
+    succeeds;
 13. removes only its validated upload/staging directory and releases the lock.
 
-Retention never removes current, previous, required schema-compatibility
-releases, special backups, legacy files, or unrecognized names.
+The compatibility release is prioritized but counts inside the three inactive
+slots. Retention never removes current, previous, special backups, legacy
+files, or unrecognized names.
 
 ## Service
 
@@ -209,7 +226,48 @@ Apply is destructive and requires explicit confirmation:
 It requires root, inactive service, the operations lock, exact host/state root,
 a schema-compatible release, successful verification, and a fresh safety
 backup. The existing database and sidecars move to a timestamped quarantine
-directory before the verified restored file is atomically installed.
+directory before the verified restored file is atomically installed. Apply
+also moves `previous` to the old active release when necessary, points
+`current` at the selected compatible release, installs that release's service
+unit, updates `state-version`, and reloads systemd. It intentionally leaves
+`sanguinius.service` inactive.
+
+After reviewing the reported schema, release, deployment identity, and
+quarantine name, inspect the root-owned immutable
+`RELEASE-METADATA.json`. Compare its release ID, revision, schema, catalog,
+service unit, and compatibility flag with the retained verified archive and
+restore evidence. For a modern release whose metadata selects
+`sanguinius.service` and `compatibility_release:false`, also compare the
+binary's version JSON with that metadata:
+
+    sudo /opt/sanguinius/current/bin/sanguinius --version --json
+
+The schema-13 compatibility release predates version JSON. When its metadata
+selects `sanguinius-compat.service` and `compatibility_release:true`, establish
+binary identity from the already verified archive, manifest, immutable
+metadata, and restore output instead; do not pass the unsupported option.
+
+For either release type, verify exact database compatibility while the service
+remains stopped:
+
+    sudo -u sanguinius env \
+      SANGUINIUS_DATABASE_FILE=/var/lib/sanguinius/sanguinius.sqlite3 \
+      /opt/sanguinius/current/bin/sanguinius db check
+
+Then start it explicitly and inspect the loaded type and result:
+
+    sudo systemctl start sanguinius.service
+    sudo systemctl is-active --quiet sanguinius.service
+    sudo systemctl show sanguinius.service \
+      -p Type -p ActiveState -p SubState -p Result -p ExecMainStatus
+
+For the normal `Type=notify` unit, successful start includes application
+readiness and command synchronization. A compatibility release may install
+`Type=simple`; active state then proves only that its process is running.
+Inspect its bounded startup journal, confirm Discord connected presence, and
+exercise a safe command supported by that release before declaring it ready.
+For either type, confirm a normal redacted member status/smoke response before
+declaring the restore complete.
 
 Never reverse an applied schema through SQL.
 

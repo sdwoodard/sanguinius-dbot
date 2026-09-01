@@ -36,8 +36,8 @@ using namespace std::chrono_literals;
   return "00000000-0000-4000-8000-" + suffix;
 }
 
-struct M18Fixture {
-  M18Fixture() {
+struct CrossFeatureReliabilityFixture {
+  CrossFeatureReliabilityFixture() {
     {
       auto database = sanguinius::persistence::Database::open_migration(
           temporary.path(), 500ms);
@@ -117,7 +117,7 @@ reservation(const std::size_t index, const std::int64_t cost = 200) {
 
 TEST_CASE("AI budget reservations serialize before provider submission",
           "[cross-feature][ai][budget][concurrency]") {
-  M18Fixture fixture;
+  CrossFeatureReliabilityFixture fixture;
   auto second_context =
       std::make_shared<sanguinius::persistence::SqliteRepositoryContext>(
           sanguinius::persistence::Database::open_runtime(
@@ -169,7 +169,7 @@ TEST_CASE("AI budget reservations serialize before provider submission",
 
 TEST_CASE("AI service reserves protocol framing at the full input ceiling",
           "[cross-feature][ai][budget][framing]") {
-  M18Fixture fixture;
+  CrossFeatureReliabilityFixture fixture;
   sanguinius::test::FakePersistentIdGenerator ids;
   sanguinius::AiGenerationService service{
       std::make_unique<FramingUsageAiClient>(),
@@ -207,7 +207,7 @@ TEST_CASE("AI service reserves protocol framing at the full input ceiling",
 
 TEST_CASE("AI submission fence releases only work never sent to the provider",
           "[cross-feature][ai][budget][submission-fence]") {
-  M18Fixture fixture;
+  CrossFeatureReliabilityFixture fixture;
   sanguinius::test::FakePersistentIdGenerator ids;
   const auto request = [](std::string idempotency_key) {
     return sanguinius::AiRequest{.instructions = "x",
@@ -268,7 +268,7 @@ TEST_CASE("AI submission fence releases only work never sent to the provider",
 
 TEST_CASE("persistent provider circuits open probe recover and restart auth",
           "[cross-feature][provider][circuit]") {
-  M18Fixture fixture;
+  CrossFeatureReliabilityFixture fixture;
   sanguinius::persistence::SqliteProviderCircuitRepository circuit{
       fixture.context};
   for (std::size_t index = 0; index < 3; ++index) {
@@ -301,7 +301,7 @@ TEST_CASE("persistent provider circuits open probe recover and restart auth",
 
 TEST_CASE("text authentication circuit cannot be downgraded in flight",
           "[cross-feature][ai][provider][circuit][authentication]") {
-  M18Fixture fixture;
+  CrossFeatureReliabilityFixture fixture;
   sanguinius::persistence::SqliteAiGenerationRepository repository{
       fixture.context};
   repository.provider_failed(
@@ -322,7 +322,7 @@ TEST_CASE("text authentication circuit cannot be downgraded in flight",
 
 TEST_CASE("AI startup releases unsent reservations and abandoned probes",
           "[cross-feature][ai][recovery]") {
-  M18Fixture fixture;
+  CrossFeatureReliabilityFixture fixture;
   sanguinius::persistence::SqliteAiGenerationRepository repository{
       fixture.context};
   sanguinius::AiGenerationPolicy policy{
@@ -365,7 +365,7 @@ TEST_CASE("AI startup releases unsent reservations and abandoned probes",
 
 TEST_CASE("no-op runtime safety receipts cannot undo a later transition",
           "[cross-feature][safety][idempotency]") {
-  M18Fixture fixture;
+  CrossFeatureReliabilityFixture fixture;
   sanguinius::persistence::SqliteRuntimeFeatureControlRepository controls{
       fixture.context};
   REQUIRE(controls.set("tts", false, 30, uuid(250), "safety:no-op", 1'000) ==
@@ -385,7 +385,7 @@ TEST_CASE("no-op runtime safety receipts cannot undo a later transition",
 TEST_CASE(
     "retention tombstones terminal sealed notice prose but keeps identity",
     "[cross-feature][retention][privacy]") {
-  M18Fixture fixture;
+  CrossFeatureReliabilityFixture fixture;
   sanguinius::persistence::SqlitePendingNoticeRepository notices{
       fixture.context};
   const auto created = notices.create_with_token(
@@ -615,7 +615,7 @@ TEST_CASE(
 
 TEST_CASE("retention records failed database runs after atomic rollback",
           "[cross-feature][retention][audit][failure]") {
-  M18Fixture fixture;
+  CrossFeatureReliabilityFixture fixture;
   sanguinius::persistence::SqlitePendingNoticeRepository notices{
       fixture.context};
   static_cast<void>(notices.create_with_token(
@@ -662,7 +662,7 @@ TEST_CASE("retention records failed database runs after atomic rollback",
 
 TEST_CASE("daily retention purges speech and terminal TTS usage without Vox",
           "[cross-feature][retention][speech][tts]") {
-  M18Fixture fixture;
+  CrossFeatureReliabilityFixture fixture;
   auto application = fixture.context->connection().prepare(
       "INSERT INTO application_instance(instance_id,application_version,"
       "git_revision,hostname,process_id,started_at_ms,stopped_at_ms,"
@@ -723,7 +723,7 @@ TEST_CASE("daily retention purges speech and terminal TTS usage without Vox",
 
 TEST_CASE("retention preserves unresolved Discord outcome diagnostics",
           "[cross-feature][retention][outbox][unknown-outcome]") {
-  M18Fixture fixture;
+  CrossFeatureReliabilityFixture fixture;
   auto insert = fixture.context->connection().prepare(
       "INSERT INTO outbox_message(outbox_id,kind,aggregate_type,aggregate_id,"
       "target_guild_id,target_channel_id,target_user_id,payload_json,state,"

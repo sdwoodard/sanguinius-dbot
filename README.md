@@ -49,7 +49,7 @@ catalog and omits owner/admin/test operations.
 | /sanguinius privacy | Explain stored data, visibility, voice consent, and controls. |
 | /sanguinius appearance-callbacks on or off | Control personal callback eligibility. |
 | /sanguinius appearance-feedback | Privately rate an eligible delivered appearance. |
-| /sanguinius quiet | Start, extend, inspect, or end server-wide quiet. |
+| /sanguinius quiet | Start, extend, or end server-wide quiet; inspect it through status. |
 
 Leading-mention messages use the bounded text-AI path. Exact legacy help/repo
 prefix messages are silent; the prefix remains only for the emergency owner
@@ -66,8 +66,8 @@ health fallback when enabled.
 | /chronicle forget | Retract an authorized memory or entry. |
 | /chronicle profile | Show private self continuity or a sanitized public member view. |
 | /chronicle callbacks | Enable or disable relevant confirmed-memory callbacks. |
-| /chronicle session | Start, inspect, close, edit, approve, or reject a session chapter. |
-| /chronicle title | Propose, review, feature, list, or revoke titles. |
+| /chronicle session | Members start or inspect sessions; only the opener/owner closes, and edit/approve/reject are owner-admin operations. |
+| /chronicle title | Members list titles; recipients feature their own and recipients/owner revoke, while propose/approve/reject are owner-admin operations. |
 | /chronicle anniversaries | Control personal anniversary eligibility. |
 
 ### Emperor's Tarot
@@ -101,10 +101,10 @@ double-entry, and wager escrow is atomic and idempotent.
 | Command | Purpose |
 | --- | --- |
 | /vox summon | Join the invoker's ordinary voice channel and establish a DAVE session. |
-| /vox status | Public-safe session, mute, queue, cache, and capability state. |
+| /vox status | Public-safe session, mute, static-proof, reconnect, elapsed-time, selected-voice, speech-availability, and queue state. |
 | /vox say | Owner-requested bounded generated speech. |
-| /vox mute | Timed/session mute while preserving connection. |
-| /vox voice | Inspect or select the allowed voice. |
+| /vox mute | Summoner/owner timed or session mute while preserving connection. |
+| /vox voice | Any member inspects the voice; the owner selects an allowed voice. |
 | /vox listen-start | Start an optional 5/10/15-second consent-attested anonymous mix window. |
 | /vox listen-stop | Immediately stop the active/arming listening window. |
 | /vox leave | Leave for the summoner or owner. |
@@ -153,9 +153,10 @@ channels are rejected.
 
 ## Configure
 
-Copy and edit the complete safe template:
+Install and edit the complete safe template:
 
-    cp config/sanguinius.env.example /secure/path/sanguinius.env
+    umask 077
+    install -m 0600 config/sanguinius.env.example /secure/path/sanguinius.env
 
 Required identities are canonical nonzero decimal snowflakes:
 
@@ -177,9 +178,22 @@ input disabled until deliberately configured. The example lists every feature,
 path, rate, budget, timeout, and cache setting with no real identity or secret.
 Boolean values accept only lowercase true or false.
 
+The application reads the process environment; it does not parse this file.
+After confirming the file is owned by the operator and mode 0600, load only
+this trusted, operator-authored shell input into the current shell:
+
+    test -O /secure/path/sanguinius.env
+    test "$(stat -c '%a' /secure/path/sanguinius.env)" = 600
+    set -a
+    . /secure/path/sanguinius.env
+    set +a
+
 Validate without constructing D++, contacting Discord/OpenAI, or printing
 secrets, IDs, paths, prompts, or file contents:
 
+    set -a
+    . /secure/path/sanguinius.env
+    set +a
     ./build/debug/sanguinius --check-config
 
 ## Build and test
@@ -194,9 +208,26 @@ no Discord, OpenAI, SSH, credentials, or network.
 Build presets also support Release and sanitizer workflows. Use one build per
 revision unless a distinct toolchain/sanitizer risk requires another.
 
-Run locally with the start helper after providing secure configuration:
+After providing secure configuration, run the Debug binary directly for a
+foreground development session:
 
-    ./start_bot.bash
+    set -a
+    . /secure/path/sanguinius.env
+    set +a
+    ./build/debug/sanguinius
+
+Alternatively, use the background helper with a Release build instead of the
+Debug workflow above:
+
+    ./scripts/build_bot.bash release
+    set -a
+    . /secure/path/sanguinius.env
+    set +a
+    ./scripts/start_bot.bash
+    ./scripts/stop_bot.bash
+
+The helper uses `build/release/sanguinius`, validates configuration and the
+exact database schema, and never runs a migration.
 
 ## Database maintenance
 
@@ -242,9 +273,11 @@ safety flags.
 
 ## Architecture
 
-sanguinius_core contains domain/application services and project-owned
-interfaces. sanguinius_persistence owns SQLite and migrations.
-sanguinius_runtime owns D++, OpenAI, media, systemd, and composition.
+sanguinius_core contains domain/application services, project-owned
+interfaces, shared JSON/OpenSSL support, and the libsystemd service-notifier
+adapter. sanguinius_persistence owns SQLite and migrations.
+sanguinius_runtime owns D++, provider HTTP clients, media, and application
+composition.
 
 Committed cross-feature work flows through the immutable event journal and
 feature-owned idempotent observers. Scheduled jobs and public delivery are
